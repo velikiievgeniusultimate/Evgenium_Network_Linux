@@ -17,6 +17,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Validate installer syntax
+        run: |
+          bash -n install.sh
+          grep -F 'update/stable.json' install.sh
+          grep -F 'vpn update' install.sh
       - name: Compile and self-test
         run: |
           python -m py_compile src/vpnctl.py src/vpnadmin.py scripts/build_release.py
