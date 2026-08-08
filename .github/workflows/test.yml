@@ -26,6 +26,19 @@ jobs:
         run: |
           python -m py_compile src/vpnctl.py src/vpnadmin.py scripts/build_release.py
           python src/vpnctl.py --self-test
+      - name: Validate nftables server-port rules
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nftables
+          python - <<'PY' > /tmp/vpn-guard.nft
+          import importlib.util
+          spec = importlib.util.spec_from_file_location('vpnctl', 'src/vpnctl.py')
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          print(mod.render_guard_rules(943, {25565}, {19132}))
+          PY
+          sudo nft -c -f /tmp/vpn-guard.nft
+          ip rule help 2>&1 | grep -F 'fwmark'
       - name: Verify current release and manifests
         run: |
           python - <<'PY'
