@@ -2,7 +2,7 @@
 
 A small Linux VPN manager built around **Xray-core**.
 
-Current stable baseline: **0.2.2**.
+Current stable baseline: **0.2.3**.
 
 ## Install
 
@@ -34,6 +34,7 @@ Running the installer again on an existing Xray edition installation is safe: it
 - DIRECT domain/network lists
 - CLI management for DIRECT domains, IPs and CIDRs
 - optional DNS snapshot discovery across the system resolver plus multiple public resolvers
+- inbound server-port bypass for services hosted behind the full-TUN VPN
 - atomic manager updates with `current` / `previous` rollback layout
 - Xray version pinning instead of blindly tracking latest
 
@@ -54,6 +55,9 @@ vpn direct add 203.0.113.10
 vpn direct add 203.0.113.0/24
 vpn direct discover example.com
 vpn direct refresh
+vpn port list
+vpn port add 25565
+vpn port remove 25565
 vpn reload-rules
 vpn logs -n 200
 vpn doctor
@@ -121,3 +125,34 @@ It matches the domain and its subdomains in Xray routing. IP and CIDR exclusions
 For applications that connect to numeric addresses, `vpn direct discover example.com` can create a DNS snapshot. It queries the system resolver and several public recursive resolvers for A/AAAA records, follows CNAMEs and stores the observed host IPs as `/32` or `/128` DIRECT networks. Re-run `vpn direct refresh` to update managed snapshots.
 
 A DNS snapshot is intentionally described as a snapshot: CDNs can rotate or geo-shard addresses, and the root domain cannot reveal every hostname/API used by a site. Shared CDN IPs are especially broad exclusions because other sites on the same destination IP may also become DIRECT. The command therefore shows the discovered set and asks for confirmation unless `--yes` is supplied.
+
+
+## Hosting inbound services while the VPN is on
+
+A full-TUN client changes the normal route for locally generated replies. If an
+Internet client connects to a service on this machine's public address, the
+reply must leave through the normal physical route rather than through the VPN.
+
+For a Minecraft Java server on the default port:
+
+```bash
+vpn port add 25565
+```
+
+TCP is the default. UDP or both protocols can be selected explicitly:
+
+```bash
+vpn port add 19132 udp
+vpn port add 27015 both
+```
+
+The manager marks only established reply traffic whose local source port matches
+a configured SERVER port, policy-routes that marked traffic through the normal
+`main` table, and permits only that marked reply through the kill switch. Other
+traffic from the same Java/process remains on the VPN.
+
+Persistent SERVER-port entries are stored in:
+
+```text
+~/Vpn/SERVER ports.txt
+```
