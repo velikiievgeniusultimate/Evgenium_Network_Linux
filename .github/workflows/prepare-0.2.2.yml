@@ -1,0 +1,56 @@
+name: Prepare VPN Manager 0.2.2
+
+on:
+  push:
+    branches:
+      - feature/direct-rules-0.2.2-helper
+    paths:
+      - scripts/prepare_0_2_2.py
+      - .github/workflows/prepare-0.2.2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/direct-rules-0.2.2-helper
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare release
+        run: python scripts/prepare_0_2_2.py
+
+      - name: Verify generated release
+        run: |
+          python -m py_compile src/vpnctl.py src/vpnadmin.py scripts/build_release.py
+          python src/vpnctl.py --self-test
+          python - <<'PY'
+          import hashlib, json, tarfile
+          from pathlib import Path
+          v = Path('VERSION').read_text().strip()
+          assert v == '0.2.2'
+          archive = Path(f'dist/vpn-manager-{v}.tar.gz')
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          for channel in ('stable', 'testing'):
+              m = json.loads(Path(f'update/{channel}.json').read_text())
+              assert m['version'] == v
+              assert m['sha256'] == digest
+          with tarfile.open(archive, 'r:gz') as tf:
+              assert tf.getnames() == ['vpnctl.py', 'vpnadmin.py', 'VERSION']
+          print('0.2.2 release OK', digest)
+          PY
+
+      - name: Commit generated 0.2.2
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'Release VPN Manager 0.2.2: DIRECT rule management'
+          git push origin HEAD:feature/direct-rules-0.2.2-helper
