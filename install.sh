@@ -23,18 +23,74 @@ DIRECT_NETWORKS="${VPN_HOME}/DIRECT networks.txt"
 
 command -v sudo >/dev/null 2>&1 || die "Не найден sudo."
 
-# Existing modern installation: do not rebuild system layout, just attach the
-# stable channel and use the manager's own transactional updater.
-if [[ -x /usr/local/sbin/vpn-manager-admin && -x /usr/local/sbin/vpnctl && -x /usr/local/bin/vpn ]]; then
-    if [[ -f /etc/vpn-manager/settings.json ]] && grep -q '"engine"[[:space:]]*:[[:space:]]*"xray"' /etc/vpn-manager/settings.json 2>/dev/null; then
-        say "Найдена существующая Xray-установка. Подключаю stable-канал GitHub..."
-        sudo /usr/local/sbin/vpn-manager-admin source "${MANIFEST_URL}"
-        /usr/local/bin/vpn update
-        ok "${APP_NAME} уже установлен и подключён к GitHub updates."
-        echo
-        echo "Дальше достаточно: vpn update"
-        exit 0
+is_existing_xray_install() {
+    [[ -f /etc/vpn-manager/settings.json ]] || return 1
+    [[ -x /usr/local/sbin/vpnctl ]] || return 1
+
+    python - <<'PY' >/dev/null 2>&1
+import json
+from pathlib import Path
+p = Path('/etc/vpn-manager/settings.json')
+try:
+    d = json.loads(p.read_text())
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if d.get('engine') == 'xray' else 1)
+PY
+}
+
+# Idempotent install path: an existing Xray installation must NOT be rebuilt.
+# Attach/repair the update channel and let the installed manager update itself.
+if is_existing_xray_install; then
+    say "Найдена существующая Xray-установка. Переустановка не требуется."
+    say "Подключаю stable-канал GitHub и проверяю обновления..."
+    sudo -v
+
+    sudo python - "${MANIFEST_URL}" <<'PY'
+import json, os, pathlib, sys, tempfile
+manifest = sys.argv[1]
+p = pathlib.Path('/etc/vpn-manager/settings.json')
+d = json.loads(p.read_text())
+if d.get('engine') != 'xray':
+    raise SystemExit('not an Xray installation')
+d['manager_manifest_url'] = manifest
+fd, tmp = tempfile.mkstemp(prefix='settings.', suffix='.json', dir=str(p.parent))
+try:
+    with os.fdopen(fd, 'w') as f:
+        json.dump(d, f, ensure_ascii=False, indent=2)
+        f.write('\n')
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, p)
+finally:
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+PY
+
+    # Repair entry points if an older/manual install is missing one of them.
+    if [[ -x /opt/vpn-manager/current/vpnadmin.py ]]; then
+        sudo ln -sfn /opt/vpn-manager/current/vpnadmin.py /usr/local/sbin/vpn-manager-admin
     fi
+    sudo /usr/local/sbin/vpnctl internal-sync
+
+    printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/vpnctl\n' "$OWNER_USER" | \
+        sudo tee /etc/sudoers.d/vpn-manager >/dev/null
+    sudo chmod 0440 /etc/sudoers.d/vpn-manager
+    if command -v visudo >/dev/null 2>&1; then
+        sudo visudo -cf /etc/sudoers.d/vpn-manager >/dev/null || {
+            sudo rm -f /etc/sudoers.d/vpn-manager
+            die "Проверка sudoers не прошла."
+        }
+    fi
+
+    sudo /usr/local/sbin/vpnctl update
+    ok "${APP_NAME} уже установлен; stable-канал GitHub подключён."
+    echo
+    echo "Дальше достаточно: vpn update"
+    exit 0
 fi
 
 [[ -f /etc/arch-release ]] || die "Автоустановщик сейчас поддерживает Arch Linux."
@@ -121,7 +177,7 @@ ok "SHA-256 релиза подтверждён."
 
 mkdir "${tmp}/release"
 python - "${tmp}/release.tar.gz" "${tmp}/release" "$VERSION" <<'PY'
-import pathlib, re, sys, tarfile
+import pathlib, sys, tarfile
 archive, out, expected_version = map(pathlib.Path, sys.argv[1:])
 allowed = {"vpnctl.py", "vpnadmin.py", "VERSION"}
 with tarfile.open(archive, "r:gz") as tf:
