@@ -1,0 +1,49 @@
+name: Prepare VPN Manager 0.2.3
+
+on:
+  push:
+    branches: [feature/server-port-bypass-0.2.3]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/server-port-bypass-0.2.3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare source and release
+        run: |
+          python scripts/prepare_0_2_3.py
+          python -m py_compile src/vpnctl.py src/vpnadmin.py scripts/build_release.py
+          python src/vpnctl.py --self-test
+          python scripts/build_release.py --channels stable testing
+      - name: Verify generated archive
+        run: |
+          python - <<'PY'
+          import hashlib, json, tarfile
+          from pathlib import Path
+          v = Path("VERSION").read_text().strip()
+          assert v == "0.2.3"
+          a = Path(f"dist/vpn-manager-{v}.tar.gz")
+          digest = hashlib.sha256(a.read_bytes()).hexdigest()
+          with tarfile.open(a, "r:gz") as tf:
+              assert tf.getnames() == ["vpnctl.py", "vpnadmin.py", "VERSION"]
+          for channel in ("stable", "testing"):
+              m = json.loads(Path(f"update/{channel}.json").read_text())
+              assert m["version"] == v
+              assert m["sha256"] == digest
+          print("0.2.3 release OK", digest)
+          PY
+      - name: Commit prepared 0.2.3
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Release VPN Manager 0.2.3: server port bypass'
+          git push origin HEAD:feature/server-port-bypass-0.2.3
