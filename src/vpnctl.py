@@ -26,7 +26,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.3"
+MANAGER_VERSION = "0.2.4"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -55,6 +55,7 @@ DNS_SNAPSHOT_BEGIN = "# EVGENIUM-DNS-BEGIN "
 DNS_SNAPSHOT_END = "# EVGENIUM-DNS-END "
 SERVER_BYPASS_MARK = 0x45564E01
 SERVER_BYPASS_RULE_PREF = 50
+SERVER_BYPASS_TABLE = 51820
 
 XRAY_RELEASE_API = (
     "https://api.github.com/repos/XTLS/Xray-core/releases/tags/v"
@@ -1237,19 +1238,129 @@ def render_guard_rules(uid: int, tcp_ports: set[int], udp_ports: set[int]) -> st
 
 def _delete_server_bypass_policy_rules() -> None:
     mark = f"0x{SERVER_BYPASS_MARK:08x}/0xffffffff"
-    for family in (["/usr/bin/ip"], ["/usr/bin/ip", "-6"]):
-        for _ in range(8):
-            cp = run(
-                family + [
-                    "rule", "del",
-                    "pref", str(SERVER_BYPASS_RULE_PREF),
-                    "fwmark", mark,
-                    "lookup", "main",
-                ],
-                check=False, capture=True
+    # Remove both the broken 0.2.3 rule -> main and the fixed rule -> dedicated table.
+    for famflag in ("-4", "-6"):
+        for table in ("main", str(SERVER_BYPASS_TABLE)):
+            for _ in range(8):
+                cp = run(
+                    [
+                        "/usr/bin/ip", famflag, "rule", "del",
+                        "pref", str(SERVER_BYPASS_RULE_PREF),
+                        "fwmark", mark,
+                        "lookup", table,
+                    ],
+                    check=False, capture=True
+                )
+                if cp.returncode != 0:
+                    break
+        run(
+            [
+                "/usr/bin/ip", famflag, "route", "flush",
+                "table", str(SERVER_BYPASS_TABLE),
+            ],
+            check=False, capture=True
+        )
+
+
+def _physical_routes_from_main(family: int) -> tuple[str | None, list[dict]]:
+    famflag = "-4" if family == 4 else "-6"
+    cp = run(
+        ["/usr/bin/ip", "-j", famflag, "route", "show", "table", "main"],
+        check=False, capture=True
+    )
+    if cp.returncode != 0:
+        return None, []
+    try:
+        routes = json.loads(cp.stdout or "[]")
+    except json.JSONDecodeError:
+        return None, []
+    if not isinstance(routes, list):
+        return None, []
+
+    defaults = [
+        r for r in routes
+        if isinstance(r, dict)
+        and r.get("dst", "default") == "default"
+        and r.get("dev")
+        and r.get("dev") != TUN_NAME
+        and r.get("type", "unicast") == "unicast"
+    ]
+    if not defaults:
+        return None, []
+
+    def metric(route: dict) -> int:
+        try:
+            return int(route.get("metric", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    chosen = min(defaults, key=metric)
+    iface = str(chosen["dev"])
+    selected = [
+        r for r in routes
+        if isinstance(r, dict)
+        and r.get("dev") == iface
+        and r.get("type", "unicast") == "unicast"
+    ]
+    # Install connected/link routes before the default route so its gateway is reachable.
+    selected.sort(key=lambda r: (r.get("dst", "default") == "default", metric(r)))
+    return iface, selected
+
+
+def _populate_server_bypass_table(family: int) -> str | None:
+    famflag = "-4" if family == 4 else "-6"
+    iface, routes = _physical_routes_from_main(family)
+    run(
+        [
+            "/usr/bin/ip", famflag, "route", "flush",
+            "table", str(SERVER_BYPASS_TABLE),
+        ],
+        check=False, capture=True
+    )
+    if not iface:
+        return None
+
+    for route in routes:
+        dst = str(route.get("dst", "default"))
+        cmd = [
+            "/usr/bin/ip", famflag, "route", "replace",
+            "table", str(SERVER_BYPASS_TABLE), dst,
+        ]
+        gateway = route.get("gateway")
+        if gateway:
+            cmd += ["via", str(gateway)]
+        cmd += ["dev", iface]
+        prefsrc = route.get("prefsrc")
+        if prefsrc:
+            cmd += ["src", str(prefsrc)]
+        metric = route.get("metric")
+        if metric is not None:
+            cmd += ["metric", str(metric)]
+        cp = run(cmd, check=False, capture=True)
+        if cp.returncode != 0:
+            fail(
+                f"Не удалось скопировать физический маршрут в table {SERVER_BYPASS_TABLE}: "
+                + (cp.stderr or "").strip()
             )
-            if cp.returncode != 0:
-                break
+    return iface
+
+
+def _verify_server_bypass_route(family: int, iface: str) -> None:
+    famflag = "-4" if family == 4 else "-6"
+    target = "1.1.1.1" if family == 4 else "2606:4700:4700::1111"
+    cp = run(
+        [
+            "/usr/bin/ip", famflag, "route", "get", target,
+            "mark", f"0x{SERVER_BYPASS_MARK:08x}",
+        ],
+        check=False, capture=True
+    )
+    out = (cp.stdout or "").strip()
+    if cp.returncode != 0 or TUN_NAME in out or f"dev {iface}" not in out:
+        fail(
+            "SERVER-port policy route не обходит TUN. "
+            f"Ожидался dev {iface}, получено: {out or (cp.stderr or '').strip()}"
+        )
 
 
 def _install_server_bypass_policy_rules(enabled: bool) -> None:
@@ -1258,29 +1369,39 @@ def _install_server_bypass_policy_rules(enabled: bool) -> None:
         return
 
     mark = f"0x{SERVER_BYPASS_MARK:08x}/0xffffffff"
+
+    iface4 = _populate_server_bypass_table(4)
+    if not iface4:
+        fail("Не найден физический IPv4 default route для SERVER-port bypass.")
     v4 = run(
         [
-            "/usr/bin/ip", "rule", "add",
+            "/usr/bin/ip", "-4", "rule", "add",
             "pref", str(SERVER_BYPASS_RULE_PREF),
             "fwmark", mark,
-            "lookup", "main",
+            "lookup", str(SERVER_BYPASS_TABLE),
         ],
         check=False, capture=True
     )
     if v4.returncode != 0:
         fail("Не удалось поставить IPv4 policy rule для SERVER ports:\n" + (v4.stderr or ""))
+    _verify_server_bypass_route(4, iface4)
 
-    v6 = run(
-        [
-            "/usr/bin/ip", "-6", "rule", "add",
-            "pref", str(SERVER_BYPASS_RULE_PREF),
-            "fwmark", mark,
-            "lookup", "main",
-        ],
-        check=False, capture=True
-    )
-    if v6.returncode != 0:
-        warn("IPv6 SERVER-port policy rule не установлен: " + (v6.stderr or "").strip())
+    # IPv6 is best effort: the host may have no physical IPv6 default route at all.
+    iface6 = _populate_server_bypass_table(6)
+    if iface6:
+        v6 = run(
+            [
+                "/usr/bin/ip", "-6", "rule", "add",
+                "pref", str(SERVER_BYPASS_RULE_PREF),
+                "fwmark", mark,
+                "lookup", str(SERVER_BYPASS_TABLE),
+            ],
+            check=False, capture=True
+        )
+        if v6.returncode == 0:
+            _verify_server_bypass_route(6, iface6)
+        else:
+            warn("IPv6 SERVER-port policy rule не установлен: " + (v6.stderr or "").strip())
 
 def build_config(settings: dict, nodes: list[dict], selected: int = 0,
                  ipv6_enabled: bool = True) -> dict:
@@ -2372,6 +2493,10 @@ DIRECT networks:
 
     if args.cmd == "internal-after-update":
         sync_system_files()
+        # Migrate an active 0.2.3 rule -> main without cycling the VPN.
+        if service_active() and nft_exists() and read_server_ports(settings):
+            info("Мигрирую SERVER-port bypass на выделенную физическую routing table...")
+            install_guard(settings)
         # Новый код сам решит свой safe core.
         core_update(settings)
         ok("Обновление manager полностью применено.")

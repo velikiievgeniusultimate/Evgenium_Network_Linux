@@ -39,6 +39,21 @@ jobs:
           PY
           sudo nft -c -f /tmp/vpn-guard.nft
           ip rule help 2>&1 | grep -F 'fwmark'
+      - name: Validate dedicated server bypass table
+        run: |
+          grep -F 'SERVER_BYPASS_TABLE = 51820' src/vpnctl.py
+          grep -F '"lookup", str(SERVER_BYPASS_TABLE)' src/vpnctl.py
+          grep -F '_verify_server_bypass_route(4, iface4)' src/vpnctl.py
+          python - <<'PY'
+          from pathlib import Path
+          s = Path('src/vpnctl.py').read_text()
+          start = s.index('def _install_server_bypass_policy_rules')
+          end = s.index('def build_config(', start)
+          block = s[start:end]
+          assert '"lookup", "main"' not in block
+          assert 'SERVER_BYPASS_TABLE' in block
+          print('dedicated bypass table wiring OK')
+          PY
       - name: Verify current release and manifests
         run: |
           python - <<'PY'

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.4
+
+- fix SERVER-port bypass: 0.2.3 incorrectly sent the mark back to `main`, whose preferred default is still `xraytun`
+- build dedicated routing table 51820 from the physical interface routes
+- send marked established server replies to table 51820 instead of `main`
+- verify the marked route resolves to the physical interface and never to `xraytun`
+- migrate an active 0.2.3 installation during `vpn update` without requiring VPN off/on
+
 ## 0.2.3
 
 - add `vpn port add/remove/list` for inbound services behind full-TUN
