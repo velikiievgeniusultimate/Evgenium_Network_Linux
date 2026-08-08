@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.2
+
+- add `vpn direct` command family
+- add/remove DIRECT domains, individual IPs and CIDRs without editing text files manually
+- add DNS snapshot discovery using system DNS plus Cloudflare, Google and Quad9 recursive resolvers
+- follow DNS CNAMEs and collect both A and AAAA answers
+- managed DNS snapshots can be refreshed with `vpn direct refresh`
+- active VPN rules are re-applied automatically after DIRECT changes
+- warn before broad IP snapshots because CDN IPs may be shared
+
 ## 0.2.1 — 2026-08-08
 
 First stable GitHub baseline.
