@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.3
+
+- add `vpn port add/remove/list` for inbound services behind full-TUN
+- default `vpn port add PORT` to TCP; support UDP and both
+- policy-route established server replies through the normal main table
+- keep unrelated process traffic inside the VPN
+- persist server-port rules in `~/Vpn/SERVER ports.txt`
+- atomically replace the nftables kill-switch table during live rule changes
+- remove tracked Python bytecode from the repository
+
 ## 0.2.2
 
 - add `vpn direct` command family

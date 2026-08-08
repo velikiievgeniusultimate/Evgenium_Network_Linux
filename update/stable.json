@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "channel": "stable",
-  "version": "0.2.2",
-  "url": "https://raw.githubusercontent.com/velikiievgeniusultimate/Evgenium_Network_Linux/main/dist/vpn-manager-0.2.2.tar.gz",
-  "sha256": "fc00b15d3b568fdd259fa81115c4f4309f2c87ecb42bd3d4a4c00af8d2cdc77b",
+  "version": "0.2.3",
+  "url": "https://raw.githubusercontent.com/velikiievgeniusultimate/Evgenium_Network_Linux/main/dist/vpn-manager-0.2.3.tar.gz",
+  "sha256": "d99507b9f5d01281f4ff3bb7a58844b152d376823c8766ae6f267d624055e443",
   "min_updater_version": "0.2.0",
   "xray_version": "26.6.27"
 }
