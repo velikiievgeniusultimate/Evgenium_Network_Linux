@@ -1,0 +1,41 @@
+name: Test VPN Manager
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile and self-test
+        run: |
+          python -m py_compile src/vpnctl.py src/vpnadmin.py scripts/build_release.py
+          python src/vpnctl.py --self-test
+      - name: Verify current release and manifests
+        run: |
+          python - <<'PY'
+          import hashlib, json, tarfile
+          from pathlib import Path
+          v=Path('VERSION').read_text().strip()
+          archive=Path(f'dist/vpn-manager-{v}.tar.gz')
+          assert archive.is_file()
+          digest=hashlib.sha256(archive.read_bytes()).hexdigest()
+          for channel in ('stable','testing'):
+              m=json.loads(Path(f'update/{channel}.json').read_text())
+              assert m['channel']==channel
+              assert m['version']==v
+              assert m['sha256']==digest
+          with tarfile.open(archive,'r:gz') as tf:
+              assert tf.getnames()==['vpnctl.py','vpnadmin.py','VERSION']
+          print('release + manifests OK', digest)
+          PY
