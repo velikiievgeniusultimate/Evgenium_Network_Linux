@@ -26,7 +26,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.4"
+MANAGER_VERSION = "0.2.5"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -42,6 +42,8 @@ XRAY_PREVIOUS = pathlib.Path("/opt/vpn-manager/bin/xray.previous")
 SERVICE = "vpn-xray.service"
 TUN_NAME = "xraytun"
 NFT_TABLE = "vpn_guard"
+DIRECT_SOCKS_HOST = "127.0.0.1"
+DIRECT_SOCKS_PORT = 18443
 
 RELEASES = pathlib.Path("/opt/vpn-manager/releases")
 CURRENT = pathlib.Path("/opt/vpn-manager/current")
@@ -142,9 +144,18 @@ def load_settings() -> dict:
         data = json.loads(SETTINGS.read_text())
     except Exception as exc:
         fail(f"Не могу прочитать {SETTINGS}: {exc}")
+    # 0.2.5 adds an application-level DIRECT list. Migrate existing 0.2.x
+    # installations before validating the expanded settings schema: the
+    # transactional updater execs this new vpnctl against the old settings.
+    if "direct_apps" not in data and data.get("owner_home"):
+        data["direct_apps"] = str(
+            pathlib.Path(str(data["owner_home"])) / "Vpn" / "DIRECT apps.txt"
+        )
+        save_settings(data)
+
     required = (
         "owner_user", "owner_home", "config_dir", "direct_sites",
-        "direct_networks", "xray_uid", "xray_gid",
+        "direct_networks", "direct_apps", "xray_uid", "xray_gid",
     )
     for key in required:
         if key not in data:
@@ -502,6 +513,46 @@ def read_direct_networks(settings: dict) -> list[ipaddress._BaseNetwork]:
     return out
 
 
+def _normalize_direct_app_target(target: str) -> str:
+    value = target.strip()
+    if not value or value.startswith("#"):
+        fail("Пустое имя процесса.")
+    if len(value) > 4096 or any(ord(ch) < 32 for ch in value):
+        fail("Некорректное имя/путь процесса.")
+
+    if "/" not in value:
+        if value in {".", ".."}:
+            fail("Некорректное имя процесса.")
+        return value
+
+    if not value.startswith("/"):
+        fail("Путь процесса должен быть абсолютным.")
+    is_directory = value.endswith("/")
+    path = pathlib.PurePosixPath(value)
+    if value == "/" or ".." in path.parts:
+        fail("Слишком широкий или небезопасный путь процесса.")
+    normalized = str(path)
+    return normalized + "/" if is_directory else normalized
+
+
+def read_direct_apps(settings: dict) -> list[str]:
+    raw_path = settings.get("direct_apps")
+    if not raw_path:
+        return []
+    p = pathlib.Path(str(raw_path))
+    if not p.exists():
+        return []
+    out: list[str] = []
+    for raw in p.read_text(errors="strict").splitlines():
+        value = raw.strip()
+        if not value or value.startswith("#"):
+            continue
+        normalized = _normalize_direct_app_target(value)
+        if normalized not in out:
+            out.append(normalized)
+    return out
+
+
 def _owner_ids(settings: dict) -> tuple[int, int]:
     try:
         pw = pwd.getpwnam(str(settings["owner_user"]))
@@ -538,6 +589,51 @@ def _write_direct_file(settings: dict, key: str, text: str) -> None:
     finally:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmpname)
+
+
+def ensure_direct_apps_file(settings: dict) -> None:
+    p = _safe_direct_path(settings, "direct_apps")
+    if p.exists():
+        return
+    _write_direct_file(
+        settings,
+        "direct_apps",
+        "# Xray process matches are case-sensitive. One process name, absolute path,\n"
+        "# or directory path ending in / per line. Managed with: vpn app ...\n"
+        "evgenium-waydroid-mapper\n",
+    )
+
+
+def _append_unique_app(settings: dict, target: str) -> bool:
+    value = _normalize_direct_app_target(target)
+    if value in read_direct_apps(settings):
+        return False
+    p = _safe_direct_path(settings, "direct_apps")
+    old = p.read_text() if p.exists() else ""
+    if old and not old.endswith("\n"):
+        old += "\n"
+    _write_direct_file(settings, "direct_apps", old + value + "\n")
+    return True
+
+
+def _remove_app_entry(settings: dict, target: str) -> bool:
+    value = _normalize_direct_app_target(target)
+    p = _safe_direct_path(settings, "direct_apps")
+    if not p.exists():
+        return False
+    changed = False
+    kept: list[str] = []
+    for raw in p.read_text().splitlines():
+        stripped = raw.strip()
+        if stripped and not stripped.startswith("#"):
+            with contextlib.suppress(VPNError):
+                if _normalize_direct_app_target(stripped) == value:
+                    changed = True
+                    continue
+        kept.append(raw)
+    if changed:
+        _write_direct_file(settings, "direct_apps", "\n".join(kept) + ("\n" if kept else ""))
+    return changed
 
 
 def _normalize_domain_target(target: str) -> tuple[str, bool]:
@@ -1017,6 +1113,34 @@ def cmd_direct_refresh(settings: dict, target: str | None, rounds: int) -> None:
         ok("DNS snapshots не изменились.")
 
 
+def cmd_app_list(settings: dict) -> None:
+    print("DIRECT applications (case-sensitive Xray process rules):")
+    apps = read_direct_apps(settings)
+    if not apps:
+        print("  (нет)")
+        return
+    for value in apps:
+        print(f"  {value}")
+
+
+def cmd_app_add(settings: dict, target: str) -> None:
+    value = _normalize_direct_app_target(target)
+    if _append_unique_app(settings, value):
+        ok(f"Добавлено DIRECT-приложение: {value}")
+        _reload_direct_if_active(settings)
+    else:
+        ok(f"DIRECT-приложение уже есть: {value}")
+
+
+def cmd_app_remove(settings: dict, target: str) -> None:
+    value = _normalize_direct_app_target(target)
+    if _remove_app_entry(settings, value):
+        ok(f"Удалено DIRECT-приложение: {value}")
+        _reload_direct_if_active(settings)
+    else:
+        ok(f"DIRECT-приложение не найдено: {value}")
+
+
 def _server_ports_path(settings: dict) -> pathlib.Path:
     p = pathlib.Path(settings["owner_home"]) / "Vpn" / "SERVER ports.txt"
     if p.is_symlink():
@@ -1412,6 +1536,7 @@ def build_config(settings: dict, nodes: list[dict], selected: int = 0,
 
     proxy = nodes[selected]["outbound"]
 
+    apps = read_direct_apps(settings)
     domains = []
     for kind, domain in read_direct_sites(settings):
         domains.append(f"{kind}:{domain}")
@@ -1428,7 +1553,20 @@ def build_config(settings: dict, nodes: list[dict], selected: int = 0,
     ]
     ips += [n.compressed for n in read_direct_networks(settings)]
 
-    rules = []
+    rules = [{
+        "type": "field",
+        "inboundTag": ["direct-socks-in"],
+        "outboundTag": "direct",
+        "ruleTag": "local-direct-socks",
+    }]
+    if apps:
+        rules.append({
+            "type": "field",
+            "inboundTag": ["tun-in"],
+            "process": apps,
+            "outboundTag": "direct",
+            "ruleTag": "user-direct-applications",
+        })
     if domains:
         rules.append({
             "type": "field",
@@ -1462,23 +1600,35 @@ def build_config(settings: dict, nodes: list[dict], selected: int = 0,
         "log": {
             "loglevel": "info",
         },
-        "inbounds": [{
-            "tag": "tun-in",
-            "protocol": "tun",
-            "settings": {
-                "name": TUN_NAME,
-                "mtu": 1500,
-                "gateway": gateways,
-                "autoSystemRoutingTable": auto_routes,
-                "autoOutboundsInterface": "auto",
+        "inbounds": [
+            {
+                "tag": "tun-in",
+                "protocol": "tun",
+                "settings": {
+                    "name": TUN_NAME,
+                    "mtu": 1500,
+                    "gateway": gateways,
+                    "autoSystemRoutingTable": auto_routes,
+                    "autoOutboundsInterface": "auto",
+                },
+                "sniffing": {
+                    "enabled": True,
+                    "destOverride": ["http", "tls", "quic"],
+                    "metadataOnly": False,
+                    "routeOnly": True,
+                },
             },
-            "sniffing": {
-                "enabled": True,
-                "destOverride": ["http", "tls", "quic"],
-                "metadataOnly": False,
-                "routeOnly": True,
+            {
+                "tag": "direct-socks-in",
+                "listen": DIRECT_SOCKS_HOST,
+                "port": DIRECT_SOCKS_PORT,
+                "protocol": "socks",
+                "settings": {
+                    "auth": "noauth",
+                    "udp": True,
+                },
             },
-        }],
+        ],
         "outbounds": [
             proxy,
             {
@@ -1873,7 +2023,12 @@ def cmd_status(settings: dict, with_ip=False) -> None:
     print(f"Configs dir:  {settings['config_dir']}")
     print(
         f"DIRECT rules: {len(read_direct_sites(settings))} domains / "
-        f"{len(read_direct_networks(settings))} networks"
+        f"{len(read_direct_networks(settings))} networks / "
+        f"{len(read_direct_apps(settings))} applications"
+    )
+    print(
+        f"DIRECT SOCKS: {DIRECT_SOCKS_HOST}:{DIRECT_SOCKS_PORT} "
+        f"({'ON' if active else 'available while VPN is ON'})"
     )
     tcp_ports, udp_ports = _server_port_sets(settings)
     print(f"SERVER ports: {len(tcp_ports)} TCP / {len(udp_ports)} UDP")
@@ -2252,12 +2407,19 @@ def self_test() -> None:
         fake_settings = {
             "direct_sites": "/nonexistent/direct-sites",
             "direct_networks": "/nonexistent/direct-networks",
+            "direct_apps": "/nonexistent/direct-apps",
         }
         dual = build_config(fake_settings, [node], ipv6_enabled=True)
         v4 = build_config(fake_settings, [node], ipv6_enabled=False)
         assert dual["inbounds"][0]["settings"]["autoSystemRoutingTable"] == ["0.0.0.0/0", "::/0"]
         assert v4["inbounds"][0]["settings"]["autoSystemRoutingTable"] == ["0.0.0.0/0"]
         assert len(v4["inbounds"][0]["settings"]["gateway"]) == 1
+        assert v4["inbounds"][1]["tag"] == "direct-socks-in"
+        assert v4["inbounds"][1]["listen"] == "127.0.0.1"
+        assert v4["inbounds"][1]["port"] == 18443
+        assert v4["routing"]["rules"][0]["outboundTag"] == "direct"
+        assert _normalize_direct_app_target("evgenium-waydroid-mapper") == "evgenium-waydroid-mapper"
+        assert _normalize_direct_app_target("/opt/example/bin/") == "/opt/example/bin/"
 
         d, exact = _normalize_domain_target("https://Example.COM/path")
         assert d == "example.com" and exact is False
@@ -2306,6 +2468,12 @@ def main(argv=None) -> int:
     pdf.add_argument("target", nargs="?")
     pdf.add_argument("--rounds", type=int, default=2)
 
+    pa = sub.add_parser("app")
+    pasub = pa.add_subparsers(dest="app_cmd")
+    pasub.add_parser("list")
+    paa = pasub.add_parser("add"); paa.add_argument("process")
+    par = pasub.add_parser("remove"); par.add_argument("process")
+
     pp = sub.add_parser("port")
     ppsub = pp.add_subparsers(dest="port_cmd")
     ppsub.add_parser("list")
@@ -2335,6 +2503,7 @@ def main(argv=None) -> int:
 
     ensure_root()
     settings = load_settings()
+    ensure_direct_apps_file(settings)
 
     if args.cmd in {None, "help"}:
         print(f"""VPN Manager {MANAGER_VERSION} — Xray edition
@@ -2351,6 +2520,9 @@ def main(argv=None) -> int:
   vpn direct remove DOMAIN|IP|CIDR
   vpn direct discover DOMAIN [--yes] [--rounds N]
   vpn direct refresh [DOMAIN] [--rounds N]
+  vpn app list
+  vpn app add PROCESS|/absolute/path|/directory/
+  vpn app remove PROCESS|/absolute/path|/directory/
   vpn port list
   vpn port add PORT [tcp|udp|both]
   vpn port remove PORT [tcp|udp|both]
@@ -2370,6 +2542,12 @@ DIRECT domains:
 
 DIRECT networks:
   {settings['direct_networks']}
+
+DIRECT applications:
+  {settings['direct_apps']}
+
+Local DIRECT SOCKS (only localhost, only while VPN is on):
+  {DIRECT_SOCKS_HOST}:{DIRECT_SOCKS_PORT}
 """)
         return 0
 
@@ -2417,6 +2595,17 @@ DIRECT networks:
             return 0
         if args.direct_cmd == "refresh":
             cmd_direct_refresh(settings, args.target, args.rounds)
+            return 0
+
+    if args.cmd == "app":
+        if args.app_cmd in {None, "list"}:
+            cmd_app_list(settings)
+            return 0
+        if args.app_cmd == "add":
+            cmd_app_add(settings, args.process)
+            return 0
+        if args.app_cmd == "remove":
+            cmd_app_remove(settings, args.process)
             return 0
 
     if args.cmd == "port":

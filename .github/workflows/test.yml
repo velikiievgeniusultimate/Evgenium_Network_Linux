@@ -26,6 +26,8 @@ jobs:
         run: |
           python -m py_compile src/vpnctl.py src/vpnadmin.py scripts/build_release.py
           python src/vpnctl.py --self-test
+          grep -F '"process": apps' src/vpnctl.py
+          grep -F 'DIRECT_SOCKS_PORT = 18443' src/vpnctl.py
       - name: Validate nftables server-port rules
         run: |
           sudo apt-get update -qq
