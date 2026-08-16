@@ -26,7 +26,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.5"
+MANAGER_VERSION = "0.2.6"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -2688,6 +2688,14 @@ Local DIRECT SOCKS (only localhost, only while VPN is on):
             install_guard(settings)
         # Новый код сам решит свой safe core.
         core_update(settings)
+        # The persistent lists were migrated above, but an already-running
+        # Xray still has the previous in-memory routing graph. Rebuild it now
+        # so a manager update really applies DIRECT apps/SOCKS without asking
+        # the desktop user to cycle the VPN manually.
+        st = load_state()
+        if service_active() and st.get("active"):
+            info("Применяю новые DIRECT-правила к активному VPN...")
+            activate(settings, choose_config(settings, str(st["active"])))
         ok("Обновление manager полностью применено.")
         return 0
 
