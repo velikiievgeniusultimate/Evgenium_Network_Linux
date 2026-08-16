@@ -28,6 +28,7 @@ jobs:
           python src/vpnctl.py --self-test
           grep -F '"process": apps' src/vpnctl.py
           grep -F 'DIRECT_SOCKS_PORT = 18443' src/vpnctl.py
+          grep -F 'Применяю новые DIRECT-правила к активному VPN' src/vpnctl.py
       - name: Validate nftables server-port rules
         run: |
           sudo apt-get update -qq

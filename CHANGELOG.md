@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.6
+
+- automatically rebuild an active Xray runtime after manager migration
+- apply new DIRECT application and localhost SOCKS rules without a manual VPN cycle
+
 ## 0.2.5
 
 - add `vpn app add/remove/list` for case-sensitive Xray process DIRECT rules
