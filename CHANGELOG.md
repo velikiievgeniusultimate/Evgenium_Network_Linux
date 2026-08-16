@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.5
+
+- add `vpn app add/remove/list` for case-sensitive Xray process DIRECT rules
+- migrate existing installs to `~/Vpn/DIRECT apps.txt` and include EWM by default
+- add a localhost-only DIRECT SOCKS endpoint at `127.0.0.1:18443`
+- let EWM route only its updater downloads outside the VPN without excluding all `curl` traffic
+
 ## 0.2.4
 
 - fix SERVER-port bypass: 0.2.3 incorrectly sent the mark back to `main`, whose preferred default is still `xraytun`

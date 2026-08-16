@@ -2,7 +2,7 @@
 
 A small Linux VPN manager built around **Xray-core**.
 
-Current stable baseline: **0.2.4**.
+Current stable baseline: **0.2.5**.
 
 ## Install
 
@@ -32,6 +32,8 @@ Running the installer again on an existing Xray edition installation is safe: it
 - automatic IPv6 probe; if the remote VPN has no IPv6 egress, public IPv6 is blocked instead of leaked
 - UDP health check
 - DIRECT domain/network lists
+- DIRECT application rules by process name or executable path
+- a localhost-only DIRECT SOCKS channel for narrowly scoped updater traffic
 - CLI management for DIRECT domains, IPs and CIDRs
 - optional DNS snapshot discovery across the system resolver plus multiple public resolvers
 - inbound server-port bypass for services hosted behind the full-TUN VPN
@@ -55,6 +57,9 @@ vpn direct add 203.0.113.10
 vpn direct add 203.0.113.0/24
 vpn direct discover example.com
 vpn direct refresh
+vpn app list
+vpn app add evgenium-waydroid-mapper
+vpn app remove evgenium-waydroid-mapper
 vpn port list
 vpn port add 25565
 vpn port remove 25565
@@ -77,7 +82,17 @@ DIRECT lists:
 ```text
 ~/Vpn/DIRECT sites.txt
 ~/Vpn/DIRECT networks.txt
+~/Vpn/DIRECT apps.txt
 ```
+
+`DIRECT apps.txt` uses Xray's case-sensitive Linux process matching. A line can
+be a process name, an absolute executable path, or an absolute directory path
+ending in `/`. EWM is added on migration so its own connections bypass the VPN.
+
+While the VPN is active, the manager also exposes a no-auth SOCKS endpoint on
+localhost only (`127.0.0.1:18443`). EWM automatically detects this endpoint and
+uses it only for its GitHub update downloads. Other applications and ordinary
+browser traffic remain on the VPN.
 
 ## Update channel
 
