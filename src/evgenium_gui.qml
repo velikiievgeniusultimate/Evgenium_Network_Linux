@@ -1,8 +1,9 @@
 import QtQuick
+import QtQml
 import QtQuick.Controls as C
 import QtQuick.Layouts
 
-ApplicationWindow {
+C.ApplicationWindow {
     id: root
     width: 1040
     height: 700

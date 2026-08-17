@@ -3,7 +3,7 @@
   "channel": "testing",
   "version": "0.2.11",
   "url": "https://raw.githubusercontent.com/velikiievgeniusultimate/Evgenium_Network_Linux/main/dist/vpn-manager-0.2.11.tar.gz",
-  "sha256": "7a47ccb0c5a563431d9a3778eeae085d9b6145c01353d8d6a73b64de41cfb4be",
+  "sha256": "2c2d5ca237c68180482d30a22248cada1ad0b665808b5f99b1761c7f8d633b01",
   "min_updater_version": "0.2.0",
   "xray_version": "26.6.27"
 }
