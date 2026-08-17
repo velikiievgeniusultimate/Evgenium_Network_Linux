@@ -17,6 +17,14 @@ jobs:
           python-version: '3.12'
       - name: Prepare source and release
         run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/prepare_widget_0_2_7.py')
+          s = p.read_text()
+          s = s.replace("widget_constants = r'''", 'widget_constants = r"""', 1)
+          s = s.replace("'''\n'''\n\ns = replace_once(\n    s,\n    'DIRECT_SOCKS_PORT = 18443\\n',", "'''\n\"\"\"\n\ns = replace_once(\n    s,\n    'DIRECT_SOCKS_PORT = 18443\\n',", 1)
+          p.write_text(s)
+          PY
           python scripts/prepare_widget_0_2_7.py
           python -m py_compile src/vpnctl.py src/vpnadmin.py scripts/build_release.py
           python src/vpnctl.py --self-test
