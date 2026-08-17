@@ -92,4 +92,5 @@ jobs:
           git add src/evgenium_gui.qml src/vpnctl.py dist update
           git diff --cached --check
           git commit -m 'Fix standalone Qt Quick imports and rebuild 0.2.11'
+          git pull --rebase origin feature/standalone-gui-0.2.11
           git push origin HEAD:feature/standalone-gui-0.2.11
