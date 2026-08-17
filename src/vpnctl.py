@@ -26,7 +26,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.7"
+MANAGER_VERSION = "0.2.8"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -58,7 +58,7 @@ PLASMOID_METADATA = r'''{
     "Icon": "network-vpn",
     "Id": "com.evgenium.network",
     "Name": "Evgenium Network",
-    "Version": "1.0"
+    "Version": "1.1"
   },
   "X-Plasma-API-Minimum-Version": "6.0",
   "KPackageStructure": "Plasma/Applet"
@@ -88,11 +88,11 @@ PlasmoidItem {
     readonly property string toggleCommand: "/usr/local/bin/vpn toggle"
 
     Plasmoid.icon: "network-vpn"
-    Plasmoid.toolTipMainText: "Evgenium Network"
-    Plasmoid.toolTipSubText: busy
+    toolTipMainText: "Evgenium Network"
+    toolTipSubText: busy
         ? "Переключаю VPN…"
         : (vpnActive ? "VPN включён" : "VPN выключен")
-    Plasmoid.preferredRepresentation: Plasmoid.fullRepresentation
+    preferredRepresentation: fullRepresentation
 
     function requestStatus() {
         statusSource.connectSource(statusCommand)
@@ -156,7 +156,7 @@ PlasmoidItem {
         }
     }
 
-    Plasmoid.fullRepresentation: Item {
+    fullRepresentation: Item {
         Layout.minimumWidth: Kirigami.Units.gridUnit * 14
         Layout.preferredWidth: Kirigami.Units.gridUnit * 15
         Layout.minimumHeight: root.settingsVisible
