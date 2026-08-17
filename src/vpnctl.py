@@ -26,7 +26,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.9"
+MANAGER_VERSION = "0.2.10"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -58,7 +58,7 @@ PLASMOID_METADATA = r'''{
     "Icon": "network-vpn",
     "Id": "com.evgenium.network",
     "Name": "Evgenium Network",
-    "Version": "1.2"
+    "Version": "1.3"
   },
   "X-Plasma-API-Minimum-Version": "6.0",
   "KPackageStructure": "Plasma/Applet"
@@ -82,6 +82,7 @@ PlasmoidItem {
     readonly property string toggleCommand: "/usr/local/bin/vpn toggle"
 
     Plasmoid.icon: "network-vpn"
+    Plasmoid.hasConfigurationInterface: true
     toolTipMainText: "E-VPN"
     toolTipSubText: errorText.length > 0
         ? errorText
@@ -104,9 +105,16 @@ PlasmoidItem {
     }
 
     function openSettings() {
-        const configureAction = plasmoid.action("configure")
-        if (configureAction)
+        let configureAction = null
+        if (plasmoid && plasmoid.internalAction)
+            configureAction = plasmoid.internalAction("configure")
+        if (!configureAction && plasmoid && plasmoid.action)
+            configureAction = plasmoid.action("configure")
+        if (configureAction) {
             configureAction.trigger()
+            return
+        }
+        root.errorText = "Plasma не создала действие настроек"
     }
 
     Component.onCompleted: requestStatus()
@@ -3649,6 +3657,8 @@ def self_test() -> None:
         assert "/usr/local/bin/vpn toggle" in PLASMOID_MAIN_QML
         assert 'icon.name: "configure"' in PLASMOID_MAIN_QML
         assert 'text: "E-VPN"' in PLASMOID_MAIN_QML
+        assert 'Plasmoid.hasConfigurationInterface: true' in PLASMOID_MAIN_QML
+        assert 'plasmoid.internalAction("configure")' in PLASMOID_MAIN_QML
         assert 'plasmoid.action("configure")' in PLASMOID_MAIN_QML
         assert 'ConfigCategory' in PLASMOID_CONFIG_QML
         assert 'name: "Приложения"' in PLASMOID_CONFIG_QML

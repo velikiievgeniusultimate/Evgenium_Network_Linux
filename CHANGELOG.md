@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.10
+
+- fix the Plasma settings gear by explicitly enabling the configuration interface
+- trigger Plasma 6's shell-owned `configure` action through `Applet::internalAction()` with the older action API kept as a fallback
+- show a widget tooltip error if Plasma still fails to expose a configure action
+
 ## 0.2.9
 
 - shrink the Plasma desktop widget to `E-VPN` + one switch + one settings gear
