@@ -85,7 +85,9 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/vpnctl.py src/evgenium_gui.qml VERSION CHANGELOG.md README.md .github/workflows/test.yml dist update
+          # test.yml is intentionally left unstaged: GitHub App tokens cannot mutate workflows.
+          # The connector updates the permanent CI contract separately after this job succeeds.
+          git add src/vpnctl.py src/evgenium_gui.qml VERSION CHANGELOG.md README.md dist update
           git diff --cached --check
           git commit -m 'VPN Manager 0.2.13: Waydroid VPN switch'
           git push origin HEAD:feature/waydroid-toggle-0.2.13
