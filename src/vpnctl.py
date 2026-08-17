@@ -26,7 +26,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.10"
+MANAGER_VERSION = "0.2.11"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -58,7 +58,7 @@ PLASMOID_METADATA = r'''{
     "Icon": "network-vpn",
     "Id": "com.evgenium.network",
     "Name": "Evgenium Network",
-    "Version": "1.3"
+    "Version": "1.4"
   },
   "X-Plasma-API-Minimum-Version": "6.0",
   "KPackageStructure": "Plasma/Applet"
@@ -76,13 +76,14 @@ PlasmoidItem {
 
     property bool vpnActive: false
     property bool busy: false
+    property bool settingsBusy: false
     property string errorText: ""
 
     readonly property string statusCommand: "/usr/local/bin/vpn status --json"
     readonly property string toggleCommand: "/usr/local/bin/vpn toggle"
+    readonly property string settingsCommand: "/usr/local/bin/evgenium-network --detach"
 
     Plasmoid.icon: "network-vpn"
-    Plasmoid.hasConfigurationInterface: true
     toolTipMainText: "E-VPN"
     toolTipSubText: errorText.length > 0
         ? errorText
@@ -105,16 +106,11 @@ PlasmoidItem {
     }
 
     function openSettings() {
-        let configureAction = null
-        if (plasmoid && plasmoid.internalAction)
-            configureAction = plasmoid.internalAction("configure")
-        if (!configureAction && plasmoid && plasmoid.action)
-            configureAction = plasmoid.action("configure")
-        if (configureAction) {
-            configureAction.trigger()
+        if (settingsBusy)
             return
-        }
-        root.errorText = "Plasma не создала действие настроек"
+        settingsBusy = true
+        errorText = ""
+        settingsSource.connectSource(settingsCommand)
     }
 
     Component.onCompleted: requestStatus()
@@ -159,6 +155,23 @@ PlasmoidItem {
             root.busy = false
             actionSource.disconnectSource(sourceName)
             root.requestStatus()
+        }
+    }
+
+    Plasma5Support.DataSource {
+        id: settingsSource
+        engine: "executable"
+
+        onNewData: function(sourceName, data) {
+            if (sourceName !== root.settingsCommand)
+                return
+            const exitCode = Number(data["exit code"] === undefined ? 0 : data["exit code"])
+            const stderrText = String(data["stderr"] || "").trim()
+            const stdoutText = String(data["stdout"] || "").trim()
+            if (exitCode !== 0)
+                root.errorText = stderrText.length > 0 ? stderrText : (stdoutText.length > 0 ? stdoutText : "Не удалось открыть Evgenium Network")
+            root.settingsBusy = false
+            settingsSource.disconnectSource(sourceName)
         }
     }
 
@@ -220,734 +233,712 @@ PlasmoidItem {
                 Layout.preferredHeight: 30
                 icon.name: "configure"
                 text: ""
+                enabled: !root.settingsBusy
                 onClicked: root.openSettings()
             }
         }
     }
 }
 '''
-PLASMOID_BACKEND_QML = r'''import QtQuick
-import org.kde.plasma.plasma5support as Plasma5Support
-
-Item {
-    id: backend
-    visible: false
-    width: 0
-    height: 0
-
-    property bool busy: false
-    property string lastError: ""
-
-    signal stateReady(var state)
-    signal runningReady(var applications)
-    signal actionFinished(bool ok, string message)
-
-    readonly property string stateCommand: "/usr/local/bin/vpn ui state"
-    readonly property string runningCommand: "/usr/local/bin/vpn ui running"
-
-    function refreshState() {
-        stateSource.connectSource(stateCommand)
-    }
-
-    function refreshRunning() {
-        runningSource.connectSource(runningCommand)
-    }
-
-    function encodePayload(payload) {
-        return Qt.btoa(encodeURIComponent(JSON.stringify(payload)))
-    }
-
-    function runAction(payload) {
-        if (busy)
-            return
-        busy = true
-        lastError = ""
-        const command = "/usr/local/bin/vpn ui action " + encodePayload(payload)
-        actionSource.connectSource(command)
-    }
-
-    Plasma5Support.DataSource {
-        id: stateSource
-        engine: "executable"
-
-        onNewData: function(sourceName, data) {
-            if (sourceName !== backend.stateCommand)
-                return
-            const output = String(data["stdout"] || "").trim()
-            const exitCode = Number(data["exit code"] === undefined ? 0 : data["exit code"])
-            if (exitCode === 0 && output.length > 0) {
-                try {
-                    backend.stateReady(JSON.parse(output))
-                } catch (error) {
-                    backend.lastError = "Не удалось прочитать настройки VPN"
-                }
-            } else {
-                backend.lastError = String(data["stderr"] || output || "Ошибка чтения настроек")
-            }
-            stateSource.disconnectSource(sourceName)
-        }
-    }
-
-    Plasma5Support.DataSource {
-        id: runningSource
-        engine: "executable"
-
-        onNewData: function(sourceName, data) {
-            if (sourceName !== backend.runningCommand)
-                return
-            const output = String(data["stdout"] || "").trim()
-            const exitCode = Number(data["exit code"] === undefined ? 0 : data["exit code"])
-            if (exitCode === 0 && output.length > 0) {
-                try {
-                    const parsed = JSON.parse(output)
-                    backend.runningReady(parsed.applications || [])
-                } catch (error) {
-                    backend.lastError = "Не удалось прочитать список запущенных приложений"
-                }
-            } else {
-                backend.lastError = String(data["stderr"] || output || "Ошибка чтения процессов")
-            }
-            runningSource.disconnectSource(sourceName)
-        }
-    }
-
-    Plasma5Support.DataSource {
-        id: actionSource
-        engine: "executable"
-
-        onNewData: function(sourceName, data) {
-            const exitCode = Number(data["exit code"] === undefined ? 0 : data["exit code"])
-            const stderrText = String(data["stderr"] || "").trim()
-            const stdoutText = String(data["stdout"] || "").trim()
-            backend.busy = false
-            actionSource.disconnectSource(sourceName)
-            if (exitCode !== 0) {
-                backend.lastError = stderrText.length > 0 ? stderrText : stdoutText
-                backend.actionFinished(false, backend.lastError)
-            } else {
-                backend.lastError = ""
-                backend.actionFinished(true, "")
-                backend.refreshState()
-                backend.refreshRunning()
-            }
-        }
-    }
-}
+GUI_DESKTOP_ENTRY = r'''[Desktop Entry]
+Type=Application
+Name=Evgenium Network
+Comment=Evgenium VPN control and exclusions
+Exec=/usr/local/bin/evgenium-network
+Icon=network-vpn
+Terminal=false
+Categories=Network;Settings;
+StartupNotify=true
 '''
-PLASMOID_CONFIG_QML = r'''import QtQuick
-import org.kde.plasma.configuration
-
-ConfigModel {
-    ConfigCategory {
-        name: "Приложения"
-        icon: "applications-system"
-        source: "configApplications.qml"
-    }
-    ConfigCategory {
-        name: "Сайты и IP"
-        icon: "network-server"
-        source: "configNetwork.qml"
-    }
-    ConfigCategory {
-        name: "Порты"
-        icon: "network-connect"
-        source: "configPorts.qml"
-    }
-    ConfigCategory {
-        name: "Состояние"
-        icon: "dialog-information"
-        source: "configGeneral.qml"
-    }
-}
-'''
-PLASMOID_CONFIG_XML = r'''<?xml version="1.0" encoding="UTF-8"?>
-<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
-      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0 http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
-    <kcfgfile name=""/>
-    <group name="General">
-        <entry name="uiMarker" type="Bool">
-            <default>false</default>
-        </entry>
-    </group>
-</kcfg>
-'''
-PLASMOID_CONFIG_APPS_QML = r'''import QtQuick
-import QtQuick.Controls as QQC2
-import QtQuick.Layouts
-import org.kde.kirigami as Kirigami
-
-Item {
-    id: page
-    implicitWidth: Kirigami.Units.gridUnit * 38
-    implicitHeight: Kirigami.Units.gridUnit * 30
-
-    property var excludedApps: []
-    property var runningApps: []
-    property string messageText: ""
-
-    function filteredRunningApps() {
-        const needle = searchField.text.trim().toLowerCase()
-        if (needle.length === 0)
-            return runningApps
-        return runningApps.filter(function(app) {
-            return String(app.name || "").toLowerCase().includes(needle)
-                || String(app.exe || "").toLowerCase().includes(needle)
-        })
-    }
-
-    function addManual() {
-        const value = manualField.text.trim()
-        if (value.length === 0)
-            return
-        backend.runAction({action: "app_add", target: value})
-    }
-
-    Component.onCompleted: {
-        backend.refreshState()
-        backend.refreshRunning()
-    }
-
-    VpnBackend {
-        id: backend
-        onStateReady: function(state) {
-            page.excludedApps = state.applications || []
-        }
-        onRunningReady: function(applications) {
-            page.runningApps = applications || []
-        }
-        onActionFinished: function(ok, message) {
-            page.messageText = ok ? "" : message
-            if (ok)
-                manualField.clear()
-        }
-    }
-
-    ColumnLayout {
-        anchors.fill: parent
-        spacing: Kirigami.Units.smallSpacing * 2
-
-        QQC2.Label {
-            text: "Приложения-исключения"
-            font.bold: true
-        }
-
-        QQC2.Label {
-            Layout.fillWidth: true
-            text: "Эти процессы работают напрямую, минуя VPN. Изменения применяются сразу."
-            wrapMode: Text.WordWrap
-            opacity: 0.72
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-
-            QQC2.TextField {
-                id: manualField
-                Layout.fillWidth: true
-                placeholderText: "Имя процесса, /полный/путь или /папка/"
-                enabled: !backend.busy
-                onAccepted: page.addManual()
-            }
-
-            QQC2.Button {
-                text: "Добавить"
-                enabled: !backend.busy && manualField.text.trim().length > 0
-                onClicked: page.addManual()
-            }
-        }
-
-        QQC2.Frame {
-            Layout.fillWidth: true
-            Layout.preferredHeight: Kirigami.Units.gridUnit * 7
-
-            ListView {
-                anchors.fill: parent
-                clip: true
-                model: page.excludedApps
-                spacing: Kirigami.Units.smallSpacing
-
-                delegate: RowLayout {
-                    required property var modelData
-                    width: ListView.view.width
-
-                    QQC2.Label {
-                        Layout.fillWidth: true
-                        text: String(modelData)
-                        elide: Text.ElideMiddle
-                    }
-
-                    QQC2.ToolButton {
-                        icon.name: "list-remove"
-                        text: "Удалить"
-                        enabled: !backend.busy
-                        onClicked: backend.runAction({action: "app_remove", target: String(modelData)})
-                    }
-                }
-
-                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-
-            QQC2.Label {
-                text: "Запущенные приложения"
-                font.bold: true
-                Layout.fillWidth: true
-            }
-
-            QQC2.Button {
-                text: "Обновить"
-                icon.name: "view-refresh"
-                enabled: !backend.busy
-                onClicked: backend.refreshRunning()
-            }
-        }
-
-        QQC2.TextField {
-            id: searchField
-            Layout.fillWidth: true
-            placeholderText: "Найти запущенное приложение…"
-        }
-
-        QQC2.Frame {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-
-            ListView {
-                anchors.fill: parent
-                clip: true
-                model: page.filteredRunningApps()
-                spacing: Kirigami.Units.smallSpacing
-
-                delegate: RowLayout {
-                    required property var modelData
-                    width: ListView.view.width
-                    spacing: Kirigami.Units.smallSpacing
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 0
-
-                        QQC2.Label {
-                            Layout.fillWidth: true
-                            text: String(modelData.name || "")
-                            font.bold: true
-                            elide: Text.ElideRight
-                        }
-
-                        QQC2.Label {
-                            Layout.fillWidth: true
-                            text: String(modelData.exe || "")
-                            opacity: 0.62
-                            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                            elide: Text.ElideMiddle
-                        }
-                    }
-
-                    QQC2.Label {
-                        visible: Boolean(modelData.excluded)
-                        text: "Исключено"
-                        opacity: 0.7
-                    }
-
-                    QQC2.Button {
-                        visible: !Boolean(modelData.excluded)
-                        text: "Исключить"
-                        enabled: !backend.busy
-                        onClicked: backend.runAction({
-                            action: "app_add",
-                            target: String(modelData.name || "")
-                        })
-                    }
-                }
-
-                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
-            }
-        }
-
-        QQC2.Label {
-            visible: backend.lastError.length > 0 || page.messageText.length > 0
-            Layout.fillWidth: true
-            text: page.messageText.length > 0 ? page.messageText : backend.lastError
-            color: Kirigami.Theme.negativeTextColor
-            wrapMode: Text.WordWrap
-        }
-    }
-}
-'''
-PLASMOID_CONFIG_NETWORK_QML = r'''import QtQuick
-import QtQuick.Controls as QQC2
-import QtQuick.Layouts
-import org.kde.kirigami as Kirigami
-
-Item {
-    id: page
-    implicitWidth: Kirigami.Units.gridUnit * 38
-    implicitHeight: Kirigami.Units.gridUnit * 30
-
-    property var domains: []
-    property var networks: []
-    property var snapshots: []
-
-    function addManual() {
-        const value = targetField.text.trim()
-        if (value.length === 0)
-            return
-        backend.runAction({action: "direct_add", target: value})
-    }
-
-    Component.onCompleted: backend.refreshState()
-
-    VpnBackend {
-        id: backend
-        onStateReady: function(state) {
-            page.domains = state.domains || []
-            page.networks = state.networks || []
-            page.snapshots = state.dns_snapshots || []
-        }
-        onActionFinished: function(ok, message) {
-            if (ok)
-                targetField.clear()
-        }
-    }
-
-    ColumnLayout {
-        anchors.fill: parent
-        spacing: Kirigami.Units.smallSpacing * 2
-
-        QQC2.Label {
-            text: "Сайты и IP без VPN"
-            font.bold: true
-        }
-
-        QQC2.Label {
-            Layout.fillWidth: true
-            text: "Добавь домен, IP или CIDR. Например: example.com, 203.0.113.10, 203.0.113.0/24."
-            wrapMode: Text.WordWrap
-            opacity: 0.72
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-
-            QQC2.TextField {
-                id: targetField
-                Layout.fillWidth: true
-                placeholderText: "example.com / IP / CIDR"
-                enabled: !backend.busy
-                onAccepted: page.addManual()
-            }
-
-            QQC2.Button {
-                text: "Добавить"
-                enabled: !backend.busy && targetField.text.trim().length > 0
-                onClicked: page.addManual()
-            }
-        }
-
-        QQC2.Label { text: "Домены"; font.bold: true }
-
-        QQC2.Frame {
-            Layout.fillWidth: true
-            Layout.preferredHeight: Kirigami.Units.gridUnit * 6
-            ListView {
-                anchors.fill: parent
-                clip: true
-                model: page.domains
-                delegate: RowLayout {
-                    required property var modelData
-                    width: ListView.view.width
-                    QQC2.Label {
-                        Layout.fillWidth: true
-                        text: String(modelData)
-                        elide: Text.ElideRight
-                    }
-                    QQC2.ToolButton {
-                        icon.name: "list-remove"
-                        text: "Удалить"
-                        enabled: !backend.busy
-                        onClicked: backend.runAction({action: "direct_remove", target: String(modelData)})
-                    }
-                }
-                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
-            }
-        }
-
-        QQC2.Label { text: "IP и сети"; font.bold: true }
-
-        QQC2.Frame {
-            Layout.fillWidth: true
-            Layout.preferredHeight: Kirigami.Units.gridUnit * 6
-            ListView {
-                anchors.fill: parent
-                clip: true
-                model: page.networks
-                delegate: RowLayout {
-                    required property var modelData
-                    width: ListView.view.width
-                    QQC2.Label {
-                        Layout.fillWidth: true
-                        text: String(modelData)
-                        elide: Text.ElideRight
-                    }
-                    QQC2.ToolButton {
-                        icon.name: "list-remove"
-                        text: "Удалить"
-                        enabled: !backend.busy
-                        onClicked: backend.runAction({action: "direct_remove", target: String(modelData)})
-                    }
-                }
-                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
-            }
-        }
-
-        QQC2.Label {
-            text: "DNS snapshots"
-            font.bold: true
-            visible: page.snapshots.length > 0
-        }
-
-        QQC2.Frame {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            visible: page.snapshots.length > 0
-            ListView {
-                anchors.fill: parent
-                clip: true
-                model: page.snapshots
-                delegate: ColumnLayout {
-                    required property var modelData
-                    width: ListView.view.width
-                    QQC2.Label {
-                        text: String(modelData.domain || "")
-                        font.bold: true
-                    }
-                    QQC2.Label {
-                        Layout.fillWidth: true
-                        text: (modelData.networks || []).join(", ")
-                        wrapMode: Text.WrapAnywhere
-                        opacity: 0.65
-                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                    }
-                }
-                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
-            }
-        }
-
-        QQC2.Label {
-            visible: backend.lastError.length > 0
-            Layout.fillWidth: true
-            text: backend.lastError
-            color: Kirigami.Theme.negativeTextColor
-            wrapMode: Text.WordWrap
-        }
-    }
-}
-'''
-PLASMOID_CONFIG_PORTS_QML = r'''import QtQuick
-import QtQuick.Controls as QQC2
-import QtQuick.Layouts
-import org.kde.kirigami as Kirigami
-
-Item {
-    id: page
-    implicitWidth: Kirigami.Units.gridUnit * 38
-    implicitHeight: Kirigami.Units.gridUnit * 24
-
-    property var ports: []
-
-    function addPort() {
-        const value = Number(portField.text)
-        if (isNaN(value) || value !== Math.floor(value) || value < 1 || value > 65535)
-            return
-        backend.runAction({
-            action: "port_add",
-            port: value,
-            proto: protoBox.currentText.toLowerCase()
-        })
-    }
-
-    Component.onCompleted: backend.refreshState()
-
-    VpnBackend {
-        id: backend
-        onStateReady: function(state) {
-            page.ports = state.server_ports || []
-        }
-        onActionFinished: function(ok, message) {
-            if (ok)
-                portField.clear()
-        }
-    }
-
-    ColumnLayout {
-        anchors.fill: parent
-        spacing: Kirigami.Units.smallSpacing * 2
-
-        QQC2.Label {
-            text: "Входящие серверные порты"
-            font.bold: true
-        }
-
-        QQC2.Label {
-            Layout.fillWidth: true
-            text: "Ответы на входящие соединения к этим портам отправляются напрямую через физическую сеть, а остальной трафик остаётся в VPN."
-            wrapMode: Text.WordWrap
-            opacity: 0.72
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-
-            QQC2.TextField {
-                id: portField
-                Layout.fillWidth: true
-                placeholderText: "25565"
-                inputMethodHints: Qt.ImhDigitsOnly
-                enabled: !backend.busy
-                onAccepted: page.addPort()
-            }
-
-            QQC2.ComboBox {
-                id: protoBox
-                model: ["TCP", "UDP", "BOTH"]
-            }
-
-            QQC2.Button {
-                text: "Добавить"
-                enabled: !backend.busy && portField.text.length > 0
-                onClicked: page.addPort()
-            }
-        }
-
-        QQC2.Frame {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-
-            ListView {
-                anchors.fill: parent
-                clip: true
-                model: page.ports
-                spacing: Kirigami.Units.smallSpacing
-
-                delegate: RowLayout {
-                    required property var modelData
-                    width: ListView.view.width
-
-                    QQC2.Label {
-                        Layout.fillWidth: true
-                        text: String(modelData.proto || "").toUpperCase() + "  " + String(modelData.port || "")
-                    }
-
-                    QQC2.ToolButton {
-                        icon.name: "list-remove"
-                        text: "Удалить"
-                        enabled: !backend.busy
-                        onClicked: backend.runAction({
-                            action: "port_remove",
-                            port: Number(modelData.port),
-                            proto: String(modelData.proto)
-                        })
-                    }
-                }
-
-                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
-            }
-        }
-
-        QQC2.Label {
-            visible: backend.lastError.length > 0
-            Layout.fillWidth: true
-            text: backend.lastError
-            color: Kirigami.Theme.negativeTextColor
-            wrapMode: Text.WordWrap
-        }
-    }
-}
-'''
-PLASMOID_CONFIG_GENERAL_QML = r'''import QtQuick
-import QtQuick.Controls as QQC2
-import QtQuick.Layouts
-import org.kde.kirigami as Kirigami
-
-Item {
-    id: page
-    implicitWidth: Kirigami.Units.gridUnit * 34
-    implicitHeight: Kirigami.Units.gridUnit * 20
-
-    property var state: ({})
-
-    Component.onCompleted: backend.refreshState()
-
-    VpnBackend {
-        id: backend
-        onStateReady: function(newState) {
-            page.state = newState
-        }
-    }
-
-    ColumnLayout {
-        anchors.fill: parent
-        spacing: Kirigami.Units.smallSpacing * 2
-
-        RowLayout {
-            Layout.fillWidth: true
-            QQC2.Label {
-                text: "Состояние E-VPN"
-                font.bold: true
-                Layout.fillWidth: true
-            }
-            QQC2.Button {
-                text: "Обновить"
-                icon.name: "view-refresh"
-                onClicked: backend.refreshState()
-            }
-        }
-
-        Kirigami.FormLayout {
-            Layout.fillWidth: true
-
-            QQC2.Label {
-                Kirigami.FormData.label: "VPN:"
-                text: Boolean(page.state.active) ? "Включён" : "Выключен"
-            }
-
-            QQC2.Label {
-                Kirigami.FormData.label: "Профиль:"
-                text: String(page.state.profile || page.state.last_profile || "—")
-            }
-
-            QQC2.Label {
-                Kirigami.FormData.label: "IPv6:"
-                text: String(page.state.ipv6_mode || "unknown")
-            }
-
-            QQC2.Label {
-                Kirigami.FormData.label: "Kill switch:"
-                text: Boolean(page.state.kill_switch) ? "Активен" : "Выключен"
-            }
-
-            QQC2.Label {
-                Kirigami.FormData.label: "Manager:"
-                text: String(page.state.manager || "")
-            }
-        }
-
-        Item { Layout.fillHeight: true }
-
-        QQC2.Label {
-            visible: backend.lastError.length > 0
-            Layout.fillWidth: true
-            text: backend.lastError
-            color: Kirigami.Theme.negativeTextColor
-            wrapMode: Text.WordWrap
-        }
-    }
-}
-'''
+STANDALONE_GUI_PY_B64 = (
+    'IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwpmcm9tIF9fZnV0dXJlX18gaW1wb3J0IGFubm90YXRpb25zCgppbXBvcnQgYmFzZTY0Cmlt'
+    'cG9ydCBodHRwLnNlcnZlcgppbXBvcnQganNvbgppbXBvcnQgb3MKaW1wb3J0IHBhdGhsaWIKaW1wb3J0IHNlY3JldHMKaW1wb3J0'
+    'IHNodXRpbAppbXBvcnQgc3VicHJvY2VzcwppbXBvcnQgc3lzCmltcG9ydCB0aHJlYWRpbmcKaW1wb3J0IHVybGxpYi5wYXJzZQoK'
+    'QVBQX05BTUUgPSAiRXZnZW5pdW0gTmV0d29yayIKVlBOID0gIi91c3IvbG9jYWwvYmluL3ZwbiIKSEVSRSA9IHBhdGhsaWIuUGF0'
+    'aChfX2ZpbGVfXykucmVzb2x2ZSgpLnBhcmVudApRTUxfRklMRSA9IEhFUkUgLyAiZXZnZW5pdW1fZ3VpLnFtbCIKTUFYX0JPRFkg'
+    'PSA2NCAqIDEwMjQKCgpkZWYgZmluZF9xbWxfcnVudGltZSgpIC0+IHN0ciB8IE5vbmU6CiAgICBmb3IgY2FuZGlkYXRlIGluICgi'
+    'L3Vzci9iaW4vcW1sNiIsICIvdXNyL2xpYi9xdDYvYmluL3FtbCIsICIvdXNyL2Jpbi9xbWwiKToKICAgICAgICBpZiBwYXRobGli'
+    'LlBhdGgoY2FuZGlkYXRlKS5pc19maWxlKCkgYW5kIG9zLmFjY2VzcyhjYW5kaWRhdGUsIG9zLlhfT0spOgogICAgICAgICAgICBy'
+    'ZXR1cm4gY2FuZGlkYXRlCiAgICByZXR1cm4gc2h1dGlsLndoaWNoKCJxbWw2Iikgb3Igc2h1dGlsLndoaWNoKCJxbWwiKQoKCmRl'
+    'ZiBydW5fdnBuKGFyZ3M6IGxpc3Rbc3RyXSwgdGltZW91dDogaW50ID0gMTIwKSAtPiBzdHI6CiAgICBjcCA9IHN1YnByb2Nlc3Mu'
+    'cnVuKAogICAgICAgIFtWUE4sICphcmdzXSwKICAgICAgICB0ZXh0PVRydWUsCiAgICAgICAgc3Rkb3V0PXN1YnByb2Nlc3MuUElQ'
+    'RSwKICAgICAgICBzdGRlcnI9c3VicHJvY2Vzcy5QSVBFLAogICAgICAgIHRpbWVvdXQ9dGltZW91dCwKICAgICAgICBjaGVjaz1G'
+    'YWxzZSwKICAgICkKICAgIGlmIGNwLnJldHVybmNvZGUgIT0gMDoKICAgICAgICBkZXRhaWwgPSAoY3Auc3RkZXJyIG9yIGNwLnN0'
+    'ZG91dCBvciBmImV4aXQge2NwLnJldHVybmNvZGV9Iikuc3RyaXAoKQogICAgICAgIHJhaXNlIFJ1bnRpbWVFcnJvcihkZXRhaWwp'
+    'CiAgICByZXR1cm4gKGNwLnN0ZG91dCBvciAiIikuc3RyaXAoKQoKCmRlZiBydW5fdnBuX2pzb24oYXJnczogbGlzdFtzdHJdKSAt'
+    'PiBkaWN0OgogICAgcmF3ID0gcnVuX3ZwbihhcmdzKQogICAgdHJ5OgogICAgICAgIGRhdGEgPSBqc29uLmxvYWRzKHJhdykKICAg'
+    'IGV4Y2VwdCBqc29uLkpTT05EZWNvZGVFcnJvciBhcyBleGM6CiAgICAgICAgcmFpc2UgUnVudGltZUVycm9yKGYiVlBOIE1hbmFn'
+    'ZXIg0LLQtdGA0L3Rg9C7INC90LXQutC+0YDRgNC10LrRgtC90YvQuSBKU09OOiB7ZXhjfSIpIGZyb20gZXhjCiAgICBpZiBub3Qg'
+    'aXNpbnN0YW5jZShkYXRhLCBkaWN0KToKICAgICAgICByYWlzZSBSdW50aW1lRXJyb3IoIlZQTiBNYW5hZ2VyINCy0LXRgNC90YPQ'
+    'uyDQvdC10L7QttC40LTQsNC90L3Ri9C5INC+0YLQstC10YIuIikKICAgIHJldHVybiBkYXRhCgoKZGVmIGVuY29kZV91aV9wYXls'
+    'b2FkKHBheWxvYWQ6IGRpY3QpIC0+IHN0cjoKICAgIHJhdyA9IGpzb24uZHVtcHMocGF5bG9hZCwgZW5zdXJlX2FzY2lpPUZhbHNl'
+    'LCBzZXBhcmF0b3JzPSgiLCIsICI6IikpCiAgICBxdW90ZWQgPSB1cmxsaWIucGFyc2UucXVvdGUocmF3LCBzYWZlPSIiKQogICAg'
+    'cmV0dXJuIGJhc2U2NC5iNjRlbmNvZGUocXVvdGVkLmVuY29kZSgiYXNjaWkiKSkuZGVjb2RlKCJhc2NpaSIpCgoKY2xhc3MgQXBp'
+    'U2VydmVyKGh0dHAuc2VydmVyLlRocmVhZGluZ0hUVFBTZXJ2ZXIpOgogICAgZGFlbW9uX3RocmVhZHMgPSBUcnVlCiAgICBhbGxv'
+    'd19yZXVzZV9hZGRyZXNzID0gRmFsc2UKCiAgICBkZWYgX19pbml0X18oc2VsZiwgYWRkcmVzcywgaGFuZGxlciwgdG9rZW46IHN0'
+    'cik6CiAgICAgICAgc3VwZXIoKS5fX2luaXRfXyhhZGRyZXNzLCBoYW5kbGVyKQogICAgICAgIHNlbGYudG9rZW4gPSB0b2tlbgoK'
+    'CmNsYXNzIEhhbmRsZXIoaHR0cC5zZXJ2ZXIuQmFzZUhUVFBSZXF1ZXN0SGFuZGxlcik6CiAgICBzZXJ2ZXI6IEFwaVNlcnZlcgoK'
+    'ICAgIGRlZiBsb2dfbWVzc2FnZShzZWxmLCBfZm9ybWF0OiBzdHIsICpfYXJncykgLT4gTm9uZToKICAgICAgICByZXR1cm4KCiAg'
+    'ICBkZWYgX2hlYWRlcnMoc2VsZiwgc3RhdHVzOiBpbnQgPSAyMDAsIGNvbnRlbnRfdHlwZTogc3RyID0gImFwcGxpY2F0aW9uL2pz'
+    'b247IGNoYXJzZXQ9dXRmLTgiKSAtPiBOb25lOgogICAgICAgIHNlbGYuc2VuZF9yZXNwb25zZShzdGF0dXMpCiAgICAgICAgc2Vs'
+    'Zi5zZW5kX2hlYWRlcigiQ29udGVudC1UeXBlIiwgY29udGVudF90eXBlKQogICAgICAgIHNlbGYuc2VuZF9oZWFkZXIoIkNhY2hl'
+    'LUNvbnRyb2wiLCAibm8tc3RvcmUiKQogICAgICAgIHNlbGYuc2VuZF9oZWFkZXIoIkFjY2Vzcy1Db250cm9sLUFsbG93LU9yaWdp'
+    'biIsICIqIikKICAgICAgICBzZWxmLnNlbmRfaGVhZGVyKCJBY2Nlc3MtQ29udHJvbC1BbGxvdy1IZWFkZXJzIiwgIkNvbnRlbnQt'
+    'VHlwZSwgWC1Fdmdlbml1bS1Ub2tlbiIpCiAgICAgICAgc2VsZi5zZW5kX2hlYWRlcigiQWNjZXNzLUNvbnRyb2wtQWxsb3ctTWV0'
+    'aG9kcyIsICJHRVQsIFBPU1QsIE9QVElPTlMiKQogICAgICAgIHNlbGYuZW5kX2hlYWRlcnMoKQoKICAgIGRlZiBfanNvbihzZWxm'
+    'LCBwYXlsb2FkOiBkaWN0LCBzdGF0dXM6IGludCA9IDIwMCkgLT4gTm9uZToKICAgICAgICBkYXRhID0ganNvbi5kdW1wcyhwYXls'
+    'b2FkLCBlbnN1cmVfYXNjaWk9RmFsc2UsIHNlcGFyYXRvcnM9KCIsIiwgIjoiKSkuZW5jb2RlKCJ1dGYtOCIpCiAgICAgICAgc2Vs'
+    'Zi5zZW5kX3Jlc3BvbnNlKHN0YXR1cykKICAgICAgICBzZWxmLnNlbmRfaGVhZGVyKCJDb250ZW50LVR5cGUiLCAiYXBwbGljYXRp'
+    'b24vanNvbjsgY2hhcnNldD11dGYtOCIpCiAgICAgICAgc2VsZi5zZW5kX2hlYWRlcigiQ29udGVudC1MZW5ndGgiLCBzdHIobGVu'
+    'KGRhdGEpKSkKICAgICAgICBzZWxmLnNlbmRfaGVhZGVyKCJDYWNoZS1Db250cm9sIiwgIm5vLXN0b3JlIikKICAgICAgICBzZWxm'
+    'LnNlbmRfaGVhZGVyKCJBY2Nlc3MtQ29udHJvbC1BbGxvdy1PcmlnaW4iLCAiKiIpCiAgICAgICAgc2VsZi5zZW5kX2hlYWRlcigi'
+    'QWNjZXNzLUNvbnRyb2wtQWxsb3ctSGVhZGVycyIsICJDb250ZW50LVR5cGUsIFgtRXZnZW5pdW0tVG9rZW4iKQogICAgICAgIHNl'
+    'bGYuc2VuZF9oZWFkZXIoIkFjY2Vzcy1Db250cm9sLUFsbG93LU1ldGhvZHMiLCAiR0VULCBQT1NULCBPUFRJT05TIikKICAgICAg'
+    'ICBzZWxmLmVuZF9oZWFkZXJzKCkKICAgICAgICBzZWxmLndmaWxlLndyaXRlKGRhdGEpCgogICAgZGVmIF9hdXRob3JpemVkKHNl'
+    'bGYpIC0+IGJvb2w6CiAgICAgICAgcmV0dXJuIHNlY3JldHMuY29tcGFyZV9kaWdlc3QoCiAgICAgICAgICAgIHNlbGYuaGVhZGVy'
+    'cy5nZXQoIlgtRXZnZW5pdW0tVG9rZW4iLCAiIiksCiAgICAgICAgICAgIHNlbGYuc2VydmVyLnRva2VuLAogICAgICAgICkKCiAg'
+    'ICBkZWYgX3JlcXVpcmVfYXV0aChzZWxmKSAtPiBib29sOgogICAgICAgIGlmIHNlbGYuX2F1dGhvcml6ZWQoKToKICAgICAgICAg'
+    'ICAgcmV0dXJuIFRydWUKICAgICAgICBzZWxmLl9qc29uKHsib2siOiBGYWxzZSwgImVycm9yIjogInVuYXV0aG9yaXplZCJ9LCA0'
+    'MDMpCiAgICAgICAgcmV0dXJuIEZhbHNlCgogICAgZGVmIF9yZWFkX2pzb24oc2VsZikgLT4gZGljdDoKICAgICAgICB0cnk6CiAg'
+    'ICAgICAgICAgIGxlbmd0aCA9IGludChzZWxmLmhlYWRlcnMuZ2V0KCJDb250ZW50LUxlbmd0aCIsICIwIikpCiAgICAgICAgZXhj'
+    'ZXB0IFZhbHVlRXJyb3IgYXMgZXhjOgogICAgICAgICAgICByYWlzZSBSdW50aW1lRXJyb3IoItCd0LXQutC+0YDRgNC10LrRgtC9'
+    '0YvQuSBDb250ZW50LUxlbmd0aC4iKSBmcm9tIGV4YwogICAgICAgIGlmIGxlbmd0aCA8IDAgb3IgbGVuZ3RoID4gTUFYX0JPRFk6'
+    'CiAgICAgICAgICAgIHJhaXNlIFJ1bnRpbWVFcnJvcigi0KHQu9C40YjQutC+0Lwg0LHQvtC70YzRiNC+0Lkg0LfQsNC/0YDQvtGB'
+    'LiIpCiAgICAgICAgcmF3ID0gc2VsZi5yZmlsZS5yZWFkKGxlbmd0aCkKICAgICAgICB0cnk6CiAgICAgICAgICAgIHBheWxvYWQg'
+    'PSBqc29uLmxvYWRzKHJhdy5kZWNvZGUoInV0Zi04IikgaWYgcmF3IGVsc2UgInt9IikKICAgICAgICBleGNlcHQgKFVuaWNvZGVE'
+    'ZWNvZGVFcnJvciwganNvbi5KU09ORGVjb2RlRXJyb3IpIGFzIGV4YzoKICAgICAgICAgICAgcmFpc2UgUnVudGltZUVycm9yKGYi'
+    '0J3QtdC60L7RgNGA0LXQutGC0L3Ri9C5IEpTT046IHtleGN9IikgZnJvbSBleGMKICAgICAgICBpZiBub3QgaXNpbnN0YW5jZShw'
+    'YXlsb2FkLCBkaWN0KToKICAgICAgICAgICAgcmFpc2UgUnVudGltZUVycm9yKCLQntC20LjQtNCw0LvRgdGPIEpTT04gb2JqZWN0'
+    'LiIpCiAgICAgICAgcmV0dXJuIHBheWxvYWQKCiAgICBkZWYgZG9fT1BUSU9OUyhzZWxmKSAtPiBOb25lOgogICAgICAgIHNlbGYu'
+    'X2hlYWRlcnMoMjA0KQoKICAgIGRlZiBkb19HRVQoc2VsZikgLT4gTm9uZToKICAgICAgICBpZiBub3Qgc2VsZi5fcmVxdWlyZV9h'
+    'dXRoKCk6CiAgICAgICAgICAgIHJldHVybgogICAgICAgIHRyeToKICAgICAgICAgICAgaWYgc2VsZi5wYXRoID09ICIvYXBpL3N0'
+    'YXRlIjoKICAgICAgICAgICAgICAgIHNlbGYuX2pzb24oeyJvayI6IFRydWUsICJzdGF0ZSI6IHJ1bl92cG5fanNvbihbInVpIiwg'
+    'InN0YXRlIl0pfSkKICAgICAgICAgICAgICAgIHJldHVybgogICAgICAgICAgICBpZiBzZWxmLnBhdGggPT0gIi9hcGkvcnVubmlu'
+    'ZyI6CiAgICAgICAgICAgICAgICBzZWxmLl9qc29uKHsib2siOiBUcnVlLCAicnVubmluZyI6IHJ1bl92cG5fanNvbihbInVpIiwg'
+    'InJ1bm5pbmciXSl9KQogICAgICAgICAgICAgICAgcmV0dXJuCiAgICAgICAgICAgIGlmIHNlbGYucGF0aCA9PSAiL2FwaS9oZWFs'
+    'dGgiOgogICAgICAgICAgICAgICAgc2VsZi5fanNvbih7Im9rIjogVHJ1ZSwgImFwcCI6IEFQUF9OQU1FfSkKICAgICAgICAgICAg'
+    'ICAgIHJldHVybgogICAgICAgICAgICBzZWxmLl9qc29uKHsib2siOiBGYWxzZSwgImVycm9yIjogIm5vdCBmb3VuZCJ9LCA0MDQp'
+    'CiAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBleGM6CiAgICAgICAgICAgIHNlbGYuX2pzb24oeyJvayI6IEZhbHNlLCAiZXJy'
+    'b3IiOiBzdHIoZXhjKX0sIDUwMCkKCiAgICBkZWYgZG9fUE9TVChzZWxmKSAtPiBOb25lOgogICAgICAgIGlmIG5vdCBzZWxmLl9y'
+    'ZXF1aXJlX2F1dGgoKToKICAgICAgICAgICAgcmV0dXJuCiAgICAgICAgdHJ5OgogICAgICAgICAgICBwYXlsb2FkID0gc2VsZi5f'
+    'cmVhZF9qc29uKCkKICAgICAgICAgICAgaWYgc2VsZi5wYXRoID09ICIvYXBpL2FjdGlvbiI6CiAgICAgICAgICAgICAgICB0b2tl'
+    'biA9IGVuY29kZV91aV9wYXlsb2FkKHBheWxvYWQpCiAgICAgICAgICAgICAgICBvdXRwdXQgPSBydW5fdnBuKFsidWkiLCAiYWN0'
+    'aW9uIiwgdG9rZW5dKQogICAgICAgICAgICAgICAgc2VsZi5fanNvbih7Im9rIjogVHJ1ZSwgIm91dHB1dCI6IG91dHB1dH0pCiAg'
+    'ICAgICAgICAgICAgICByZXR1cm4KICAgICAgICAgICAgaWYgc2VsZi5wYXRoID09ICIvYXBpL3RvZ2dsZSI6CiAgICAgICAgICAg'
+    'ICAgICBvdXRwdXQgPSBydW5fdnBuKFsidG9nZ2xlIl0pCiAgICAgICAgICAgICAgICBzZWxmLl9qc29uKHsib2siOiBUcnVlLCAi'
+    'b3V0cHV0Ijogb3V0cHV0LCAic3RhdGUiOiBydW5fdnBuX2pzb24oWyJ1aSIsICJzdGF0ZSJdKX0pCiAgICAgICAgICAgICAgICBy'
+    'ZXR1cm4KICAgICAgICAgICAgc2VsZi5fanNvbih7Im9rIjogRmFsc2UsICJlcnJvciI6ICJub3QgZm91bmQifSwgNDA0KQogICAg'
+    'ICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZXhjOgogICAgICAgICAgICBzZWxmLl9qc29uKHsib2siOiBGYWxzZSwgImVycm9yIjog'
+    'c3RyKGV4Yyl9LCA1MDApCgoKZGVmIHN0YXRlX2xvZ19wYXRoKCkgLT4gcGF0aGxpYi5QYXRoOgogICAgcm9vdCA9IHBhdGhsaWIu'
+    'UGF0aChvcy5lbnZpcm9uLmdldCgiWERHX1NUQVRFX0hPTUUiLCBwYXRobGliLlBhdGguaG9tZSgpIC8gIi5sb2NhbCIgLyAic3Rh'
+    'dGUiKSkKICAgIHBhdGggPSByb290IC8gImV2Z2VuaXVtLW5ldHdvcmsiIC8gImd1aS5sb2ciCiAgICBwYXRoLnBhcmVudC5ta2Rp'
+    'cihwYXJlbnRzPVRydWUsIGV4aXN0X29rPVRydWUpCiAgICByZXR1cm4gcGF0aAoKCmRlZiBsYXVuY2hfZGV0YWNoZWQoKSAtPiBp'
+    'bnQ6CiAgICBpZiBub3QgUU1MX0ZJTEUuaXNfZmlsZSgpOgogICAgICAgIHByaW50KGYi0J3QtSDQvdCw0LnQtNC10L0g0LjQvdGC'
+    '0LXRgNGE0LXQudGBOiB7UU1MX0ZJTEV9IiwgZmlsZT1zeXMuc3RkZXJyKQogICAgICAgIHJldHVybiAxCiAgICBpZiBub3QgZmlu'
+    'ZF9xbWxfcnVudGltZSgpOgogICAgICAgIHByaW50KCLQndC1INC90LDQudC00LXQvSBxbWw2LiDQndGD0LbQtdC9IFF0IDYgUU1M'
+    'IHJ1bnRpbWUgKHF0Ni1kZWNsYXJhdGl2ZSkuIiwgZmlsZT1zeXMuc3RkZXJyKQogICAgICAgIHJldHVybiAxCiAgICBsb2dfcGF0'
+    'aCA9IHN0YXRlX2xvZ19wYXRoKCkKICAgIHdpdGggbG9nX3BhdGgub3BlbigiYWIiLCBidWZmZXJpbmc9MCkgYXMgbG9nOgogICAg'
+    'ICAgIHN1YnByb2Nlc3MuUG9wZW4oCiAgICAgICAgICAgIFtzeXMuZXhlY3V0YWJsZSwgc3RyKHBhdGhsaWIuUGF0aChfX2ZpbGVf'
+    'XykucmVzb2x2ZSgpKV0sCiAgICAgICAgICAgIHN0ZGluPXN1YnByb2Nlc3MuREVWTlVMTCwKICAgICAgICAgICAgc3Rkb3V0PWxv'
+    'ZywKICAgICAgICAgICAgc3RkZXJyPWxvZywKICAgICAgICAgICAgc3RhcnRfbmV3X3Nlc3Npb249VHJ1ZSwKICAgICAgICAgICAg'
+    'Y2xvc2VfZmRzPVRydWUsCiAgICAgICAgKQogICAgcmV0dXJuIDAKCgpkZWYgcnVuX2d1aSgpIC0+IGludDoKICAgIHFtbCA9IGZp'
+    'bmRfcW1sX3J1bnRpbWUoKQogICAgaWYgbm90IHFtbDoKICAgICAgICBwcmludCgi0J3QtSDQvdCw0LnQtNC10L0gcW1sNi4g0J3R'
+    'g9C20LXQvSBRdCA2IFFNTCBydW50aW1lIChxdDYtZGVjbGFyYXRpdmUpLiIsIGZpbGU9c3lzLnN0ZGVycikKICAgICAgICByZXR1'
+    'cm4gMQogICAgaWYgbm90IFFNTF9GSUxFLmlzX2ZpbGUoKToKICAgICAgICBwcmludChmItCd0LUg0L3QsNC50LTQtdC9INC40L3R'
+    'gtC10YDRhNC10LnRgToge1FNTF9GSUxFfSIsIGZpbGU9c3lzLnN0ZGVycikKICAgICAgICByZXR1cm4gMQoKICAgIHRva2VuID0g'
+    'c2VjcmV0cy50b2tlbl91cmxzYWZlKDMyKQogICAgc2VydmVyID0gQXBpU2VydmVyKCgiMTI3LjAuMC4xIiwgMCksIEhhbmRsZXIs'
+    'IHRva2VuKQogICAgcG9ydCA9IGludChzZXJ2ZXIuc2VydmVyX2FkZHJlc3NbMV0pCiAgICB0aHJlYWQgPSB0aHJlYWRpbmcuVGhy'
+    'ZWFkKHRhcmdldD1zZXJ2ZXIuc2VydmVfZm9yZXZlciwgbmFtZT0iZXZnZW5pdW0tZ3VpLWFwaSIsIGRhZW1vbj1UcnVlKQogICAg'
+    'dGhyZWFkLnN0YXJ0KCkKCiAgICBlbnYgPSBvcy5lbnZpcm9uLmNvcHkoKQogICAgZW52LnNldGRlZmF1bHQoIlFUX1FVSUNLX0NP'
+    'TlRST0xTX1NUWUxFIiwgIkJhc2ljIikKICAgIGVudi5zZXRkZWZhdWx0KCJRTUxfRElTQUJMRV9ESVNLX0NBQ0hFIiwgIjAiKQoK'
+    'ICAgIHRyeToKICAgICAgICBjcCA9IHN1YnByb2Nlc3MucnVuKAogICAgICAgICAgICBbcW1sLCBzdHIoUU1MX0ZJTEUpLCAiLS0i'
+    'LCBzdHIocG9ydCksIHRva2VuXSwKICAgICAgICAgICAgZW52PWVudiwKICAgICAgICAgICAgY2hlY2s9RmFsc2UsCiAgICAgICAg'
+    'KQogICAgICAgIHJldHVybiBpbnQoY3AucmV0dXJuY29kZSkKICAgIGZpbmFsbHk6CiAgICAgICAgc2VydmVyLnNodXRkb3duKCkK'
+    'ICAgICAgICBzZXJ2ZXIuc2VydmVyX2Nsb3NlKCkKICAgICAgICB0aHJlYWQuam9pbih0aW1lb3V0PTIpCgoKZGVmIHNlbGZfdGVz'
+    'dCgpIC0+IGludDoKICAgIHNhbXBsZSA9IHsiYWN0aW9uIjogImFwcF9hZGQiLCAidGFyZ2V0IjogIi9vcHQvZXhhbXBsZS9iaW4v'
+    'YXBwIn0KICAgIHRva2VuID0gZW5jb2RlX3VpX3BheWxvYWQoc2FtcGxlKQogICAgZGVjb2RlZCA9IHVybGxpYi5wYXJzZS51bnF1'
+    'b3RlKGJhc2U2NC5iNjRkZWNvZGUodG9rZW4pLmRlY29kZSgiYXNjaWkiKSkKICAgIGFzc2VydCBqc29uLmxvYWRzKGRlY29kZWQp'
+    'ID09IHNhbXBsZQogICAgYXNzZXJ0IE1BWF9CT0RZIDw9IDEwMjQgKiAxMDI0CiAgICBxbWwgPSBIRVJFIC8gImV2Z2VuaXVtX2d1'
+    'aS5xbWwiCiAgICBpZiBxbWwuZXhpc3RzKCk6CiAgICAgICAgdGV4dCA9IHFtbC5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04IikK'
+    'ICAgICAgICBhc3NlcnQgIkV2Z2VuaXVtIE5ldHdvcmsiIGluIHRleHQKICAgICAgICBhc3NlcnQgIi9hcGkvcnVubmluZyIgaW4g'
+    'dGV4dAogICAgICAgIGFzc2VydCAiL2FwaS9hY3Rpb24iIGluIHRleHQKICAgIHByaW50KCJldmdlbml1bS1ndWkgc2VsZi10ZXN0'
+    'IE9LIikKICAgIHJldHVybiAwCgoKZGVmIG1haW4oKSAtPiBpbnQ6CiAgICBpZiAiLS1zZWxmLXRlc3QiIGluIHN5cy5hcmd2Ogog'
+    'ICAgICAgIHJldHVybiBzZWxmX3Rlc3QoKQogICAgaWYgIi0tZGV0YWNoIiBpbiBzeXMuYXJndjoKICAgICAgICByZXR1cm4gbGF1'
+    'bmNoX2RldGFjaGVkKCkKICAgIHJldHVybiBydW5fZ3VpKCkKCgppZiBfX25hbWVfXyA9PSAiX19tYWluX18iOgogICAgcmFpc2Ug'
+    'U3lzdGVtRXhpdChtYWluKCkpCg=='
+)
+STANDALONE_GUI_QML_B64 = (
+    'aW1wb3J0IFF0UXVpY2sKaW1wb3J0IFF0UXVpY2suQ29udHJvbHMgYXMgQwppbXBvcnQgUXRRdWljay5MYXlvdXRzCgpBcHBsaWNh'
+    'dGlvbldpbmRvdyB7CiAgICBpZDogcm9vdAogICAgd2lkdGg6IDEwNDAKICAgIGhlaWdodDogNzAwCiAgICBtaW5pbXVtV2lkdGg6'
+    'IDg2MAogICAgbWluaW11bUhlaWdodDogNTgwCiAgICB2aXNpYmxlOiB0cnVlCiAgICB0aXRsZTogIkV2Z2VuaXVtIE5ldHdvcmsi'
+    'CiAgICBjb2xvcjogIiNmNGY2ZmEiCgogICAgcmVhZG9ubHkgcHJvcGVydHkgY29sb3IgYmc6ICIjZjRmNmZhIgogICAgcmVhZG9u'
+    'bHkgcHJvcGVydHkgY29sb3Igc3VyZmFjZTogIiNmZmZmZmYiCiAgICByZWFkb25seSBwcm9wZXJ0eSBjb2xvciBzaWRlYmFyOiAi'
+    'IzExMTgyNyIKICAgIHJlYWRvbmx5IHByb3BlcnR5IGNvbG9yIHNpZGViYXJIb3ZlcjogIiMxZjI5MzciCiAgICByZWFkb25seSBw'
+    'cm9wZXJ0eSBjb2xvciBhY2NlbnQ6ICIjMzlhZWYwIgogICAgcmVhZG9ubHkgcHJvcGVydHkgY29sb3IgYWNjZW50U29mdDogIiNl'
+    'OGY2ZmUiCiAgICByZWFkb25seSBwcm9wZXJ0eSBjb2xvciB0ZXh0TWFpbjogIiMxMTE4MjciCiAgICByZWFkb25seSBwcm9wZXJ0'
+    'eSBjb2xvciB0ZXh0TXV0ZWQ6ICIjNmI3MjgwIgogICAgcmVhZG9ubHkgcHJvcGVydHkgY29sb3IgYm9yZGVyOiAiI2U1ZTdlYiIK'
+    'ICAgIHJlYWRvbmx5IHByb3BlcnR5IGNvbG9yIGdvb2Q6ICIjMTZhMzRhIgogICAgcmVhZG9ubHkgcHJvcGVydHkgY29sb3IgYmFk'
+    'OiAiI2RjMjYyNiIKCiAgICBwcm9wZXJ0eSBpbnQgcGFnZUluZGV4OiAwCiAgICBwcm9wZXJ0eSBib29sIGJ1c3k6IGZhbHNlCiAg'
+    'ICBwcm9wZXJ0eSBzdHJpbmcgZXJyb3JUZXh0OiAiIgogICAgcHJvcGVydHkgdmFyIHN0YXRlOiAoe30pCiAgICBwcm9wZXJ0eSB2'
+    'YXIgcnVubmluZ0FwcHM6IFtdCgogICAgcmVhZG9ubHkgcHJvcGVydHkgdmFyIGFyZ3M6IFF0LmFwcGxpY2F0aW9uLmFyZ3VtZW50'
+    'cwogICAgcmVhZG9ubHkgcHJvcGVydHkgc3RyaW5nIGFwaVRva2VuOiBhcmdzLmxlbmd0aCA+PSAyID8gU3RyaW5nKGFyZ3NbYXJn'
+    'cy5sZW5ndGggLSAxXSkgOiAiIgogICAgcmVhZG9ubHkgcHJvcGVydHkgc3RyaW5nIGFwaVBvcnQ6IGFyZ3MubGVuZ3RoID49IDMg'
+    'PyBTdHJpbmcoYXJnc1thcmdzLmxlbmd0aCAtIDJdKSA6ICIwIgogICAgcmVhZG9ubHkgcHJvcGVydHkgc3RyaW5nIGFwaUJhc2U6'
+    'ICJodHRwOi8vMTI3LjAuMC4xOiIgKyBhcGlQb3J0CgogICAgZnVuY3Rpb24gcGFyc2VSZXBseSh4aHIsIGNhbGxiYWNrKSB7CiAg'
+    'ICAgICAgbGV0IHBheWxvYWQgPSBudWxsCiAgICAgICAgdHJ5IHsKICAgICAgICAgICAgcGF5bG9hZCA9IEpTT04ucGFyc2UoU3Ry'
+    'aW5nKHhoci5yZXNwb25zZVRleHQgfHwgInt9IikpCiAgICAgICAgfSBjYXRjaCAoZSkgewogICAgICAgICAgICBlcnJvclRleHQg'
+    'PSAi0J3QtSDRg9C00LDQu9C+0YHRjCDRgNCw0LfQvtCx0YDQsNGC0Ywg0L7RgtCy0LXRgiDQu9C+0LrQsNC70YzQvdC+0LPQviBB'
+    'UEkiCiAgICAgICAgICAgIGJ1c3kgPSBmYWxzZQogICAgICAgICAgICByZXR1cm4KICAgICAgICB9CiAgICAgICAgaWYgKHhoci5z'
+    'dGF0dXMgPCAyMDAgfHwgeGhyLnN0YXR1cyA+PSAzMDAgfHwgIXBheWxvYWQub2spIHsKICAgICAgICAgICAgZXJyb3JUZXh0ID0g'
+    'U3RyaW5nKHBheWxvYWQuZXJyb3IgfHwgKCJIVFRQICIgKyB4aHIuc3RhdHVzKSkKICAgICAgICAgICAgYnVzeSA9IGZhbHNlCiAg'
+    'ICAgICAgICAgIHJldHVybgogICAgICAgIH0KICAgICAgICBlcnJvclRleHQgPSAiIgogICAgICAgIGlmIChjYWxsYmFjaykKICAg'
+    'ICAgICAgICAgY2FsbGJhY2socGF5bG9hZCkKICAgIH0KCiAgICBmdW5jdGlvbiBhcGkobWV0aG9kLCBwYXRoLCBib2R5LCBjYWxs'
+    'YmFjaykgewogICAgICAgIGNvbnN0IHhociA9IG5ldyBYTUxIdHRwUmVxdWVzdCgpCiAgICAgICAgeGhyLm9wZW4obWV0aG9kLCBh'
+    'cGlCYXNlICsgcGF0aCwgdHJ1ZSkKICAgICAgICB4aHIuc2V0UmVxdWVzdEhlYWRlcigiWC1Fdmdlbml1bS1Ub2tlbiIsIGFwaVRv'
+    'a2VuKQogICAgICAgIGlmIChib2R5ICE9PSBudWxsKQogICAgICAgICAgICB4aHIuc2V0UmVxdWVzdEhlYWRlcigiQ29udGVudC1U'
+    'eXBlIiwgImFwcGxpY2F0aW9uL2pzb247IGNoYXJzZXQ9dXRmLTgiKQogICAgICAgIHhoci5vbnJlYWR5c3RhdGVjaGFuZ2UgPSBm'
+    'dW5jdGlvbigpIHsKICAgICAgICAgICAgaWYgKHhoci5yZWFkeVN0YXRlID09PSBYTUxIdHRwUmVxdWVzdC5ET05FKQogICAgICAg'
+    'ICAgICAgICAgcm9vdC5wYXJzZVJlcGx5KHhociwgY2FsbGJhY2spCiAgICAgICAgfQogICAgICAgIHhoci5zZW5kKGJvZHkgPT09'
+    'IG51bGwgPyBudWxsIDogSlNPTi5zdHJpbmdpZnkoYm9keSkpCiAgICB9CgogICAgZnVuY3Rpb24gcmVmcmVzaFN0YXRlKCkgewog'
+    'ICAgICAgIGFwaSgiR0VUIiwgIi9hcGkvc3RhdGUiLCBudWxsLCBmdW5jdGlvbihwYXlsb2FkKSB7CiAgICAgICAgICAgIHJvb3Qu'
+    'c3RhdGUgPSBwYXlsb2FkLnN0YXRlIHx8ICh7fSkKICAgICAgICB9KQogICAgfQoKICAgIGZ1bmN0aW9uIHJlZnJlc2hSdW5uaW5n'
+    'KCkgewogICAgICAgIGFwaSgiR0VUIiwgIi9hcGkvcnVubmluZyIsIG51bGwsIGZ1bmN0aW9uKHBheWxvYWQpIHsKICAgICAgICAg'
+    'ICAgcm9vdC5ydW5uaW5nQXBwcyA9IChwYXlsb2FkLnJ1bm5pbmcgJiYgcGF5bG9hZC5ydW5uaW5nLmFwcGxpY2F0aW9ucykgfHwg'
+    'W10KICAgICAgICB9KQogICAgfQoKICAgIGZ1bmN0aW9uIGFjdGlvbihwYXlsb2FkKSB7CiAgICAgICAgaWYgKGJ1c3kpCiAgICAg'
+    'ICAgICAgIHJldHVybgogICAgICAgIGJ1c3kgPSB0cnVlCiAgICAgICAgYXBpKCJQT1NUIiwgIi9hcGkvYWN0aW9uIiwgcGF5bG9h'
+    'ZCwgZnVuY3Rpb24oX3JlcGx5KSB7CiAgICAgICAgICAgIHJvb3QuYnVzeSA9IGZhbHNlCiAgICAgICAgICAgIHJvb3QucmVmcmVz'
+    'aFN0YXRlKCkKICAgICAgICAgICAgcm9vdC5yZWZyZXNoUnVubmluZygpCiAgICAgICAgfSkKICAgIH0KCiAgICBmdW5jdGlvbiB0'
+    'b2dnbGVWcG4oKSB7CiAgICAgICAgaWYgKGJ1c3kpCiAgICAgICAgICAgIHJldHVybgogICAgICAgIGJ1c3kgPSB0cnVlCiAgICAg'
+    'ICAgYXBpKCJQT1NUIiwgIi9hcGkvdG9nZ2xlIiwge30sIGZ1bmN0aW9uKHBheWxvYWQpIHsKICAgICAgICAgICAgcm9vdC5idXN5'
+    'ID0gZmFsc2UKICAgICAgICAgICAgcm9vdC5zdGF0ZSA9IHBheWxvYWQuc3RhdGUgfHwgKHt9KQogICAgICAgIH0pCiAgICB9Cgog'
+    'ICAgZnVuY3Rpb24gZmlsdGVyZWRSdW5uaW5nKCkgewogICAgICAgIGNvbnN0IG5lZWRsZSA9IGFwcFNlYXJjaC50ZXh0LnRyaW0o'
+    'KS50b0xvd2VyQ2FzZSgpCiAgICAgICAgaWYgKCFuZWVkbGUubGVuZ3RoKQogICAgICAgICAgICByZXR1cm4gcnVubmluZ0FwcHMK'
+    'ICAgICAgICByZXR1cm4gcnVubmluZ0FwcHMuZmlsdGVyKGZ1bmN0aW9uKGFwcCkgewogICAgICAgICAgICByZXR1cm4gU3RyaW5n'
+    'KGFwcC5uYW1lIHx8ICIiKS50b0xvd2VyQ2FzZSgpLmluY2x1ZGVzKG5lZWRsZSkKICAgICAgICAgICAgICAgIHx8IFN0cmluZyhh'
+    'cHAuZXhlIHx8ICIiKS50b0xvd2VyQ2FzZSgpLmluY2x1ZGVzKG5lZWRsZSkKICAgICAgICB9KQogICAgfQoKICAgIENvbXBvbmVu'
+    'dC5vbkNvbXBsZXRlZDogewogICAgICAgIHJlZnJlc2hTdGF0ZSgpCiAgICAgICAgcmVmcmVzaFJ1bm5pbmcoKQogICAgfQoKICAg'
+    'IFRpbWVyIHsKICAgICAgICBpbnRlcnZhbDogMjUwMAogICAgICAgIHJlcGVhdDogdHJ1ZQogICAgICAgIHJ1bm5pbmc6IHRydWUK'
+    'ICAgICAgICBvblRyaWdnZXJlZDogcm9vdC5yZWZyZXNoU3RhdGUoKQogICAgfQoKICAgIGNvbXBvbmVudCBGbGF0QnV0dG9uOiBS'
+    'ZWN0YW5nbGUgewogICAgICAgIGlkOiBmbGF0QnV0dG9uCiAgICAgICAgcmVxdWlyZWQgcHJvcGVydHkgc3RyaW5nIGxhYmVsCiAg'
+    'ICAgICAgcHJvcGVydHkgYm9vbCBwcmltYXJ5OiBmYWxzZQogICAgICAgIHByb3BlcnR5IGJvb2wgZGFuZ2VyOiBmYWxzZQogICAg'
+    'ICAgIHByb3BlcnR5IGJvb2wgZW5hYmxlZEJ1dHRvbjogdHJ1ZQogICAgICAgIHNpZ25hbCBjbGlja2VkKCkKICAgICAgICBpbXBs'
+    'aWNpdEhlaWdodDogMzgKICAgICAgICBpbXBsaWNpdFdpZHRoOiBNYXRoLm1heCg5MiwgYnV0dG9uVGV4dC5pbXBsaWNpdFdpZHRo'
+    'ICsgMjgpCiAgICAgICAgcmFkaXVzOiAxMAogICAgICAgIGNvbG9yOiAhZW5hYmxlZEJ1dHRvbiA/ICIjZWVmMGYzIgogICAgICAg'
+    'ICAgICAgIDogZGFuZ2VyID8gKGJ1dHRvbk1vdXNlLmNvbnRhaW5zTW91c2UgPyAiI2ZlZTJlMiIgOiAiI2ZlZjJmMiIpCiAgICAg'
+    'ICAgICAgICAgOiBwcmltYXJ5ID8gKGJ1dHRvbk1vdXNlLmNvbnRhaW5zTW91c2UgPyAiIzIwOTlkYyIgOiByb290LmFjY2VudCkK'
+    'ICAgICAgICAgICAgICA6IChidXR0b25Nb3VzZS5jb250YWluc01vdXNlID8gIiNlZWYyZjciIDogIiNmN2Y5ZmMiKQogICAgICAg'
+    'IGJvcmRlci53aWR0aDogcHJpbWFyeSA/IDAgOiAxCiAgICAgICAgYm9yZGVyLmNvbG9yOiBkYW5nZXIgPyAiI2ZlY2FjYSIgOiBy'
+    'b290LmJvcmRlcgogICAgICAgIG9wYWNpdHk6IGVuYWJsZWRCdXR0b24gPyAxIDogMC42CgogICAgICAgIEMuTGFiZWwgewogICAg'
+    'ICAgICAgICBpZDogYnV0dG9uVGV4dAogICAgICAgICAgICBhbmNob3JzLmNlbnRlckluOiBwYXJlbnQKICAgICAgICAgICAgdGV4'
+    'dDogZmxhdEJ1dHRvbi5sYWJlbAogICAgICAgICAgICBjb2xvcjogZmxhdEJ1dHRvbi5wcmltYXJ5ID8gIndoaXRlIiA6IChmbGF0'
+    'QnV0dG9uLmRhbmdlciA/IHJvb3QuYmFkIDogcm9vdC50ZXh0TWFpbikKICAgICAgICAgICAgZm9udC5waXhlbFNpemU6IDEzCiAg'
+    'ICAgICAgICAgIGZvbnQud2VpZ2h0OiBGb250LkRlbWlCb2xkCiAgICAgICAgfQogICAgICAgIE1vdXNlQXJlYSB7CiAgICAgICAg'
+    'ICAgIGlkOiBidXR0b25Nb3VzZQogICAgICAgICAgICBhbmNob3JzLmZpbGw6IHBhcmVudAogICAgICAgICAgICBlbmFibGVkOiBm'
+    'bGF0QnV0dG9uLmVuYWJsZWRCdXR0b24KICAgICAgICAgICAgaG92ZXJFbmFibGVkOiB0cnVlCiAgICAgICAgICAgIGN1cnNvclNo'
+    'YXBlOiBlbmFibGVkID8gUXQuUG9pbnRpbmdIYW5kQ3Vyc29yIDogUXQuQXJyb3dDdXJzb3IKICAgICAgICAgICAgb25DbGlja2Vk'
+    'OiBmbGF0QnV0dG9uLmNsaWNrZWQoKQogICAgICAgIH0KICAgIH0KCiAgICBjb21wb25lbnQgTmF2QnV0dG9uOiBSZWN0YW5nbGUg'
+    'ewogICAgICAgIGlkOiBuYXYKICAgICAgICByZXF1aXJlZCBwcm9wZXJ0eSBzdHJpbmcgbGFiZWwKICAgICAgICByZXF1aXJlZCBw'
+    'cm9wZXJ0eSBpbnQgaW5kZXgKICAgICAgICBwcm9wZXJ0eSBzdHJpbmcgc2hvcnRMYWJlbDogIiIKICAgICAgICBzaWduYWwgY2xp'
+    'Y2tlZCgpCiAgICAgICAgaGVpZ2h0OiA0OAogICAgICAgIHJhZGl1czogMTEKICAgICAgICBjb2xvcjogcm9vdC5wYWdlSW5kZXgg'
+    'PT09IGluZGV4ID8gIiMyNTMyNDYiIDogKG5hdk1vdXNlLmNvbnRhaW5zTW91c2UgPyByb290LnNpZGViYXJIb3ZlciA6ICJ0cmFu'
+    'c3BhcmVudCIpCgogICAgICAgIFJvd0xheW91dCB7CiAgICAgICAgICAgIGFuY2hvcnMuZmlsbDogcGFyZW50CiAgICAgICAgICAg'
+    'IGFuY2hvcnMubGVmdE1hcmdpbjogMTIKICAgICAgICAgICAgYW5jaG9ycy5yaWdodE1hcmdpbjogMTIKICAgICAgICAgICAgc3Bh'
+    'Y2luZzogMTEKICAgICAgICAgICAgUmVjdGFuZ2xlIHsKICAgICAgICAgICAgICAgIHdpZHRoOiAyOAogICAgICAgICAgICAgICAg'
+    'aGVpZ2h0OiAyOAogICAgICAgICAgICAgICAgcmFkaXVzOiA4CiAgICAgICAgICAgICAgICBjb2xvcjogcm9vdC5wYWdlSW5kZXgg'
+    'PT09IG5hdi5pbmRleCA/IHJvb3QuYWNjZW50IDogIiMyNzM0NDkiCiAgICAgICAgICAgICAgICBDLkxhYmVsIHsKICAgICAgICAg'
+    'ICAgICAgICAgICBhbmNob3JzLmNlbnRlckluOiBwYXJlbnQKICAgICAgICAgICAgICAgICAgICB0ZXh0OiBuYXYuc2hvcnRMYWJl'
+    'bAogICAgICAgICAgICAgICAgICAgIGNvbG9yOiAid2hpdGUiCiAgICAgICAgICAgICAgICAgICAgZm9udC5waXhlbFNpemU6IDEw'
+    'CiAgICAgICAgICAgICAgICAgICAgZm9udC53ZWlnaHQ6IEZvbnQuQm9sZAogICAgICAgICAgICAgICAgfQogICAgICAgICAgICB9'
+    'CiAgICAgICAgICAgIEMuTGFiZWwgewogICAgICAgICAgICAgICAgTGF5b3V0LmZpbGxXaWR0aDogdHJ1ZQogICAgICAgICAgICAg'
+    'ICAgdGV4dDogbmF2LmxhYmVsCiAgICAgICAgICAgICAgICBjb2xvcjogcm9vdC5wYWdlSW5kZXggPT09IG5hdi5pbmRleCA/ICJ3'
+    'aGl0ZSIgOiAiI2NiZDVlMSIKICAgICAgICAgICAgICAgIGZvbnQucGl4ZWxTaXplOiAxNAogICAgICAgICAgICAgICAgZm9udC53'
+    'ZWlnaHQ6IHJvb3QucGFnZUluZGV4ID09PSBuYXYuaW5kZXggPyBGb250LkRlbWlCb2xkIDogRm9udC5Ob3JtYWwKICAgICAgICAg'
+    'ICAgfQogICAgICAgIH0KICAgICAgICBNb3VzZUFyZWEgewogICAgICAgICAgICBpZDogbmF2TW91c2UKICAgICAgICAgICAgYW5j'
+    'aG9ycy5maWxsOiBwYXJlbnQKICAgICAgICAgICAgaG92ZXJFbmFibGVkOiB0cnVlCiAgICAgICAgICAgIGN1cnNvclNoYXBlOiBR'
+    'dC5Qb2ludGluZ0hhbmRDdXJzb3IKICAgICAgICAgICAgb25DbGlja2VkOiB7CiAgICAgICAgICAgICAgICByb290LnBhZ2VJbmRl'
+    'eCA9IG5hdi5pbmRleAogICAgICAgICAgICAgICAgbmF2LmNsaWNrZWQoKQogICAgICAgICAgICB9CiAgICAgICAgfQogICAgfQoK'
+    'ICAgIGNvbXBvbmVudCBDYXJkOiBSZWN0YW5nbGUgewogICAgICAgIHJhZGl1czogMTYKICAgICAgICBjb2xvcjogcm9vdC5zdXJm'
+    'YWNlCiAgICAgICAgYm9yZGVyLndpZHRoOiAxCiAgICAgICAgYm9yZGVyLmNvbG9yOiByb290LmJvcmRlcgogICAgfQoKICAgIFJv'
+    'd0xheW91dCB7CiAgICAgICAgYW5jaG9ycy5maWxsOiBwYXJlbnQKICAgICAgICBzcGFjaW5nOiAwCgogICAgICAgIFJlY3Rhbmds'
+    'ZSB7CiAgICAgICAgICAgIExheW91dC5wcmVmZXJyZWRXaWR0aDogMjIyCiAgICAgICAgICAgIExheW91dC5maWxsSGVpZ2h0OiB0'
+    'cnVlCiAgICAgICAgICAgIGNvbG9yOiByb290LnNpZGViYXIKCiAgICAgICAgICAgIENvbHVtbkxheW91dCB7CiAgICAgICAgICAg'
+    'ICAgICBhbmNob3JzLmZpbGw6IHBhcmVudAogICAgICAgICAgICAgICAgYW5jaG9ycy5tYXJnaW5zOiAxOAogICAgICAgICAgICAg'
+    'ICAgc3BhY2luZzogNwoKICAgICAgICAgICAgICAgIFJvd0xheW91dCB7CiAgICAgICAgICAgICAgICAgICAgTGF5b3V0LmZpbGxX'
+    'aWR0aDogdHJ1ZQogICAgICAgICAgICAgICAgICAgIExheW91dC5ib3R0b21NYXJnaW46IDI0CiAgICAgICAgICAgICAgICAgICAg'
+    'c3BhY2luZzogMTEKICAgICAgICAgICAgICAgICAgICBSZWN0YW5nbGUgewogICAgICAgICAgICAgICAgICAgICAgICB3aWR0aDog'
+    'NDAKICAgICAgICAgICAgICAgICAgICAgICAgaGVpZ2h0OiA0MAogICAgICAgICAgICAgICAgICAgICAgICByYWRpdXM6IDEyCiAg'
+    'ICAgICAgICAgICAgICAgICAgICAgIGNvbG9yOiByb290LmFjY2VudAogICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsK'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFuY2hvcnMuY2VudGVySW46IHBhcmVudAogICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgdGV4dDogIkUiCiAgICAgICAgICAgICAgICAgICAgICAgICAgICBjb2xvcjogIndoaXRlIgogICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgZm9udC5waXhlbFNpemU6IDIwCiAgICAgICAgICAgICAgICAgICAgICAgICAgICBmb250LndlaWdodDogRm9u'
+    'dC5CbGFjawogICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAg'
+    'IENvbHVtbkxheW91dCB7CiAgICAgICAgICAgICAgICAgICAgICAgIHNwYWNpbmc6IDAKICAgICAgICAgICAgICAgICAgICAgICAg'
+    'Qy5MYWJlbCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICB0ZXh0OiAiRXZnZW5pdW0iCiAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICBjb2xvcjogIndoaXRlIgogICAgICAgICAgICAgICAgICAgICAgICAgICAgZm9udC5waXhlbFNpemU6IDE2CiAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICBmb250LndlaWdodDogRm9udC5Cb2xkCiAgICAgICAgICAgICAgICAgICAgICAgIH0KICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgQy5MYWJlbCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICB0ZXh0OiAiTmV0d29yayIK'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgIGNvbG9yOiAiIzk0YTNiOCIKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGZv'
+    'bnQucGl4ZWxTaXplOiAxMgogICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAg'
+    'ICAgICAgfQoKICAgICAgICAgICAgICAgIE5hdkJ1dHRvbiB7IGxhYmVsOiAiVlBOIjsgc2hvcnRMYWJlbDogIlZQTiI7IGluZGV4'
+    'OiAwIH0KICAgICAgICAgICAgICAgIE5hdkJ1dHRvbiB7CiAgICAgICAgICAgICAgICAgICAgbGFiZWw6ICLQn9GA0LjQu9C+0LbQ'
+    'tdC90LjRjyI7IHNob3J0TGFiZWw6ICJBUFAiOyBpbmRleDogMQogICAgICAgICAgICAgICAgICAgIG9uQ2xpY2tlZDogcm9vdC5y'
+    'ZWZyZXNoUnVubmluZygpCiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICBOYXZCdXR0b24geyBsYWJlbDogItCh0LDQ'
+    'udGC0Ysg0LggSVAiOyBzaG9ydExhYmVsOiAiTkVUIjsgaW5kZXg6IDIgfQogICAgICAgICAgICAgICAgTmF2QnV0dG9uIHsgbGFi'
+    'ZWw6ICLQn9C+0YDRgtGLIjsgc2hvcnRMYWJlbDogIlBSVCI7IGluZGV4OiAzIH0KICAgICAgICAgICAgICAgIE5hdkJ1dHRvbiB7'
+    'IGxhYmVsOiAi0JTQuNCw0LPQvdC+0YHRgtC40LrQsCI7IHNob3J0TGFiZWw6ICJTWVMiOyBpbmRleDogNCB9CgogICAgICAgICAg'
+    'ICAgICAgSXRlbSB7IExheW91dC5maWxsSGVpZ2h0OiB0cnVlIH0KCiAgICAgICAgICAgICAgICBSZWN0YW5nbGUgewogICAgICAg'
+    'ICAgICAgICAgICAgIExheW91dC5maWxsV2lkdGg6IHRydWUKICAgICAgICAgICAgICAgICAgICBoZWlnaHQ6IDY0CiAgICAgICAg'
+    'ICAgICAgICAgICAgcmFkaXVzOiAxMgogICAgICAgICAgICAgICAgICAgIGNvbG9yOiAiIzE3MjAzMyIKICAgICAgICAgICAgICAg'
+    'ICAgICBSb3dMYXlvdXQgewogICAgICAgICAgICAgICAgICAgICAgICBhbmNob3JzLmZpbGw6IHBhcmVudAogICAgICAgICAgICAg'
+    'ICAgICAgICAgICBhbmNob3JzLm1hcmdpbnM6IDEyCiAgICAgICAgICAgICAgICAgICAgICAgIFJlY3RhbmdsZSB7CiAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICB3aWR0aDogMTAKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGhlaWdodDogMTAKICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgIHJhZGl1czogNQogICAgICAgICAgICAgICAgICAgICAgICAgICAgY29sb3I6IEJvb2xlYW4o'
+    'cm9vdC5zdGF0ZS5hY3RpdmUpID8gcm9vdC5nb29kIDogIiM2NDc0OGIiCiAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgQ29sdW1uTGF5b3V0IHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgIExheW91dC5maWxsV2lk'
+    'dGg6IHRydWUKICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNwYWNpbmc6IDEKICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'IEMuTGFiZWwgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHRleHQ6IEJvb2xlYW4ocm9vdC5zdGF0ZS5hY3RpdmUp'
+    'ID8gIlZQTiDQstC60LvRjtGH0ZHQvSIgOiAiVlBOINCy0YvQutC70Y7Rh9C10L0iCiAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgY29sb3I6ICJ3aGl0ZSIKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBmb250LnBpeGVsU2l6ZTogMTIKICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICBmb250LndlaWdodDogRm9udC5EZW1pQm9sZAogICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgQy5MYWJlbCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgTGF5b3V0LmZpbGxXaWR0aDogdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHRleHQ6IFN0cmluZyhy'
+    'b290LnN0YXRlLnByb2ZpbGUgfHwgcm9vdC5zdGF0ZS5sYXN0X3Byb2ZpbGUgfHwgItCd0LXRgiDQv9GA0L7RhNC40LvRjyIpCiAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgY29sb3I6ICIjOTRhM2I4IgogICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgIGZvbnQucGl4ZWxTaXplOiAxMQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGVsaWRlOiBUZXh0LkVsaWRlUmln'
+    'aHQKICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAg'
+    'ICAgIH0KICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgfQogICAgICAgIH0KCiAgICAgICAgSXRlbSB7CiAgICAgICAgICAg'
+    'IExheW91dC5maWxsV2lkdGg6IHRydWUKICAgICAgICAgICAgTGF5b3V0LmZpbGxIZWlnaHQ6IHRydWUKCiAgICAgICAgICAgIENv'
+    'bHVtbkxheW91dCB7CiAgICAgICAgICAgICAgICBhbmNob3JzLmZpbGw6IHBhcmVudAogICAgICAgICAgICAgICAgYW5jaG9ycy5t'
+    'YXJnaW5zOiAyOAogICAgICAgICAgICAgICAgc3BhY2luZzogMTgKCiAgICAgICAgICAgICAgICBSb3dMYXlvdXQgewogICAgICAg'
+    'ICAgICAgICAgICAgIExheW91dC5maWxsV2lkdGg6IHRydWUKICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsKICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgTGF5b3V0LmZpbGxXaWR0aDogdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICB0ZXh0OiBbIlZQTiIs'
+    'ICLQn9GA0LjQu9C+0LbQtdC90LjRjyDQsdC10LcgVlBOIiwgItCh0LDQudGC0Ysg0LggSVAg0LHQtdC3IFZQTiIsICLQktGF0L7Q'
+    'tNGP0YnQuNC1INC/0L7RgNGC0YsiLCAi0JTQuNCw0LPQvdC+0YHRgtC40LrQsCJdW3Jvb3QucGFnZUluZGV4XQogICAgICAgICAg'
+    'ICAgICAgICAgICAgICBjb2xvcjogcm9vdC50ZXh0TWFpbgogICAgICAgICAgICAgICAgICAgICAgICBmb250LnBpeGVsU2l6ZTog'
+    'MjUKICAgICAgICAgICAgICAgICAgICAgICAgZm9udC53ZWlnaHQ6IEZvbnQuQm9sZAogICAgICAgICAgICAgICAgICAgIH0KICAg'
+    'ICAgICAgICAgICAgICAgICBDLkJ1c3lJbmRpY2F0b3IgewogICAgICAgICAgICAgICAgICAgICAgICBydW5uaW5nOiByb290LmJ1'
+    'c3kKICAgICAgICAgICAgICAgICAgICAgICAgdmlzaWJsZTogcnVubmluZwogICAgICAgICAgICAgICAgICAgICAgICBpbXBsaWNp'
+    'dFdpZHRoOiAyOAogICAgICAgICAgICAgICAgICAgICAgICBpbXBsaWNpdEhlaWdodDogMjgKICAgICAgICAgICAgICAgICAgICB9'
+    'CiAgICAgICAgICAgICAgICAgICAgRmxhdEJ1dHRvbiB7CiAgICAgICAgICAgICAgICAgICAgICAgIGxhYmVsOiAi0J7QsdC90L7Q'
+    'stC40YLRjCIKICAgICAgICAgICAgICAgICAgICAgICAgZW5hYmxlZEJ1dHRvbjogIXJvb3QuYnVzeQogICAgICAgICAgICAgICAg'
+    'ICAgICAgICBvbkNsaWNrZWQ6IHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgIHJvb3QucmVmcmVzaFN0YXRlKCkKICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgIGlmIChyb290LnBhZ2VJbmRleCA9PT0gMSkKICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICByb290LnJlZnJlc2hSdW5uaW5nKCkKICAgICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgIH0K'
+    'ICAgICAgICAgICAgICAgIH0KCiAgICAgICAgICAgICAgICBSZWN0YW5nbGUgewogICAgICAgICAgICAgICAgICAgIHZpc2libGU6'
+    'IHJvb3QuZXJyb3JUZXh0Lmxlbmd0aCA+IDAKICAgICAgICAgICAgICAgICAgICBMYXlvdXQuZmlsbFdpZHRoOiB0cnVlCiAgICAg'
+    'ICAgICAgICAgICAgICAgaW1wbGljaXRIZWlnaHQ6IGVycm9yTGFiZWwuaW1wbGljaXRIZWlnaHQgKyAyMgogICAgICAgICAgICAg'
+    'ICAgICAgIHJhZGl1czogMTAKICAgICAgICAgICAgICAgICAgICBjb2xvcjogIiNmZmYxZjIiCiAgICAgICAgICAgICAgICAgICAg'
+    'Ym9yZGVyLndpZHRoOiAxCiAgICAgICAgICAgICAgICAgICAgYm9yZGVyLmNvbG9yOiAiI2ZlY2RkMyIKICAgICAgICAgICAgICAg'
+    'ICAgICBDLkxhYmVsIHsKICAgICAgICAgICAgICAgICAgICAgICAgaWQ6IGVycm9yTGFiZWwKICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgYW5jaG9ycy5maWxsOiBwYXJlbnQKICAgICAgICAgICAgICAgICAgICAgICAgYW5jaG9ycy5tYXJnaW5zOiAxMQogICAgICAg'
+    'ICAgICAgICAgICAgICAgICB0ZXh0OiByb290LmVycm9yVGV4dAogICAgICAgICAgICAgICAgICAgICAgICBjb2xvcjogcm9vdC5i'
+    'YWQKICAgICAgICAgICAgICAgICAgICAgICAgd3JhcE1vZGU6IFRleHQuV29yZFdyYXAKICAgICAgICAgICAgICAgICAgICAgICAg'
+    'Zm9udC5waXhlbFNpemU6IDEyCiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgfQoKICAgICAgICAgICAgICAg'
+    'IFN0YWNrTGF5b3V0IHsKICAgICAgICAgICAgICAgICAgICBMYXlvdXQuZmlsbFdpZHRoOiB0cnVlCiAgICAgICAgICAgICAgICAg'
+    'ICAgTGF5b3V0LmZpbGxIZWlnaHQ6IHRydWUKICAgICAgICAgICAgICAgICAgICBjdXJyZW50SW5kZXg6IHJvb3QucGFnZUluZGV4'
+    'CgogICAgICAgICAgICAgICAgICAgIC8vIFZQTgogICAgICAgICAgICAgICAgICAgIEl0ZW0gewogICAgICAgICAgICAgICAgICAg'
+    'ICAgICBDYXJkIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFuY2hvcnMuZmlsbDogcGFyZW50CiAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICBDb2x1bW5MYXlvdXQgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFuY2hvcnMuZmlsbDog'
+    'cGFyZW50CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgYW5jaG9ycy5tYXJnaW5zOiAyOAogICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgIHNwYWNpbmc6IDIwCgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIFJvd0xheW91dCB7CiAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIExheW91dC5maWxsV2lkdGg6IHRydWUKICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgc3BhY2luZzogMTgKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgUmVjdGFuZ2xl'
+    'IHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHdpZHRoOiA3MgogICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgaGVpZ2h0OiA3MgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgcmFkaXVz'
+    'OiAyMgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgY29sb3I6IEJvb2xlYW4ocm9vdC5zdGF0ZS5hY3Rp'
+    'dmUpID8gcm9vdC5hY2NlbnRTb2Z0IDogIiNlZWYyZjciCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBD'
+    'LkxhYmVsIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBhbmNob3JzLmNlbnRlckluOiBwYXJl'
+    'bnQKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB0ZXh0OiBCb29sZWFuKHJvb3Quc3RhdGUuYWN0'
+    'aXZlKSA/ICJPTiIgOiAiT0ZGIgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGNvbG9yOiBCb29s'
+    'ZWFuKHJvb3Quc3RhdGUuYWN0aXZlKSA/IHJvb3QuYWNjZW50IDogcm9vdC50ZXh0TXV0ZWQKICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICBmb250LnBpeGVsU2l6ZTogMTgKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICBmb250LndlaWdodDogRm9udC5Cb2xkCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9'
+    'CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'Q29sdW1uTGF5b3V0IHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIExheW91dC5maWxsV2lkdGg6IHRy'
+    'dWUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNwYWNpbmc6IDUKICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgIEMuTGFiZWwgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHRl'
+    'eHQ6IEJvb2xlYW4ocm9vdC5zdGF0ZS5hY3RpdmUpID8gItCX0LDRidC40YnRkdC90L3QvtC1INGB0L7QtdC00LjQvdC10L3QuNC1'
+    'INCw0LrRgtC40LLQvdC+IiA6ICJWUE4g0YHQtdC50YfQsNGBINCy0YvQutC70Y7Rh9C10L0iCiAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgY29sb3I6IHJvb3QudGV4dE1haW4KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICBmb250LnBpeGVsU2l6ZTogMjAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICBmb250LndlaWdodDogRm9udC5Cb2xkCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICBMYXlvdXQuZmlsbFdpZHRoOiB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgdGV4dDogQm9vbGVhbihyb290LnN0YXRlLmFjdGl2ZSkKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgPyAi0JLQtdGB0Ywg0L7QsdGL0YfQvdGL0Lkg0YLRgNCw0YTQuNC6INC40LTRkdGCINGH0LXRgNC10LcgVlBOLCDQ'
+    'utGA0L7QvNC1INC90LDRgdGC0YDQvtC10L3QvdGL0YUg0LjRgdC60LvRjtGH0LXQvdC40LkuIgogICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICA6ICLQktC60LvRjtGH0LggVlBOINC+0LTQvdC40Lwg0L3QsNC20LDRgtC40LXQ'
+    'vC4g0JHRg9C00LXRgiDQuNGB0L/QvtC70YzQt9C+0LLQsNC9INC/0L7RgdC70LXQtNC90LjQuSDQstGL0LHRgNCw0L3QvdGL0Lkg'
+    '0L/RgNC+0YTQuNC70YwuIgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGNvbG9yOiByb290LnRl'
+    'eHRNdXRlZAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHdyYXBNb2RlOiBUZXh0LldvcmRXcmFw'
+    'CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZm9udC5waXhlbFNpemU6IDEzCiAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgRmxhdEJ1dHRvbiB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICBsYWJlbDogQm9vbGVhbihyb290LnN0YXRlLmFjdGl2ZSkgPyAi0JLRi9C60LvRjtGH0LjRgtGMIFZQTiIgOiAi0JLQ'
+    'utC70Y7Rh9C40YLRjCBWUE4iCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBwcmltYXJ5OiAhQm9vbGVh'
+    'bihyb290LnN0YXRlLmFjdGl2ZSkKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGRhbmdlcjogQm9vbGVh'
+    'bihyb290LnN0YXRlLmFjdGl2ZSkKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGVuYWJsZWRCdXR0b246'
+    'ICFyb290LmJ1c3kKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIG9uQ2xpY2tlZDogcm9vdC50b2dnbGVW'
+    'cG4oKQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'fQoKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBSZWN0YW5nbGUgeyBMYXlvdXQuZmlsbFdpZHRoOiB0cnVlOyBoZWln'
+    'aHQ6IDE7IGNvbG9yOiByb290LmJvcmRlciB9CgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEdyaWRMYXlvdXQgewog'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBMYXlvdXQuZmlsbFdpZHRoOiB0cnVlCiAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgIGNvbHVtbnM6IDIKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgY29sdW1uU3Bh'
+    'Y2luZzogMjQKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgcm93U3BhY2luZzogMTQKCiAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgIEMuTGFiZWwgeyB0ZXh0OiAi0J/RgNC+0YTQuNC70YwiOyBjb2xvcjogcm9vdC50ZXh0TXV0'
+    'ZWQgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsKICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgIHRleHQ6IFN0cmluZyhyb290LnN0YXRlLnByb2ZpbGUgfHwgcm9vdC5zdGF0ZS5sYXN0X3Byb2ZpbGUg'
+    'fHwgIuKAlCIpCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBjb2xvcjogcm9vdC50ZXh0TWFpbgogICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZm9udC53ZWlnaHQ6IEZvbnQuRGVtaUJvbGQKICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsgdGV4'
+    'dDogIklQdjYiOyBjb2xvcjogcm9vdC50ZXh0TXV0ZWQgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxh'
+    'YmVsIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHRleHQ6IFN0cmluZyhyb290LnN0YXRlLmlwdjZf'
+    'bW9kZSB8fCAidW5rbm93biIpCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBjb2xvcjogcm9vdC50ZXh0'
+    'TWFpbgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZm9udC53ZWlnaHQ6IEZvbnQuRGVtaUJvbGQKICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxh'
+    'YmVsIHsgdGV4dDogIktpbGwgc3dpdGNoIjsgY29sb3I6IHJvb3QudGV4dE11dGVkIH0KICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgQy5MYWJlbCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB0ZXh0OiBCb29sZWFu'
+    'KHJvb3Quc3RhdGUua2lsbF9zd2l0Y2gpID8gItCQ0LrRgtC40LLQtdC9IiA6ICLQktGL0LrQu9GO0YfQtdC9IgogICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgY29sb3I6IEJvb2xlYW4ocm9vdC5zdGF0ZS5raWxsX3N3aXRjaCkgPyByb290'
+    'Lmdvb2QgOiByb290LnRleHRNdXRlZAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZm9udC53ZWlnaHQ6'
+    'IEZvbnQuRGVtaUJvbGQKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICBDLkxhYmVsIHsgdGV4dDogItCS0LXRgNGB0LjRjyBtYW5hZ2VyIjsgY29sb3I6IHJvb3QudGV4dE11dGVk'
+    'IH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgQy5MYWJlbCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICB0ZXh0OiBTdHJpbmcocm9vdC5zdGF0ZS5tYW5hZ2VyIHx8ICLigJQiKQogICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgY29sb3I6IHJvb3QudGV4dE1haW4KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgIGZvbnQud2VpZ2h0OiBGb250LkRlbWlCb2xkCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEl0ZW0geyBMYXlv'
+    'dXQuZmlsbEhlaWdodDogdHJ1ZSB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAg'
+    'IH0KICAgICAgICAgICAgICAgICAgICB9CgogICAgICAgICAgICAgICAgICAgIC8vIEFwcGxpY2F0aW9ucwogICAgICAgICAgICAg'
+    'ICAgICAgIEl0ZW0gewogICAgICAgICAgICAgICAgICAgICAgICBDb2x1bW5MYXlvdXQgewogICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgYW5jaG9ycy5maWxsOiBwYXJlbnQKICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNwYWNpbmc6IDE0CgogICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgQ2FyZCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgTGF5b3V0LmZpbGxXaWR0'
+    'aDogdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGhlaWdodDogODIKICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICBSb3dMYXlvdXQgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBhbmNob3JzLmZpbGw6IHBhcmVu'
+    'dAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBhbmNob3JzLm1hcmdpbnM6IDE2CiAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgIHNwYWNpbmc6IDEwCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuVGV4dEZp'
+    'ZWxkIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGlkOiBtYW51YWxBcHAKICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgIExheW91dC5maWxsV2lkdGg6IHRydWUKICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgIHBsYWNlaG9sZGVyVGV4dDogItCY0LzRjyDQv9GA0L7RhtC10YHRgdCwLCAv0L/QvtC70L3Ri9C5L9C/0YPR'
+    'gtGMINC40LvQuCAv0L/QsNC/0LrQsC8iCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBzZWxlY3RCeU1v'
+    'dXNlOiB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBiYWNrZ3JvdW5kOiBSZWN0YW5nbGUgeyBy'
+    'YWRpdXM6IDEwOyBjb2xvcjogIiNmOGZhZmMiOyBib3JkZXIuY29sb3I6IHJvb3QuYm9yZGVyIH0KICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgIG9uQWNjZXB0ZWQ6IGlmICh0ZXh0LnRyaW0oKS5sZW5ndGgpIHJvb3QuYWN0aW9uKHthY3Rp'
+    'b246ICJhcHBfYWRkIiwgdGFyZ2V0OiB0ZXh0LnRyaW0oKX0pCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0K'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgRmxhdEJ1dHRvbiB7CiAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICBsYWJlbDogItCU0L7QsdCw0LLQuNGC0Ywg0LLRgNGD0YfQvdGD0Y4iCiAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICBwcmltYXJ5OiB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBl'
+    'bmFibGVkQnV0dG9uOiAhcm9vdC5idXN5ICYmIG1hbnVhbEFwcC50ZXh0LnRyaW0oKS5sZW5ndGggPiAwCiAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICBvbkNsaWNrZWQ6IHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICByb290LmFjdGlvbih7YWN0aW9uOiAiYXBwX2FkZCIsIHRhcmdldDogbWFudWFsQXBwLnRleHQudHJpbSgpfSkKICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBtYW51YWxBcHAuY2xlYXIoKQogICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgfQoKICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgIFJvd0xheW91dCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgTGF5b3V0LmZpbGxXaWR0aDogdHJ1ZQog'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuTGFiZWwgeyB0ZXh0OiAi0KPQttC1INC40YHQutC70Y7Rh9C10L3RiyI7'
+    'IGNvbG9yOiByb290LnRleHRNYWluOyBmb250LnBpeGVsU2l6ZTogMTU7IGZvbnQud2VpZ2h0OiBGb250LkJvbGQ7IExheW91dC5m'
+    'aWxsV2lkdGg6IHRydWUgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuTGFiZWwgeyB0ZXh0OiBTdHJpbmcoKHJv'
+    'b3Quc3RhdGUuYXBwbGljYXRpb25zIHx8IFtdKS5sZW5ndGgpOyBjb2xvcjogcm9vdC50ZXh0TXV0ZWQgfQogICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgfQoKICAgICAgICAgICAgICAgICAgICAgICAgICAgIENhcmQgewogICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgIExheW91dC5maWxsV2lkdGg6IHRydWUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBMYXlvdXQucHJl'
+    'ZmVycmVkSGVpZ2h0OiAxNDUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBMaXN0VmlldyB7CiAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgIGFuY2hvcnMuZmlsbDogcGFyZW50CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgIGFuY2hvcnMubWFyZ2luczogOAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBjbGlwOiB0cnVlCiAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNwYWNpbmc6IDUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgbW9kZWw6IHJvb3Quc3RhdGUuYXBwbGljYXRpb25zIHx8IFtdCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'IGRlbGVnYXRlOiBSZWN0YW5nbGUgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgcmVxdWlyZWQgcHJv'
+    'cGVydHkgdmFyIG1vZGVsRGF0YQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgd2lkdGg6IExpc3RWaWV3'
+    'LnZpZXcud2lkdGgKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGhlaWdodDogNDYKICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgIHJhZGl1czogOQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgY29sb3I6ICIjZjhmYWZjIgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgUm93TGF5b3V0IHsKICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBhbmNob3JzLmZpbGw6IHBhcmVudAogICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFuY2hvcnMubGVmdE1hcmdpbjogMTIKICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICBhbmNob3JzLnJpZ2h0TWFyZ2luOiA4CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgQy5MYWJlbCB7IExheW91dC5maWxsV2lkdGg6IHRydWU7IHRleHQ6IFN0cmluZyhtb2RlbERhdGEpOyBj'
+    'b2xvcjogcm9vdC50ZXh0TWFpbjsgZWxpZGU6IFRleHQuRWxpZGVNaWRkbGUgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgIEZsYXRCdXR0b24gewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICBsYWJlbDogItCj0LTQsNC70LjRgtGMIgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBk'
+    'YW5nZXI6IHRydWUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZW5hYmxlZEJ1dHRvbjog'
+    'IXJvb3QuYnVzeQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBvbkNsaWNrZWQ6IHJvb3Qu'
+    'YWN0aW9uKHthY3Rpb246ICJhcHBfcmVtb3ZlIiwgdGFyZ2V0OiBTdHJpbmcobW9kZWxEYXRhKX0pCiAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfQogICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuU2Ny'
+    'b2xsQmFyLnZlcnRpY2FsOiBDLlNjcm9sbEJhciB7fQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVs'
+    'IHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFuY2hvcnMuY2VudGVySW46IHBhcmVudAogICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgdmlzaWJsZTogKHJvb3Quc3RhdGUuYXBwbGljYXRpb25zIHx8IFtdKS5s'
+    'ZW5ndGggPT09IDAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHRleHQ6ICLQn9C+0LrQsCDQvdC10YIg'
+    '0L/RgNC40LvQvtC20LXQvdC40Lkt0LjRgdC60LvRjtGH0LXQvdC40LkiCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICBjb2xvcjogcm9vdC50ZXh0TXV0ZWQKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfQogICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KCiAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICBSb3dMYXlvdXQgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIExheW91dC5maWxsV2lkdGg6IHRy'
+    'dWUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsgdGV4dDogItCX0LDQv9GD0YnQtdC90Ysg0YHQtdC5'
+    '0YfQsNGBIjsgY29sb3I6IHJvb3QudGV4dE1haW47IGZvbnQucGl4ZWxTaXplOiAxNTsgZm9udC53ZWlnaHQ6IEZvbnQuQm9sZDsg'
+    'TGF5b3V0LmZpbGxXaWR0aDogdHJ1ZSB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgRmxhdEJ1dHRvbiB7IGxhYmVs'
+    'OiAi0J7QsdC90L7QstC40YLRjCDRgdC/0LjRgdC+0LoiOyBlbmFibGVkQnV0dG9uOiAhcm9vdC5idXN5OyBvbkNsaWNrZWQ6IHJv'
+    'b3QucmVmcmVzaFJ1bm5pbmcoKSB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CgogICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgQy5UZXh0RmllbGQgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGlkOiBhcHBTZWFyY2gKICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICBMYXlvdXQuZmlsbFdpZHRoOiB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgcGxhY2Vob2xkZXJUZXh0OiAi0J3QsNC50YLQuCDQt9Cw0L/Rg9GJ0LXQvdC90L7QtSDQv9GA0LjQu9C+0LbQtdC90LjQtSDQ'
+    'v9C+INC40LzQtdC90Lgg0LjQu9C4INC/0YPRgtC44oCmIgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNlbGVjdEJ5'
+    'TW91c2U6IHRydWUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBiYWNrZ3JvdW5kOiBSZWN0YW5nbGUgeyByYWRpdXM6'
+    'IDEwOyBjb2xvcjogcm9vdC5zdXJmYWNlOyBib3JkZXIuY29sb3I6IHJvb3QuYm9yZGVyIH0KICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgIH0KCiAgICAgICAgICAgICAgICAgICAgICAgICAgICBDYXJkIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICBMYXlvdXQuZmlsbFdpZHRoOiB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgTGF5b3V0LmZpbGxIZWlnaHQ6'
+    'IHRydWUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBMaXN0VmlldyB7CiAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgIGFuY2hvcnMuZmlsbDogcGFyZW50CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFuY2hvcnMu'
+    'bWFyZ2luczogOAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBjbGlwOiB0cnVlCiAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgIHNwYWNpbmc6IDYKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbW9kZWw6IHJv'
+    'b3QuZmlsdGVyZWRSdW5uaW5nKCkKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZGVsZWdhdGU6IFJlY3Rhbmds'
+    'ZSB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICByZXF1aXJlZCBwcm9wZXJ0eSB2YXIgbW9kZWxEYXRh'
+    'CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB3aWR0aDogTGlzdFZpZXcudmlldy53aWR0aAogICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgaGVpZ2h0OiA2NAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgcmFkaXVzOiAxMQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgY29sb3I6ICIjZjhmYWZj'
+    'IgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgUm93TGF5b3V0IHsKICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICBhbmNob3JzLmZpbGw6IHBhcmVudAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgIGFuY2hvcnMubWFyZ2luczogOQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'IHNwYWNpbmc6IDEwCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgUmVjdGFuZ2xlIHsKICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgd2lkdGg6IDQwOyBoZWlnaHQ6IDQwOyByYWRpdXM6IDEy'
+    'CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGNvbG9yOiBCb29sZWFuKG1vZGVsRGF0YS5l'
+    'eGNsdWRlZCkgPyAiI2RjZmNlNyIgOiByb290LmFjY2VudFNvZnQKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgQy5MYWJlbCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBh'
+    'bmNob3JzLmNlbnRlckluOiBwYXJlbnQKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'IHRleHQ6IFN0cmluZyhtb2RlbERhdGEubmFtZSB8fCAiPyIpLnNsaWNlKDAsIDEpLnRvVXBwZXJDYXNlKCkKICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGNvbG9yOiBCb29sZWFuKG1vZGVsRGF0YS5leGNsdWRlZCkg'
+    'PyByb290Lmdvb2QgOiByb290LmFjY2VudAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgZm9udC53ZWlnaHQ6IEZvbnQuQm9sZAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgZm9udC5waXhlbFNpemU6IDE2CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgQ29sdW1uTGF5b3V0IHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'TGF5b3V0LmZpbGxXaWR0aDogdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBzcGFj'
+    'aW5nOiAxCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuTGFiZWwgeyBMYXlvdXQuZmls'
+    'bFdpZHRoOiB0cnVlOyB0ZXh0OiBTdHJpbmcobW9kZWxEYXRhLm5hbWUgfHwgIiIpOyBjb2xvcjogcm9vdC50ZXh0TWFpbjsgZm9u'
+    'dC53ZWlnaHQ6IEZvbnQuRGVtaUJvbGQ7IGVsaWRlOiBUZXh0LkVsaWRlUmlnaHQgfQogICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsgTGF5b3V0LmZpbGxXaWR0aDogdHJ1ZTsgdGV4dDogU3RyaW5nKG1vZGVs'
+    'RGF0YS5leGUgfHwgIiIpOyBjb2xvcjogcm9vdC50ZXh0TXV0ZWQ7IGZvbnQucGl4ZWxTaXplOiAxMTsgZWxpZGU6IFRleHQuRWxp'
+    'ZGVNaWRkbGUgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgdmlzaWJsZTogTnVtYmVyKG1vZGVsRGF0YS5jb3VudCB8fCAxKSA+IDEKICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgdGV4dDogIsOXIiArIFN0cmluZyhtb2RlbERhdGEuY291bnQpCiAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGNvbG9yOiByb290LnRleHRNdXRlZAogICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBGbGF0'
+    'QnV0dG9uIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbGFiZWw6IEJvb2xlYW4obW9k'
+    'ZWxEYXRhLmV4Y2x1ZGVkKSA/ICLQo9C20LUg0LjRgdC60LvRjtGH0LXQvdC+IiA6ICLQmNGB0LrQu9GO0YfQuNGC0YwiCiAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHByaW1hcnk6ICFCb29sZWFuKG1vZGVsRGF0YS5leGNs'
+    'dWRlZCkKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZW5hYmxlZEJ1dHRvbjogIXJvb3Qu'
+    'YnVzeSAmJiAhQm9vbGVhbihtb2RlbERhdGEuZXhjbHVkZWQpCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgIG9uQ2xpY2tlZDogcm9vdC5hY3Rpb24oe2FjdGlvbjogImFwcF9hZGQiLCB0YXJnZXQ6IFN0cmluZyhtb2RlbERh'
+    'dGEuZXhlIHx8IG1vZGVsRGF0YS5uYW1lIHx8ICIiKX0pCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuU2Nyb2xsQmFyLnZlcnRpY2FsOiBDLlNjcm9s'
+    'bEJhciB7fQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgIH0KCiAgICAgICAgICAgICAgICAgICAgLy8gU2l0ZXMv'
+    'SVAKICAgICAgICAgICAgICAgICAgICBJdGVtIHsKICAgICAgICAgICAgICAgICAgICAgICAgQ29sdW1uTGF5b3V0IHsKICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgIGFuY2hvcnMuZmlsbDogcGFyZW50CiAgICAgICAgICAgICAgICAgICAgICAgICAgICBzcGFj'
+    'aW5nOiAxNAogICAgICAgICAgICAgICAgICAgICAgICAgICAgQ2FyZCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'TGF5b3V0LmZpbGxXaWR0aDogdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGhlaWdodDogODIKICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICBSb3dMYXlvdXQgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBhbmNo'
+    'b3JzLmZpbGw6IHBhcmVudAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBhbmNob3JzLm1hcmdpbnM6IDE2CiAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNwYWNpbmc6IDEwCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgIEMuVGV4dEZpZWxkIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGlkOiBkaXJlY3RUYXJn'
+    'ZXQKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIExheW91dC5maWxsV2lkdGg6IHRydWUKICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHBsYWNlaG9sZGVyVGV4dDogImV4YW1wbGUuY29tLCAyMDMuMC4xMTMuMTAg'
+    '0LjQu9C4IDIwMy4wLjExMy4wLzI0IgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgc2VsZWN0QnlNb3Vz'
+    'ZTogdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgYmFja2dyb3VuZDogUmVjdGFuZ2xlIHsgcmFk'
+    'aXVzOiAxMDsgY29sb3I6ICIjZjhmYWZjIjsgYm9yZGVyLmNvbG9yOiByb290LmJvcmRlciB9CiAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICBvbkFjY2VwdGVkOiBpZiAodGV4dC50cmltKCkubGVuZ3RoKSByb290LmFjdGlvbih7YWN0aW9u'
+    'OiAiZGlyZWN0X2FkZCIsIHRhcmdldDogdGV4dC50cmltKCl9KQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9'
+    'CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEZsYXRCdXR0b24gewogICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgbGFiZWw6ICLQlNC+0LHQsNCy0LjRgtGMINC40YHQutC70Y7Rh9C10L3QuNC1IgogICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgcHJpbWFyeTogdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgZW5hYmxlZEJ1dHRvbjogIXJvb3QuYnVzeSAmJiBkaXJlY3RUYXJnZXQudGV4dC50cmltKCkubGVuZ3RoID4gMAogICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgb25DbGlja2VkOiB7CiAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgcm9vdC5hY3Rpb24oe2FjdGlvbjogImRpcmVjdF9hZGQiLCB0YXJnZXQ6IGRpcmVjdFRhcmdldC50'
+    'ZXh0LnRyaW0oKX0pCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZGlyZWN0VGFyZ2V0LmNsZWFy'
+    'KCkKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KCiAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICBSb3dMYXlvdXQgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIExheW91'
+    'dC5maWxsV2lkdGg6IHRydWUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBzcGFjaW5nOiAxNAogICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgIENhcmQgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBMYXlvdXQuZmlsbFdp'
+    'ZHRoOiB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIExheW91dC5maWxsSGVpZ2h0OiB0cnVlCiAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIENvbHVtbkxheW91dCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICBhbmNob3JzLmZpbGw6IHBhcmVudAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgYW5j'
+    'aG9ycy5tYXJnaW5zOiAxNAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgQy5MYWJlbCB7IHRleHQ6ICLQ'
+    'lNC+0LzQtdC90YsiOyBjb2xvcjogcm9vdC50ZXh0TWFpbjsgZm9udC53ZWlnaHQ6IEZvbnQuQm9sZDsgZm9udC5waXhlbFNpemU6'
+    'IDE1IH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIExpc3RWaWV3IHsKICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICBMYXlvdXQuZmlsbFdpZHRoOiB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgTGF5b3V0LmZpbGxIZWlnaHQ6IHRydWUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICBjbGlwOiB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgc3BhY2luZzog'
+    'NQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIG1vZGVsOiByb290LnN0YXRlLmRvbWFpbnMgfHwg'
+    'W10KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBkZWxlZ2F0ZTogUmVjdGFuZ2xlIHsKICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgcmVxdWlyZWQgcHJvcGVydHkgdmFyIG1vZGVsRGF0YQog'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB3aWR0aDogTGlzdFZpZXcudmlldy53aWR0aAog'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBoZWlnaHQ6IDQ2CiAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHJhZGl1czogOQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICBjb2xvcjogIiNmOGZhZmMiCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgIFJvd0xheW91dCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBhbmNob3Jz'
+    'LmZpbGw6IHBhcmVudDsgYW5jaG9ycy5sZWZ0TWFyZ2luOiAxMDsgYW5jaG9ycy5yaWdodE1hcmdpbjogNwogICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgQy5MYWJlbCB7IExheW91dC5maWxsV2lkdGg6IHRydWU7IHRl'
+    'eHQ6IFN0cmluZyhtb2RlbERhdGEpOyBjb2xvcjogcm9vdC50ZXh0TWFpbjsgZWxpZGU6IFRleHQuRWxpZGVSaWdodCB9CiAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBGbGF0QnV0dG9uIHsgbGFiZWw6ICLQo9C00LDQ'
+    'u9C40YLRjCI7IGRhbmdlcjogdHJ1ZTsgZW5hYmxlZEJ1dHRvbjogIXJvb3QuYnVzeTsgb25DbGlja2VkOiByb290LmFjdGlvbih7'
+    'YWN0aW9uOiAiZGlyZWN0X3JlbW92ZSIsIHRhcmdldDogU3RyaW5nKG1vZGVsRGF0YSl9KSB9CiAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9'
+    'CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgQy5TY3JvbGxCYXIudmVydGljYWw6IEMuU2Nyb2xs'
+    'QmFyIHt9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgQ2FyZCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIExheW91dC5maWxsV2lkdGg6IHRydWUKICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgTGF5b3V0LmZpbGxIZWlnaHQ6IHRydWUKICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgQ29sdW1uTGF5b3V0IHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFuY2hv'
+    'cnMuZmlsbDogcGFyZW50CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBhbmNob3JzLm1hcmdpbnM6IDE0'
+    'CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsgdGV4dDogIklQINC4INGB0LXRgtC4Ijsg'
+    'Y29sb3I6IHJvb3QudGV4dE1haW47IGZvbnQud2VpZ2h0OiBGb250LkJvbGQ7IGZvbnQucGl4ZWxTaXplOiAxNSB9CiAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBMaXN0VmlldyB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgTGF5b3V0LmZpbGxXaWR0aDogdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgIExheW91dC5maWxsSGVpZ2h0OiB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgY2xp'
+    'cDogdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNwYWNpbmc6IDUKICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBtb2RlbDogcm9vdC5zdGF0ZS5uZXR3b3JrcyB8fCBbXQogICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGRlbGVnYXRlOiBSZWN0YW5nbGUgewogICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICByZXF1aXJlZCBwcm9wZXJ0eSB2YXIgbW9kZWxEYXRhCiAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHdpZHRoOiBMaXN0Vmlldy52aWV3LndpZHRoCiAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGhlaWdodDogNDYKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgcmFkaXVzOiA5CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'IGNvbG9yOiAiI2Y4ZmFmYyIKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgUm93TGF5b3V0'
+    'IHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFuY2hvcnMuZmlsbDogcGFyZW50'
+    'OyBhbmNob3JzLmxlZnRNYXJnaW46IDEwOyBhbmNob3JzLnJpZ2h0TWFyZ2luOiA3CiAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsgTGF5b3V0LmZpbGxXaWR0aDogdHJ1ZTsgdGV4dDogU3RyaW5nKG1v'
+    'ZGVsRGF0YSk7IGNvbG9yOiByb290LnRleHRNYWluOyBlbGlkZTogVGV4dC5FbGlkZU1pZGRsZSB9CiAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBGbGF0QnV0dG9uIHsgbGFiZWw6ICLQo9C00LDQu9C40YLRjCI7IGRh'
+    'bmdlcjogdHJ1ZTsgZW5hYmxlZEJ1dHRvbjogIXJvb3QuYnVzeTsgb25DbGlja2VkOiByb290LmFjdGlvbih7YWN0aW9uOiAiZGly'
+    'ZWN0X3JlbW92ZSIsIHRhcmdldDogU3RyaW5nKG1vZGVsRGF0YSl9KSB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgQy5TY3JvbGxCYXIudmVydGljYWw6IEMuU2Nyb2xsQmFyIHt9CiAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0K'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAg'
+    'ICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICB9CgogICAgICAgICAgICAgICAgICAgIC8vIFBvcnRzCiAgICAgICAg'
+    'ICAgICAgICAgICAgSXRlbSB7CiAgICAgICAgICAgICAgICAgICAgICAgIENvbHVtbkxheW91dCB7CiAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICBhbmNob3JzLmZpbGw6IHBhcmVudAogICAgICAgICAgICAgICAgICAgICAgICAgICAgc3BhY2luZzogMTQKICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgIENhcmQgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIExheW91dC5maWxs'
+    'V2lkdGg6IHRydWUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBoZWlnaHQ6IDEwNQogICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgIENvbHVtbkxheW91dCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFuY2hvcnMuZmls'
+    'bDogcGFyZW50CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFuY2hvcnMubWFyZ2luczogMTUKICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgc3BhY2luZzogOAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBD'
+    'LkxhYmVsIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIExheW91dC5maWxsV2lkdGg6IHRydWUKICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHRleHQ6ICLQlNC70Y8g0LvQvtC60LDQu9GM0L3Ri9GFINGB0LXR'
+    'gNCy0LXRgNC+0LI6INC+0YLQstC10YLRiyDQvdCwINCy0YXQvtC00Y/RidC40LUg0L/QvtC00LrQu9GO0YfQtdC90LjRjyDQuiDR'
+    'jdGC0LjQvCDQv9C+0YDRgtCw0Lwg0LjQtNGD0YIg0L3QsNC/0YDRj9C80YPRjiDRh9C10YDQtdC3INGE0LjQt9C40YfQtdGB0LrR'
+    'g9GOINGB0LXRgtGMLiIKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGNvbG9yOiByb290LnRleHRNdXRl'
+    'ZAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgd3JhcE1vZGU6IFRleHQuV29yZFdyYXAKICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGZvbnQucGl4ZWxTaXplOiAxMgogICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIFJvd0xheW91dCB7CiAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICBMYXlvdXQuZmlsbFdpZHRoOiB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICBDLlRleHRGaWVsZCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgaWQ6'
+    'IHBvcnRGaWVsZAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIExheW91dC5maWxsV2lkdGg6IHRy'
+    'dWUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBwbGFjZWhvbGRlclRleHQ6ICIyNTU2NSIKICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBpbnB1dE1ldGhvZEhpbnRzOiBRdC5JbWhEaWdpdHNPbmx5'
+    'CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgYmFja2dyb3VuZDogUmVjdGFuZ2xlIHsgcmFkaXVz'
+    'OiAxMDsgY29sb3I6ICIjZjhmYWZjIjsgYm9yZGVyLmNvbG9yOiByb290LmJvcmRlciB9CiAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBDLkNvbWJvQm94IHsKICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBpZDogcHJvdG9Cb3gKICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICBtb2RlbDogWyJUQ1AiLCAiVURQIiwgIkJPVEgiXQogICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgIGltcGxpY2l0V2lkdGg6IDExMAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgRmxhdEJ1dHRvbiB7CiAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgbGFiZWw6ICLQlNC+0LHQsNCy0LjRgtGMIgogICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgIHByaW1hcnk6IHRydWUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICBlbmFibGVkQnV0dG9uOiAhcm9vdC5idXN5ICYmIHBvcnRGaWVsZC50ZXh0Lmxlbmd0aCA+IDAKICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBvbkNsaWNrZWQ6IHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgY29uc3QgcCA9IE51bWJlcihwb3J0RmllbGQudGV4dCkKICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgaWYgKHAgPj0gMSAmJiBwIDw9IDY1NTM1ICYmIHAgPT09IE1hdGguZmxvb3IocCkpIHsK'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHJvb3QuYWN0aW9uKHthY3Rpb246ICJw'
+    'b3J0X2FkZCIsIHBvcnQ6IHAsIHByb3RvOiBwcm90b0JveC5jdXJyZW50VGV4dC50b0xvd2VyQ2FzZSgpfSkKICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHBvcnRGaWVsZC5jbGVhcigpCiAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICBDYXJkIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBMYXlvdXQuZmls'
+    'bFdpZHRoOiB0cnVlCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgTGF5b3V0LmZpbGxIZWlnaHQ6IHRydWUKICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICBMaXN0VmlldyB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFu'
+    'Y2hvcnMuZmlsbDogcGFyZW50CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFuY2hvcnMubWFyZ2luczogMTAK'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgY2xpcDogdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICBzcGFjaW5nOiA3CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIG1vZGVsOiByb290LnN0YXRlLnNl'
+    'cnZlcl9wb3J0cyB8fCBbXQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBkZWxlZ2F0ZTogUmVjdGFuZ2xlIHsK'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHJlcXVpcmVkIHByb3BlcnR5IHZhciBtb2RlbERhdGEKICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHdpZHRoOiBMaXN0Vmlldy52aWV3LndpZHRoCiAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICBoZWlnaHQ6IDU0CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICByYWRpdXM6IDEwCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBjb2xvcjogIiNmOGZhZmMiCiAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBSb3dMYXlvdXQgewogICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgIGFuY2hvcnMuZmlsbDogcGFyZW50OyBhbmNob3JzLmxlZnRNYXJnaW46IDEyOyBhbmNob3JzLnJp'
+    'Z2h0TWFyZ2luOiA4CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgUmVjdGFuZ2xlIHsKICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgd2lkdGg6IDU0OyBoZWlnaHQ6IDMwOyByYWRpdXM6IDg7'
+    'IGNvbG9yOiByb290LmFjY2VudFNvZnQKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgQy5M'
+    'YWJlbCB7IGFuY2hvcnMuY2VudGVySW46IHBhcmVudDsgdGV4dDogU3RyaW5nKG1vZGVsRGF0YS5wcm90byB8fCAiIikudG9VcHBl'
+    'ckNhc2UoKTsgY29sb3I6IHJvb3QuYWNjZW50OyBmb250LndlaWdodDogRm9udC5Cb2xkOyBmb250LnBpeGVsU2l6ZTogMTEgfQog'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICBDLkxhYmVsIHsgTGF5b3V0LmZpbGxXaWR0aDogdHJ1ZTsgdGV4dDogU3RyaW5nKG1vZGVsRGF0YS5wb3J0'
+    'IHx8ICIiKTsgY29sb3I6IHJvb3QudGV4dE1haW47IGZvbnQucGl4ZWxTaXplOiAxNjsgZm9udC53ZWlnaHQ6IEZvbnQuRGVtaUJv'
+    'bGQgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEZsYXRCdXR0b24gewogICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBsYWJlbDogItCj0LTQsNC70LjRgtGMIjsgZGFuZ2VyOiB0cnVlOyBl'
+    'bmFibGVkQnV0dG9uOiAhcm9vdC5idXN5CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIG9u'
+    'Q2xpY2tlZDogcm9vdC5hY3Rpb24oe2FjdGlvbjogInBvcnRfcmVtb3ZlIiwgcG9ydDogTnVtYmVyKG1vZGVsRGF0YS5wb3J0KSwg'
+    'cHJvdG86IFN0cmluZyhtb2RlbERhdGEucHJvdG8pfSkKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgQy5TY3JvbGxCYXIudmVydGljYWw6IEMuU2Nyb2xs'
+    'QmFyIHt9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuTGFiZWwgeyBhbmNob3JzLmNlbnRlckluOiBwYXJl'
+    'bnQ7IHZpc2libGU6IChyb290LnN0YXRlLnNlcnZlcl9wb3J0cyB8fCBbXSkubGVuZ3RoID09PSAwOyB0ZXh0OiAi0J3QtdGCINGB'
+    '0LXRgNCy0LXRgNC90YvRhSDQv9C+0YDRgtC+0LIiOyBjb2xvcjogcm9vdC50ZXh0TXV0ZWQgfQogICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgfQogICAg'
+    'ICAgICAgICAgICAgICAgIH0KCiAgICAgICAgICAgICAgICAgICAgLy8gRGlhZ25vc3RpY3MKICAgICAgICAgICAgICAgICAgICBJ'
+    'dGVtIHsKICAgICAgICAgICAgICAgICAgICAgICAgQ2FyZCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICBhbmNob3JzLmZp'
+    'bGw6IHBhcmVudAogICAgICAgICAgICAgICAgICAgICAgICAgICAgQ29sdW1uTGF5b3V0IHsKICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICBhbmNob3JzLmZpbGw6IHBhcmVudAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFuY2hvcnMubWFy'
+    'Z2luczogMjQKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBzcGFjaW5nOiAxNAogICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgIEMuTGFiZWwgeyB0ZXh0OiAi0KLQtdC60YPRidC10LUg0YHQvtGB0YLQvtGP0L3QuNC1IjsgY29sb3I6IHJvb3Qu'
+    'dGV4dE1haW47IGZvbnQucGl4ZWxTaXplOiAxODsgZm9udC53ZWlnaHQ6IEZvbnQuQm9sZCB9CiAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgR3JpZExheW91dCB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIExheW91dC5maWxsV2lk'
+    'dGg6IHRydWUKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgY29sdW1uczogMgogICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICBjb2x1bW5TcGFjaW5nOiAyOAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICByb3dT'
+    'cGFjaW5nOiAxMwogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsgdGV4dDogIlZQTiI7IGNvbG9y'
+    'OiByb290LnRleHRNdXRlZCB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuTGFiZWwgeyB0ZXh0OiBCb29s'
+    'ZWFuKHJvb3Quc3RhdGUuYWN0aXZlKSA/ICLQktC60LvRjtGH0ZHQvSIgOiAi0JLRi9C60LvRjtGH0LXQvSI7IGNvbG9yOiBCb29s'
+    'ZWFuKHJvb3Quc3RhdGUuYWN0aXZlKSA/IHJvb3QuZ29vZCA6IHJvb3QudGV4dE11dGVkOyBmb250LndlaWdodDogRm9udC5EZW1p'
+    'Qm9sZCB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuTGFiZWwgeyB0ZXh0OiAi0J/RgNC+0YTQuNC70Ywi'
+    'OyBjb2xvcjogcm9vdC50ZXh0TXV0ZWQgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsgdGV4'
+    'dDogU3RyaW5nKHJvb3Quc3RhdGUucHJvZmlsZSB8fCByb290LnN0YXRlLmxhc3RfcHJvZmlsZSB8fCAi4oCUIik7IGNvbG9yOiBy'
+    'b290LnRleHRNYWluOyBmb250LndlaWdodDogRm9udC5EZW1pQm9sZCB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgIEMuTGFiZWwgeyB0ZXh0OiAiVFVOIjsgY29sb3I6IHJvb3QudGV4dE11dGVkIH0KICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgQy5MYWJlbCB7IHRleHQ6IEJvb2xlYW4ocm9vdC5zdGF0ZS50dW4pID8gInhyYXl0dW4g0L/QvtC00L3Rj9GC'
+    'IiA6ICLQndC10YIiOyBjb2xvcjogcm9vdC50ZXh0TWFpbjsgZm9udC53ZWlnaHQ6IEZvbnQuRGVtaUJvbGQgfQogICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsgdGV4dDogIktpbGwgc3dpdGNoIjsgY29sb3I6IHJvb3QudGV4dE11'
+    'dGVkIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgQy5MYWJlbCB7IHRleHQ6IEJvb2xlYW4ocm9vdC5zdGF0'
+    'ZS5raWxsX3N3aXRjaCkgPyAi0JDQutGC0LjQstC10L0iIDogItCS0YvQutC70Y7Rh9C10L0iOyBjb2xvcjogQm9vbGVhbihyb290'
+    'LnN0YXRlLmtpbGxfc3dpdGNoKSA/IHJvb3QuZ29vZCA6IHJvb3QudGV4dE11dGVkOyBmb250LndlaWdodDogRm9udC5EZW1pQm9s'
+    'ZCB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuTGFiZWwgeyB0ZXh0OiAiSVB2NiI7IGNvbG9yOiByb290'
+    'LnRleHRNdXRlZCB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuTGFiZWwgeyB0ZXh0OiBTdHJpbmcocm9v'
+    'dC5zdGF0ZS5pcHY2X21vZGUgfHwgInVua25vd24iKTsgY29sb3I6IHJvb3QudGV4dE1haW47IGZvbnQud2VpZ2h0OiBGb250LkRl'
+    'bWlCb2xkIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgQy5MYWJlbCB7IHRleHQ6ICJESVJFQ1Qg0L/RgNC4'
+    '0LvQvtC20LXQvdC40Y8iOyBjb2xvcjogcm9vdC50ZXh0TXV0ZWQgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICBDLkxhYmVsIHsgdGV4dDogU3RyaW5nKHJvb3Quc3RhdGUuZGlyZWN0X2FwcGxpY2F0aW9ucyB8fCAwKTsgY29sb3I6IHJvb3Qu'
+    'dGV4dE1haW47IGZvbnQud2VpZ2h0OiBGb250LkRlbWlCb2xkIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'Qy5MYWJlbCB7IHRleHQ6ICJESVJFQ1Qg0LTQvtC80LXQvdGLIjsgY29sb3I6IHJvb3QudGV4dE11dGVkIH0KICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgQy5MYWJlbCB7IHRleHQ6IFN0cmluZyhyb290LnN0YXRlLmRpcmVjdF9kb21haW5zIHx8'
+    'IDApOyBjb2xvcjogcm9vdC50ZXh0TWFpbjsgZm9udC53ZWlnaHQ6IEZvbnQuRGVtaUJvbGQgfQogICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICBDLkxhYmVsIHsgdGV4dDogIkRJUkVDVCBJUC/RgdC10YLQuCI7IGNvbG9yOiByb290LnRleHRNdXRl'
+    'ZCB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuTGFiZWwgeyB0ZXh0OiBTdHJpbmcocm9vdC5zdGF0ZS5k'
+    'aXJlY3RfbmV0d29ya3MgfHwgMCk7IGNvbG9yOiByb290LnRleHRNYWluOyBmb250LndlaWdodDogRm9udC5EZW1pQm9sZCB9CiAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuTGFiZWwgeyB0ZXh0OiAiTWFuYWdlciI7IGNvbG9yOiByb290LnRl'
+    'eHRNdXRlZCB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIEMuTGFiZWwgeyB0ZXh0OiBTdHJpbmcocm9vdC5z'
+    'dGF0ZS5tYW5hZ2VyIHx8ICLigJQiKTsgY29sb3I6IHJvb3QudGV4dE1haW47IGZvbnQud2VpZ2h0OiBGb250LkRlbWlCb2xkIH0K'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgSXRlbSB7IExh'
+    'eW91dC5maWxsSGVpZ2h0OiB0cnVlIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBDLkxhYmVsIHsKICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICAgICAgICAgTGF5b3V0LmZpbGxXaWR0aDogdHJ1ZQogICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICB0ZXh0OiAi0J7QutC90L4g0L3QsNGB0YLRgNC+0LXQuiDRgNCw0LHQvtGC0LDQtdGCINC+0YLQtNC10LvRjNC9'
+    '0L4g0L7RgiBQbGFzbWEuIEtERSDQuNGB0L/QvtC70YzQt9GD0LXRgtGB0Y8g0YLQvtC70YzQutC+INC00LvRjyDQvNCw0LvQtdC9'
+    '0YzQutC+0LPQviDQstC40LTQttC10YLQsCDQvdCwINGA0LDQsdC+0YfQtdC8INGB0YLQvtC70LUuIgogICAgICAgICAgICAgICAg'
+    'ICAgICAgICAgICAgICAgICAgICBjb2xvcjogcm9vdC50ZXh0TXV0ZWQKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg'
+    'ICAgd3JhcE1vZGU6IFRleHQuV29yZFdyYXAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZm9udC5waXhlbFNp'
+    'emU6IDEyCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgICAgICAgICAgfQogICAg'
+    'ICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgfQogICAgICAgICAgICB9'
+    'CiAgICAgICAgfQogICAgfQp9Cg=='
+)
 
 RELEASES = pathlib.Path("/opt/vpn-manager/releases")
 CURRENT = pathlib.Path("/opt/vpn-manager/current")
@@ -1006,6 +997,16 @@ WRAPPER_TEXT = r"""#!/usr/bin/env bash
 set -e
 exec /usr/bin/sudo -n /usr/local/sbin/vpnctl "$@"
 """
+
+GUI_WRAPPER_TEXT = r'''#!/usr/bin/env bash
+set -e
+GUI="$HOME/.local/share/evgenium-network/evgenium_gui.py"
+if [[ ! -f "$GUI" ]]; then
+  echo "Evgenium Network GUI is not installed. Run: vpn gui install" >&2
+  exit 1
+fi
+exec /usr/bin/python3 "$GUI" "$@"
+'''
 
 class VPNError(RuntimeError):
     pass
@@ -3216,34 +3217,100 @@ def _write_owner_text(path: pathlib.Path, text: str, uid: int, gid: int) -> None
             os.unlink(tmpname)
 
 
+def _gui_package_dir(settings: dict) -> pathlib.Path:
+    return pathlib.Path(str(settings["owner_home"])) / ".local" / "share" / "evgenium-network"
+
+
+def _gui_desktop_path(settings: dict) -> pathlib.Path:
+    return pathlib.Path(str(settings["owner_home"])) / ".local" / "share" / "applications" / "evgenium-network.desktop"
+
+
+def _gui_target_safe(settings: dict, target: pathlib.Path) -> None:
+    home = pathlib.Path(str(settings["owner_home"])).resolve()
+    try:
+        target.resolve(strict=False).relative_to(home)
+    except ValueError:
+        fail(f"GUI path выходит за пределы home: {target}")
+    if target.is_symlink():
+        fail(f"Отказываюсь изменять symlink GUI: {target}")
+
+
+def cmd_gui_install(settings: dict) -> None:
+    package = _gui_package_dir(settings)
+    desktop = _gui_desktop_path(settings)
+    _gui_target_safe(settings, package)
+    _gui_target_safe(settings, desktop)
+    uid, gid = _owner_ids(settings)
+
+    package.mkdir(parents=True, exist_ok=True)
+    desktop.parent.mkdir(parents=True, exist_ok=True)
+    for directory in (package, desktop.parent):
+        os.chown(directory, uid, gid)
+        os.chmod(directory, 0o755)
+
+    gui_py = base64.b64decode(STANDALONE_GUI_PY_B64).decode("utf-8")
+    gui_qml = base64.b64decode(STANDALONE_GUI_QML_B64).decode("utf-8")
+    _write_owner_text(package / "evgenium_gui.py", gui_py, uid, gid)
+    _write_owner_text(package / "evgenium_gui.qml", gui_qml, uid, gid)
+    _write_owner_text(desktop, GUI_DESKTOP_ENTRY, uid, gid)
+    os.chmod(package / "evgenium_gui.py", 0o755)
+    os.chmod(package / "evgenium_gui.qml", 0o644)
+    os.chmod(desktop, 0o644)
+
+    kbuild = shutil.which("kbuildsycoca6")
+    if kbuild:
+        run([kbuild], check=False, capture=True, user=str(settings["owner_user"]))
+    ok(f"Evgenium Network GUI установлен: {package}")
+
+
+def cmd_gui_remove(settings: dict) -> None:
+    package = _gui_package_dir(settings)
+    desktop = _gui_desktop_path(settings)
+    _gui_target_safe(settings, package)
+    _gui_target_safe(settings, desktop)
+    if package.exists():
+        shutil.rmtree(package)
+    desktop.unlink(missing_ok=True)
+    kbuild = shutil.which("kbuildsycoca6")
+    if kbuild:
+        run([kbuild], check=False, capture=True, user=str(settings["owner_user"]))
+    ok("Evgenium Network GUI удалён из профиля пользователя.")
+
+
 def cmd_widget_install(settings: dict) -> None:
+    cmd_gui_install(settings)
     package = _widget_package_dir(settings)
     _widget_target_safe(settings, package)
     uid, gid = _owner_ids(settings)
     ui = package / "contents" / "ui"
-    config = package / "contents" / "config"
     ui.mkdir(parents=True, exist_ok=True)
-    config.mkdir(parents=True, exist_ok=True)
-    for directory in (package, package / "contents", ui, config):
+    for directory in (package, package / "contents", ui):
         os.chown(directory, uid, gid)
         os.chmod(directory, 0o755)
 
+    stale_config = package / "contents" / "config"
+    if stale_config.exists():
+        if stale_config.is_symlink():
+            fail(f"Отказываюсь удалять symlink Plasma config: {stale_config}")
+        shutil.rmtree(stale_config)
+    for stale in (
+        "VpnBackend.qml", "configApplications.qml", "configNetwork.qml",
+        "configPorts.qml", "configGeneral.qml",
+    ):
+        candidate = ui / stale
+        if candidate.is_symlink():
+            fail(f"Отказываюсь удалять symlink Plasma UI: {candidate}")
+        candidate.unlink(missing_ok=True)
+
     _write_owner_text(package / "metadata.json", PLASMOID_METADATA, uid, gid)
     _write_owner_text(ui / "main.qml", PLASMOID_MAIN_QML, uid, gid)
-    _write_owner_text(ui / "VpnBackend.qml", PLASMOID_BACKEND_QML, uid, gid)
-    _write_owner_text(ui / "configApplications.qml", PLASMOID_CONFIG_APPS_QML, uid, gid)
-    _write_owner_text(ui / "configNetwork.qml", PLASMOID_CONFIG_NETWORK_QML, uid, gid)
-    _write_owner_text(ui / "configPorts.qml", PLASMOID_CONFIG_PORTS_QML, uid, gid)
-    _write_owner_text(ui / "configGeneral.qml", PLASMOID_CONFIG_GENERAL_QML, uid, gid)
-    _write_owner_text(config / "config.qml", PLASMOID_CONFIG_QML, uid, gid)
-    _write_owner_text(config / "main.xml", PLASMOID_CONFIG_XML, uid, gid)
 
     kbuild = shutil.which("kbuildsycoca6")
     if kbuild:
         run([kbuild], check=False, capture=True, user=str(settings["owner_user"]))
 
     ok(f"Plasma 6 виджет установлен: {package}")
-    print("Добавь его один раз: ПКМ по рабочему столу -> Добавить виджеты -> Evgenium Network.")
+    print("Шестерёнка E-VPN открывает отдельное приложение Evgenium Network.")
 
 
 def cmd_widget_remove(settings: dict) -> None:
@@ -3494,6 +3561,9 @@ def sync_system_files() -> None:
     pathlib.Path("/usr/local/bin/vpn").write_text(WRAPPER_TEXT)
     os.chmod("/usr/local/bin/vpn", 0o755)
 
+    pathlib.Path("/usr/local/bin/evgenium-network").write_text(GUI_WRAPPER_TEXT)
+    os.chmod("/usr/local/bin/evgenium-network", 0o755)
+
     run(["/usr/bin/systemctl", "daemon-reload"], check=False)
 
 def safe_extract_manager(tar_path: pathlib.Path, dest: pathlib.Path) -> str:
@@ -3655,17 +3725,17 @@ def self_test() -> None:
         assert 'engine: "executable"' in PLASMOID_MAIN_QML
         assert "/usr/local/bin/vpn status --json" in PLASMOID_MAIN_QML
         assert "/usr/local/bin/vpn toggle" in PLASMOID_MAIN_QML
+        assert "/usr/local/bin/evgenium-network --detach" in PLASMOID_MAIN_QML
         assert 'icon.name: "configure"' in PLASMOID_MAIN_QML
         assert 'text: "E-VPN"' in PLASMOID_MAIN_QML
-        assert 'Plasmoid.hasConfigurationInterface: true' in PLASMOID_MAIN_QML
-        assert 'plasmoid.internalAction("configure")' in PLASMOID_MAIN_QML
-        assert 'plasmoid.action("configure")' in PLASMOID_MAIN_QML
-        assert 'ConfigCategory' in PLASMOID_CONFIG_QML
-        assert 'name: "Приложения"' in PLASMOID_CONFIG_QML
-        assert '/usr/local/bin/vpn ui state' in PLASMOID_BACKEND_QML
-        assert '/usr/local/bin/vpn ui running' in PLASMOID_BACKEND_QML
-        assert '/usr/local/bin/vpn ui action ' in PLASMOID_BACKEND_QML
-        assert 'target: String(modelData.name || "")' in PLASMOID_CONFIG_APPS_QML
+        assert "internalAction" not in PLASMOID_MAIN_QML
+        gui_py = base64.b64decode(STANDALONE_GUI_PY_B64).decode("utf-8")
+        gui_qml = base64.b64decode(STANDALONE_GUI_QML_B64).decode("utf-8")
+        assert "ThreadingHTTPServer" in gui_py
+        assert "/api/running" in gui_py and "/api/action" in gui_py
+        assert "Evgenium Network" in gui_qml
+        assert "Запущены сейчас" in gui_qml
+        assert 'action: "app_add"' in gui_qml
         assert _direct_app_rule_matches("firefox", "firefox", "/usr/lib/firefox/firefox")
         assert _direct_app_rule_matches("/opt/example/", "helper", "/opt/example/bin/helper")
         payload = {"action": "app_add", "target": "firefox"}
@@ -3715,6 +3785,11 @@ def main(argv=None) -> int:
     pwsub = pw.add_subparsers(dest="widget_cmd")
     pwsub.add_parser("install")
     pwsub.add_parser("remove")
+
+    pg = sub.add_parser("gui")
+    pgsub = pg.add_subparsers(dest="gui_cmd")
+    pgsub.add_parser("install")
+    pgsub.add_parser("remove")
 
     pui = sub.add_parser("ui")
     puisub = pui.add_subparsers(dest="ui_cmd")
@@ -3774,6 +3849,8 @@ def main(argv=None) -> int:
   vpn app add PROCESS|/absolute/path|/directory/
   vpn app remove PROCESS|/absolute/path|/directory/
   vpn widget install|remove
+  vpn gui install|remove
+  evgenium-network
   vpn port list
   vpn port add PORT [tcp|udp|both]
   vpn port remove PORT [tcp|udp|both]
@@ -3877,6 +3954,14 @@ Local DIRECT SOCKS (only localhost, only while VPN is on):
             cmd_ui_action(settings, args.payload)
             return 0
 
+    if args.cmd == "gui":
+        if args.gui_cmd in {None, "install"}:
+            cmd_gui_install(settings)
+            return 0
+        if args.gui_cmd == "remove":
+            cmd_gui_remove(settings)
+            return 0
+
     if args.cmd == "widget":
         if args.widget_cmd in {None, "install"}:
             cmd_widget_install(settings)
@@ -3955,10 +4040,12 @@ Local DIRECT SOCKS (only localhost, only while VPN is on):
 
     if args.cmd == "internal-sync":
         sync_system_files()
+        cmd_gui_install(settings)
         return 0
 
     if args.cmd == "internal-after-update":
         sync_system_files()
+        cmd_gui_install(settings)
         if _widget_package_dir(settings).exists():
             cmd_widget_install(settings)
         # Migrate an active 0.2.3 rule -> main without cycling the VPN.
