@@ -1,0 +1,74 @@
+name: Prepare VPN Manager 0.2.12
+
+on:
+  push:
+    branches: [feature/gui-profiles-icon-0.2.12]
+    paths:
+      - '.github/workflows/prepare-0.2.12.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/gui-profiles-icon-0.2.12
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare 0.2.12 source
+        run: python scripts/prepare_0_2_12.py
+      - name: Compile and self-test
+        run: |
+          python -m py_compile src/vpnctl.py src/vpnadmin.py src/evgenium_gui.py scripts/build_release.py
+          python src/vpnctl.py --self-test
+          python src/evgenium_gui.py --self-test
+      - name: Validate Qt Quick UI
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qt6-declarative-dev-tools qml6-module-qtqml qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-templates
+          cat > src/.qmllint.ini <<'EOF'
+          [Warnings]
+          UnqualifiedAccess=disable
+          ImportFailure=disable
+          EOF
+          /usr/lib/qt6/bin/qmllint src/evgenium_gui.qml
+          rm -f src/.qmllint.ini
+      - name: Verify profiles and icon integration
+        run: |
+          grep -F 'Layout.fillWidth: true' src/evgenium_gui.qml
+          grep -F 'Профили VPN' src/evgenium_gui.qml
+          grep -F 'action: "profile_activate"' src/evgenium_gui.qml
+          grep -F '"profiles": profiles' src/vpnctl.py
+          grep -F 'APP_ICON_SVG' src/vpnctl.py
+          grep -F 'Plasmoid.icon: "evgenium-network"' src/vpnctl.py
+          grep -F 'Icon=evgenium-network' src/vpnctl.py
+          grep -F 'E-VPN' assets/evgenium-network.svg
+      - name: Build deterministic release
+        run: |
+          python scripts/build_release.py --channels stable testing
+          python - <<'PY'
+          import hashlib,json,tarfile
+          from pathlib import Path
+          v=Path('VERSION').read_text().strip()
+          assert v=='0.2.12'
+          archive=Path(f'dist/vpn-manager-{v}.tar.gz')
+          digest=hashlib.sha256(archive.read_bytes()).hexdigest()
+          with tarfile.open(archive,'r:gz') as tf:
+              assert tf.getnames()==['vpnctl.py','vpnadmin.py','VERSION']
+          for channel in ('stable','testing'):
+              m=json.loads(Path(f'update/{channel}.json').read_text())
+              assert m['version']==v and m['sha256']==digest
+          print('release OK',digest)
+          PY
+      - name: Commit prepared release
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/vpnctl.py src/evgenium_gui.qml VERSION CHANGELOG.md .github/workflows/test.yml dist update
+          git diff --cached --check
+          git commit -m 'VPN Manager 0.2.12: profiles, fixed navigation and E-VPN icon'
+          git push origin HEAD:feature/gui-profiles-icon-0.2.12
