@@ -1,0 +1,81 @@
+name: Prepare VPN Manager 0.2.13
+
+on:
+  push:
+    branches: [feature/waydroid-toggle-0.2.13]
+    paths:
+      - '.github/workflows/prepare-0.2.13.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/waydroid-toggle-0.2.13
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare 0.2.13 source
+        run: python scripts/prepare_0_2_13.py
+      - name: Compile and self-test
+        run: |
+          python -m py_compile src/vpnctl.py src/vpnadmin.py src/evgenium_gui.py scripts/build_release.py
+          python src/vpnctl.py --self-test
+          python src/evgenium_gui.py --self-test
+      - name: Validate Qt Quick UI
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qt6-declarative-dev-tools qml6-module-qtqml qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-templates nftables
+          cat > src/.qmllint.ini <<'EOF'
+          [Warnings]
+          UnqualifiedAccess=disable
+          ImportFailure=disable
+          EOF
+          /usr/lib/qt6/bin/qmllint src/evgenium_gui.qml
+          rm -f src/.qmllint.ini
+      - name: Validate Waydroid firewall variants
+        run: |
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          spec=importlib.util.spec_from_file_location('vpnctl','src/vpnctl.py')
+          mod=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          Path('/tmp/guard-vpn.nft').write_text(mod.render_guard_rules(943,{25565},set()))
+          Path('/tmp/guard-waydroid-direct.nft').write_text(mod.render_guard_rules(943,set(),set(),waydroid_direct=True))
+          PY
+          sudo nft -c -f /tmp/guard-vpn.nft
+          sudo nft -c -f /tmp/guard-waydroid-direct.nft
+          grep -F 'WAYDROID_BYPASS_TABLE = 51821' src/vpnctl.py
+          grep -F 'waydroid_vpn_enabled' src/vpnctl.py
+          grep -F 'VPN для Waydroid' src/evgenium_gui.qml
+          grep -F 'action: "waydroid_vpn_set"' src/evgenium_gui.qml
+      - name: Build deterministic release
+        run: |
+          python scripts/build_release.py --channels stable testing
+          python - <<'PY'
+          import hashlib,json,tarfile
+          from pathlib import Path
+          v=Path('VERSION').read_text().strip()
+          assert v=='0.2.13'
+          archive=Path(f'dist/vpn-manager-{v}.tar.gz')
+          digest=hashlib.sha256(archive.read_bytes()).hexdigest()
+          with tarfile.open(archive,'r:gz') as tf:
+              assert tf.getnames()==['vpnctl.py','vpnadmin.py','VERSION']
+          for channel in ('stable','testing'):
+              m=json.loads(Path(f'update/{channel}.json').read_text())
+              assert m['version']==v and m['sha256']==digest
+          print('release OK',digest)
+          PY
+      - name: Commit prepared release
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/vpnctl.py src/evgenium_gui.qml VERSION CHANGELOG.md README.md .github/workflows/test.yml dist update
+          git diff --cached --check
+          git commit -m 'VPN Manager 0.2.13: Waydroid VPN switch'
+          git push origin HEAD:feature/waydroid-toggle-0.2.13
