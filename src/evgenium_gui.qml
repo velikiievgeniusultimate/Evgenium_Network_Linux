@@ -457,6 +457,88 @@ C.ApplicationWindow {
                                     }
                                 }
 
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: 92
+                                    radius: 14
+                                    color: "#f8fafc"
+                                    border.width: 1
+                                    border.color: root.border
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 16
+                                        spacing: 14
+
+                                        Rectangle {
+                                            width: 46
+                                            height: 46
+                                            radius: 13
+                                            color: Boolean(root.state.waydroid_vpn_effective) ? root.accentSoft : "#eef2f7"
+                                            C.Label {
+                                                anchors.centerIn: parent
+                                                text: "WD"
+                                                color: Boolean(root.state.waydroid_vpn_effective) ? root.accent : root.textMuted
+                                                font.pixelSize: 13
+                                                font.weight: Font.Bold
+                                            }
+                                        }
+
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 4
+                                            C.Label {
+                                                text: "VPN для Waydroid"
+                                                color: root.textMain
+                                                font.pixelSize: 15
+                                                font.weight: Font.DemiBold
+                                            }
+                                            C.Label {
+                                                Layout.fillWidth: true
+                                                text: !Boolean(root.state.active)
+                                                    ? "Общий VPN выключен — Waydroid тоже работает без VPN."
+                                                    : (Boolean(root.state.waydroid_vpn_effective)
+                                                        ? "Трафик Waydroid идёт через E-VPN."
+                                                        : "Waydroid использует прямой интернет в обход E-VPN.")
+                                                color: root.textMuted
+                                                font.pixelSize: 12
+                                                wrapMode: Text.WordWrap
+                                            }
+                                        }
+
+                                        Item {
+                                            id: waydroidSwitch
+                                            Layout.preferredWidth: 48
+                                            Layout.preferredHeight: 26
+                                            opacity: Boolean(root.state.active) && !root.busy ? 1.0 : 0.45
+
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                radius: height / 2
+                                                color: Boolean(root.state.waydroid_vpn_effective) ? root.accent : "#cbd5e1"
+                                            }
+                                            Rectangle {
+                                                width: 20
+                                                height: 20
+                                                radius: 10
+                                                y: 3
+                                                x: Boolean(root.state.waydroid_vpn_effective) ? waydroidSwitch.width - width - 3 : 3
+                                                color: "white"
+                                                Behavior on x { NumberAnimation { duration: 120 } }
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                enabled: Boolean(root.state.active) && !root.busy
+                                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                                onClicked: root.action({
+                                                    action: "waydroid_vpn_set",
+                                                    target: Boolean(root.state.waydroid_vpn_effective) ? "off" : "on"
+                                                })
+                                            }
+                                        }
+                                    }
+                                }
+
                                 Item { Layout.fillHeight: true }
                             }
                         }

@@ -47,6 +47,9 @@ jobs:
           grep -F 'Запущены сейчас' src/evgenium_gui.qml
           grep -F 'Профили VPN' src/evgenium_gui.qml
           grep -F 'profile_activate' src/vpnctl.py
+          grep -F 'waydroid_vpn_set' src/vpnctl.py
+          grep -F 'VPN для Waydroid' src/evgenium_gui.qml
+          grep -F 'action: "waydroid_vpn_set"' src/evgenium_gui.qml
           grep -F '"profiles": profiles' src/vpnctl.py
           grep -F 'APP_ICON_SVG' src/vpnctl.py
           grep -F 'Icon=evgenium-network' src/vpnctl.py
@@ -76,17 +79,20 @@ jobs:
           EOF
           /usr/lib/qt6/bin/qmllint src/evgenium_gui.qml
           rm -f src/.qmllint.ini
-      - name: Validate nftables server-port rules
+      - name: Validate nftables server-port and Waydroid rules
         run: |
           sudo apt-get install -y -qq nftables
-          python - <<'PY' > /tmp/vpn-guard.nft
+          python - <<'PY'
           import importlib.util
+          from pathlib import Path
           spec = importlib.util.spec_from_file_location('vpnctl', 'src/vpnctl.py')
           mod = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(mod)
-          print(mod.render_guard_rules(943, {25565}, {19132}))
+          Path('/tmp/vpn-guard.nft').write_text(mod.render_guard_rules(943, {25565}, {19132}))
+          Path('/tmp/vpn-guard-waydroid.nft').write_text(mod.render_guard_rules(943, set(), set(), waydroid_direct=True))
           PY
           sudo nft -c -f /tmp/vpn-guard.nft
+          sudo nft -c -f /tmp/vpn-guard-waydroid.nft
           ip rule help 2>&1 | grep -F 'fwmark'
       - name: Validate dedicated server bypass table
         run: |
@@ -97,11 +103,31 @@ jobs:
           from pathlib import Path
           s = Path('src/vpnctl.py').read_text()
           start = s.index('def _install_server_bypass_policy_rules')
-          end = s.index('def build_config(', start)
+          end = s.index('def _delete_waydroid_bypass_policy_rules', start)
           block = s[start:end]
           assert '"lookup", "main"' not in block
           assert 'SERVER_BYPASS_TABLE' in block
-          print('dedicated bypass table wiring OK')
+          print('dedicated server bypass table wiring OK')
+          PY
+      - name: Validate Waydroid bypass policy
+        run: |
+          grep -F 'WAYDROID_IFACE = "waydroid0"' src/vpnctl.py
+          grep -F 'WAYDROID_BYPASS_MARK = 0x45564E02' src/vpnctl.py
+          grep -F 'WAYDROID_BYPASS_TABLE = 51821' src/vpnctl.py
+          grep -F '_install_waydroid_bypass_policy_rules(waydroid_direct)' src/vpnctl.py
+          grep -F 'chain waydroid_mark' src/vpnctl.py
+          grep -F 'chain forward' src/vpnctl.py
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('src/vpnctl.py').read_text()
+          start=s.index('def _install_waydroid_bypass_policy_rules')
+          end=s.index('def build_config(', start)
+          block=s[start:end]
+          assert 'WAYDROID_BYPASS_TABLE' in block
+          assert 'WAYDROID_BYPASS_MARK' in block
+          assert '"lookup", "main"' not in block
+          assert 'waydroid_vpn_effective' in s
+          print('Waydroid bypass wiring OK')
           PY
       - name: Verify current release and manifests
         run: |
