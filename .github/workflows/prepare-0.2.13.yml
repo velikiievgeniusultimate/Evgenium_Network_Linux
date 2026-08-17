@@ -20,7 +20,17 @@ jobs:
         with:
           python-version: '3.12'
       - name: Prepare 0.2.13 source
-        run: python scripts/prepare_0_2_13.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/prepare_0_2_13.py')
+          s=p.read_text()
+          old='out, count = re.subn(pattern, replacement, text, count=1, flags=re.S)'
+          new='out, count = re.subn(pattern, lambda _m: replacement, text, count=1, flags=re.S)'
+          assert old in s
+          p.write_text(s.replace(old,new,1))
+          PY
+          python scripts/prepare_0_2_13.py
       - name: Compile and self-test
         run: |
           python -m py_compile src/vpnctl.py src/vpnadmin.py src/evgenium_gui.py scripts/build_release.py
