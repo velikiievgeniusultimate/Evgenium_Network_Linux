@@ -2,7 +2,7 @@
 
 A small Linux VPN manager built around **Xray-core**.
 
-Current stable baseline: **0.2.8**.
+Current stable baseline: **0.2.9**.
 
 ## Install
 
@@ -101,15 +101,26 @@ browser traffic remain on the VPN.
 
 ## KDE Plasma 6 widget
 
-Version 0.2.7 includes a native Plasma 6 widget. Install it for the current desktop user with:
+Version 0.2.9 keeps the desktop widget deliberately tiny: **E-VPN**, one ON/OFF switch, and one settings gear.
+
+Install it once with:
 
 ```bash
 vpn widget install
 ```
 
-Then right-click the desktop, choose **Add Widgets**, search for **Evgenium Network**, and place it on the desktop. The widget contains a single VPN ON/OFF switch and a settings gear. Turning the VPN back on uses the last successfully connected profile remembered by the manager. The settings area currently shows DIRECT application/domain/network counts and is intentionally reserved for the upcoming graphical exclusion editors.
+Then right-click the desktop, choose **Add Widgets**, search for **Evgenium Network**, and place it on the desktop.
 
-The widget talks only to the local `vpn` command using `vpn status --json` and `vpn toggle`; it never receives or displays VLESS credentials.
+The gear opens Plasma's separate native configuration window. Its tabs manage:
+
+- application DIRECT exclusions;
+- domain/IP/CIDR DIRECT exclusions;
+- inbound server-port bypass rules;
+- current VPN status.
+
+Application exclusions can be entered manually by process name/path, or selected from a live list of processes currently running under the desktop user. Selecting a running application adds its process name to the existing Xray DIRECT application rules. Changes are applied immediately.
+
+The desktop widget itself only calls the local manager (`vpn status --json` and `vpn toggle`). The settings window uses the restricted `vpn ui ...` helper; user-entered values are encoded into a data payload and the manager accepts only a fixed allow-list of actions. VLESS credentials are never exposed to the widget.
 
 ## Update channel
 
