@@ -1,0 +1,95 @@
+name: Fix VPN Manager 0.2.11 standalone QML
+
+on:
+  push:
+    branches: [feature/standalone-gui-0.2.11]
+    paths:
+      - '.github/workflows/fix-0.2.11-qml.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/standalone-gui-0.2.11
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply fixes proven by qmllint diagnostics
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/evgenium_gui.qml')
+          s=p.read_text()
+          old='import QtQuick\nimport QtQuick.Controls as C\nimport QtQuick.Layouts\n\nApplicationWindow {'
+          new='import QtQuick\nimport QtQml\nimport QtQuick.Controls as C\nimport QtQuick.Layouts\n\nC.ApplicationWindow {'
+          if old not in s:
+              raise SystemExit('expected QML header not found')
+          p.write_text(s.replace(old,new,1))
+          PY
+      - name: Lint fixed Qt Quick UI
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qt6-declarative-dev-tools qml6-module-qtqml qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-templates
+          /usr/lib/qt6/bin/qmllint src/evgenium_gui.qml
+      - name: Re-embed exact GUI source into manager
+        run: |
+          python - <<'PY'
+          import base64,re
+          from pathlib import Path
+          p=Path('src/vpnctl.py')
+          s=p.read_text()
+          b64=base64.b64encode(Path('src/evgenium_gui.qml').read_bytes()).decode('ascii')
+          chunks=[b64[i:i+100] for i in range(0,len(b64),100)]
+          replacement='STANDALONE_GUI_QML_B64 = (\n' + ''.join(f'    {c!r}\n' for c in chunks) + ')'
+          pattern=r'STANDALONE_GUI_QML_B64 = \(\n(?:\s*\'[^\']*\'\n)+\)'
+          s2,n=re.subn(pattern,replacement,s,count=1)
+          if n != 1:
+              raise SystemExit(f'embedded QML assignment replacements: {n}')
+          p.write_text(s2)
+          PY
+      - name: Compile and self-test
+        run: |
+          python -m py_compile src/vpnctl.py src/vpnadmin.py src/evgenium_gui.py scripts/build_release.py
+          python src/vpnctl.py --self-test
+          python src/evgenium_gui.py --self-test
+          python - <<'PY'
+          import ast,base64
+          from pathlib import Path
+          tree=ast.parse(Path('src/vpnctl.py').read_text())
+          for node in tree.body:
+              if isinstance(node,ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Name) and node.targets[0].id=='STANDALONE_GUI_QML_B64':
+                  assert base64.b64decode(ast.literal_eval(node.value)) == Path('src/evgenium_gui.qml').read_bytes()
+                  break
+          else:
+              raise AssertionError('embedded QML missing')
+          print('embedded QML matches source')
+          PY
+      - name: Rebuild deterministic release and manifests
+        run: |
+          python scripts/build_release.py --channels stable testing
+          python - <<'PY'
+          import hashlib,json,tarfile
+          from pathlib import Path
+          v=Path('VERSION').read_text().strip()
+          a=Path(f'dist/vpn-manager-{v}.tar.gz')
+          digest=hashlib.sha256(a.read_bytes()).hexdigest()
+          with tarfile.open(a,'r:gz') as tf:
+              assert tf.getnames()==['vpnctl.py','vpnadmin.py','VERSION']
+          for channel in ('stable','testing'):
+              m=json.loads(Path(f'update/{channel}.json').read_text())
+              assert m['version']==v and m['sha256']==digest
+          print('release OK',digest)
+          PY
+      - name: Commit verified QML fix and rebuilt release
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/evgenium_gui.qml src/vpnctl.py dist update
+          git diff --cached --check
+          git commit -m 'Fix standalone Qt Quick imports and rebuild 0.2.11'
+          git push origin HEAD:feature/standalone-gui-0.2.11
