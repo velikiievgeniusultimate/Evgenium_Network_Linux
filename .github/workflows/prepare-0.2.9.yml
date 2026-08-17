@@ -64,7 +64,9 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm -r scripts/plasma_0_2_9 scripts/prepare_0_2_9.py .github/workflows/prepare-0.2.9.yml
-          git add src/vpnctl.py VERSION CHANGELOG.md README.md .github/workflows/test.yml update/stable.json update/testing.json dist/vpn-manager-0.2.9.tar.gz dist/vpn-manager-0.2.9.tar.gz.sha256
+          # Do not stage workflow files here: GitHub Actions' token intentionally
+          # has no workflow-edit permission. Temporary preparation files are
+          # cleaned with the repository connector after this generated commit.
+          git add src/vpnctl.py VERSION CHANGELOG.md README.md update/stable.json update/testing.json dist/vpn-manager-0.2.9.tar.gz dist/vpn-manager-0.2.9.tar.gz.sha256
           git commit -m 'VPN Manager 0.2.9: compact Plasma widget and graphical exclusions'
           git push
