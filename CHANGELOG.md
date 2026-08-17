@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.9
+
+- shrink the Plasma desktop widget to `E-VPN` + one switch + one settings gear
+- open the native Plasma configuration window instead of expanding the desktop widget
+- add graphical tabs for DIRECT applications, domains/IP networks, server ports and VPN status
+- add one-click DIRECT exclusions from currently running desktop processes
+- add safe machine-readable `vpn ui state|running|action` helpers for the Plasma settings UI
+
 ## 0.2.8
 
 - fix Plasma 6 widget loading: representation and tooltip properties now use the direct `PlasmoidItem` API

@@ -26,7 +26,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.8"
+MANAGER_VERSION = "0.2.9"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -58,7 +58,7 @@ PLASMOID_METADATA = r'''{
     "Icon": "network-vpn",
     "Id": "com.evgenium.network",
     "Name": "Evgenium Network",
-    "Version": "1.1"
+    "Version": "1.2"
   },
   "X-Plasma-API-Minimum-Version": "6.0",
   "KPackageStructure": "Plasma/Applet"
@@ -76,23 +76,20 @@ PlasmoidItem {
 
     property bool vpnActive: false
     property bool busy: false
-    property bool settingsVisible: false
-    property string activeProfile: ""
-    property string lastProfile: ""
     property string errorText: ""
-    property int appExclusions: 0
-    property int domainExclusions: 0
-    property int networkExclusions: 0
 
     readonly property string statusCommand: "/usr/local/bin/vpn status --json"
     readonly property string toggleCommand: "/usr/local/bin/vpn toggle"
 
     Plasmoid.icon: "network-vpn"
-    toolTipMainText: "Evgenium Network"
-    toolTipSubText: busy
-        ? "Переключаю VPN…"
-        : (vpnActive ? "VPN включён" : "VPN выключен")
+    toolTipMainText: "E-VPN"
+    toolTipSubText: errorText.length > 0
+        ? errorText
+        : (busy ? "Переключаю VPN…" : (vpnActive ? "VPN включён" : "VPN выключен"))
     preferredRepresentation: fullRepresentation
+
+    width: Kirigami.Units.gridUnit * 9
+    height: Kirigami.Units.gridUnit * 2.7
 
     function requestStatus() {
         statusSource.connectSource(statusCommand)
@@ -104,6 +101,12 @@ PlasmoidItem {
         busy = true
         errorText = ""
         actionSource.connectSource(toggleCommand)
+    }
+
+    function openSettings() {
+        const configureAction = plasmoid.action("configure")
+        if (configureAction)
+            configureAction.trigger()
     }
 
     Component.onCompleted: requestStatus()
@@ -127,11 +130,6 @@ PlasmoidItem {
                 try {
                     const state = JSON.parse(output)
                     root.vpnActive = Boolean(state.active)
-                    root.activeProfile = String(state.profile || "")
-                    root.lastProfile = String(state.last_profile || "")
-                    root.appExclusions = Number(state.direct_applications || 0)
-                    root.domainExclusions = Number(state.direct_domains || 0)
-                    root.networkExclusions = Number(state.direct_networks || 0)
                 } catch (error) {
                     root.errorText = "Не удалось прочитать состояние VPN"
                 }
@@ -157,139 +155,787 @@ PlasmoidItem {
     }
 
     fullRepresentation: Item {
-        Layout.minimumWidth: Kirigami.Units.gridUnit * 14
-        Layout.preferredWidth: Kirigami.Units.gridUnit * 15
-        Layout.minimumHeight: root.settingsVisible
-            ? Kirigami.Units.gridUnit * 10
-            : Kirigami.Units.gridUnit * 4
-        Layout.preferredHeight: Layout.minimumHeight
+        Layout.minimumWidth: Kirigami.Units.gridUnit * 8
+        Layout.preferredWidth: Kirigami.Units.gridUnit * 9
+        Layout.minimumHeight: Kirigami.Units.gridUnit * 2.4
+        Layout.preferredHeight: Kirigami.Units.gridUnit * 2.7
 
-        ColumnLayout {
+        RowLayout {
             anchors.fill: parent
             anchors.margins: Kirigami.Units.smallSpacing * 2
             spacing: Kirigami.Units.smallSpacing
 
-            RowLayout {
+            PlasmaComponents3.Label {
+                text: "E-VPN"
+                font.bold: true
                 Layout.fillWidth: true
-                spacing: Kirigami.Units.smallSpacing
+            }
 
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 0
+            Item {
+                id: switchControl
+                Layout.preferredWidth: 44
+                Layout.preferredHeight: 24
+                opacity: root.busy ? 0.55 : 1.0
 
-                    PlasmaComponents3.Label {
-                        text: "VPN"
-                        font.bold: true
-                    }
+                Rectangle {
+                    anchors.fill: parent
+                    radius: height / 2
+                    color: root.vpnActive
+                        ? Kirigami.Theme.highlightColor
+                        : Kirigami.Theme.disabledTextColor
+                    opacity: root.vpnActive ? 0.95 : 0.45
+                }
 
-                    PlasmaComponents3.Label {
-                        text: root.busy
-                            ? "Переключаю…"
-                            : (root.vpnActive
-                                ? "Включён" + (root.activeProfile.length > 0 ? " • " + root.activeProfile : "")
-                                : "Выключен")
-                        opacity: 0.72
-                        elide: Text.ElideRight
-                        Layout.fillWidth: true
+                Rectangle {
+                    width: 18
+                    height: 18
+                    radius: 9
+                    y: 3
+                    x: root.vpnActive ? switchControl.width - width - 3 : 3
+                    color: Kirigami.Theme.backgroundColor
+
+                    Behavior on x {
+                        NumberAnimation { duration: 120 }
                     }
                 }
 
-                Item {
-                    id: switchControl
-                    Layout.preferredWidth: 48
-                    Layout.preferredHeight: 26
-                    opacity: root.busy ? 0.55 : 1.0
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: !root.busy
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleVpn()
+                }
+            }
 
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: height / 2
-                        color: root.vpnActive
-                            ? Kirigami.Theme.highlightColor
-                            : Kirigami.Theme.disabledTextColor
-                        opacity: root.vpnActive ? 0.95 : 0.45
+            PlasmaComponents3.ToolButton {
+                Layout.preferredWidth: 30
+                Layout.preferredHeight: 30
+                icon.name: "configure"
+                text: ""
+                onClicked: root.openSettings()
+            }
+        }
+    }
+}
+'''
+PLASMOID_BACKEND_QML = r'''import QtQuick
+import org.kde.plasma.plasma5support as Plasma5Support
+
+Item {
+    id: backend
+    visible: false
+    width: 0
+    height: 0
+
+    property bool busy: false
+    property string lastError: ""
+
+    signal stateReady(var state)
+    signal runningReady(var applications)
+    signal actionFinished(bool ok, string message)
+
+    readonly property string stateCommand: "/usr/local/bin/vpn ui state"
+    readonly property string runningCommand: "/usr/local/bin/vpn ui running"
+
+    function refreshState() {
+        stateSource.connectSource(stateCommand)
+    }
+
+    function refreshRunning() {
+        runningSource.connectSource(runningCommand)
+    }
+
+    function encodePayload(payload) {
+        return Qt.btoa(encodeURIComponent(JSON.stringify(payload)))
+    }
+
+    function runAction(payload) {
+        if (busy)
+            return
+        busy = true
+        lastError = ""
+        const command = "/usr/local/bin/vpn ui action " + encodePayload(payload)
+        actionSource.connectSource(command)
+    }
+
+    Plasma5Support.DataSource {
+        id: stateSource
+        engine: "executable"
+
+        onNewData: function(sourceName, data) {
+            if (sourceName !== backend.stateCommand)
+                return
+            const output = String(data["stdout"] || "").trim()
+            const exitCode = Number(data["exit code"] === undefined ? 0 : data["exit code"])
+            if (exitCode === 0 && output.length > 0) {
+                try {
+                    backend.stateReady(JSON.parse(output))
+                } catch (error) {
+                    backend.lastError = "Не удалось прочитать настройки VPN"
+                }
+            } else {
+                backend.lastError = String(data["stderr"] || output || "Ошибка чтения настроек")
+            }
+            stateSource.disconnectSource(sourceName)
+        }
+    }
+
+    Plasma5Support.DataSource {
+        id: runningSource
+        engine: "executable"
+
+        onNewData: function(sourceName, data) {
+            if (sourceName !== backend.runningCommand)
+                return
+            const output = String(data["stdout"] || "").trim()
+            const exitCode = Number(data["exit code"] === undefined ? 0 : data["exit code"])
+            if (exitCode === 0 && output.length > 0) {
+                try {
+                    const parsed = JSON.parse(output)
+                    backend.runningReady(parsed.applications || [])
+                } catch (error) {
+                    backend.lastError = "Не удалось прочитать список запущенных приложений"
+                }
+            } else {
+                backend.lastError = String(data["stderr"] || output || "Ошибка чтения процессов")
+            }
+            runningSource.disconnectSource(sourceName)
+        }
+    }
+
+    Plasma5Support.DataSource {
+        id: actionSource
+        engine: "executable"
+
+        onNewData: function(sourceName, data) {
+            const exitCode = Number(data["exit code"] === undefined ? 0 : data["exit code"])
+            const stderrText = String(data["stderr"] || "").trim()
+            const stdoutText = String(data["stdout"] || "").trim()
+            backend.busy = false
+            actionSource.disconnectSource(sourceName)
+            if (exitCode !== 0) {
+                backend.lastError = stderrText.length > 0 ? stderrText : stdoutText
+                backend.actionFinished(false, backend.lastError)
+            } else {
+                backend.lastError = ""
+                backend.actionFinished(true, "")
+                backend.refreshState()
+                backend.refreshRunning()
+            }
+        }
+    }
+}
+'''
+PLASMOID_CONFIG_QML = r'''import QtQuick
+import org.kde.plasma.configuration
+
+ConfigModel {
+    ConfigCategory {
+        name: "Приложения"
+        icon: "applications-system"
+        source: "configApplications.qml"
+    }
+    ConfigCategory {
+        name: "Сайты и IP"
+        icon: "network-server"
+        source: "configNetwork.qml"
+    }
+    ConfigCategory {
+        name: "Порты"
+        icon: "network-connect"
+        source: "configPorts.qml"
+    }
+    ConfigCategory {
+        name: "Состояние"
+        icon: "dialog-information"
+        source: "configGeneral.qml"
+    }
+}
+'''
+PLASMOID_CONFIG_XML = r'''<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0 http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+    <kcfgfile name=""/>
+    <group name="General">
+        <entry name="uiMarker" type="Bool">
+            <default>false</default>
+        </entry>
+    </group>
+</kcfg>
+'''
+PLASMOID_CONFIG_APPS_QML = r'''import QtQuick
+import QtQuick.Controls as QQC2
+import QtQuick.Layouts
+import org.kde.kirigami as Kirigami
+
+Item {
+    id: page
+    implicitWidth: Kirigami.Units.gridUnit * 38
+    implicitHeight: Kirigami.Units.gridUnit * 30
+
+    property var excludedApps: []
+    property var runningApps: []
+    property string messageText: ""
+
+    function filteredRunningApps() {
+        const needle = searchField.text.trim().toLowerCase()
+        if (needle.length === 0)
+            return runningApps
+        return runningApps.filter(function(app) {
+            return String(app.name || "").toLowerCase().includes(needle)
+                || String(app.exe || "").toLowerCase().includes(needle)
+        })
+    }
+
+    function addManual() {
+        const value = manualField.text.trim()
+        if (value.length === 0)
+            return
+        backend.runAction({action: "app_add", target: value})
+    }
+
+    Component.onCompleted: {
+        backend.refreshState()
+        backend.refreshRunning()
+    }
+
+    VpnBackend {
+        id: backend
+        onStateReady: function(state) {
+            page.excludedApps = state.applications || []
+        }
+        onRunningReady: function(applications) {
+            page.runningApps = applications || []
+        }
+        onActionFinished: function(ok, message) {
+            page.messageText = ok ? "" : message
+            if (ok)
+                manualField.clear()
+        }
+    }
+
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: Kirigami.Units.smallSpacing * 2
+
+        QQC2.Label {
+            text: "Приложения-исключения"
+            font.bold: true
+        }
+
+        QQC2.Label {
+            Layout.fillWidth: true
+            text: "Эти процессы работают напрямую, минуя VPN. Изменения применяются сразу."
+            wrapMode: Text.WordWrap
+            opacity: 0.72
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+
+            QQC2.TextField {
+                id: manualField
+                Layout.fillWidth: true
+                placeholderText: "Имя процесса, /полный/путь или /папка/"
+                enabled: !backend.busy
+                onAccepted: page.addManual()
+            }
+
+            QQC2.Button {
+                text: "Добавить"
+                enabled: !backend.busy && manualField.text.trim().length > 0
+                onClicked: page.addManual()
+            }
+        }
+
+        QQC2.Frame {
+            Layout.fillWidth: true
+            Layout.preferredHeight: Kirigami.Units.gridUnit * 7
+
+            ListView {
+                anchors.fill: parent
+                clip: true
+                model: page.excludedApps
+                spacing: Kirigami.Units.smallSpacing
+
+                delegate: RowLayout {
+                    required property var modelData
+                    width: ListView.view.width
+
+                    QQC2.Label {
+                        Layout.fillWidth: true
+                        text: String(modelData)
+                        elide: Text.ElideMiddle
                     }
 
-                    Rectangle {
-                        width: 20
-                        height: 20
-                        radius: 10
-                        y: 3
-                        x: root.vpnActive ? switchControl.width - width - 3 : 3
-                        color: Kirigami.Theme.backgroundColor
+                    QQC2.ToolButton {
+                        icon.name: "list-remove"
+                        text: "Удалить"
+                        enabled: !backend.busy
+                        onClicked: backend.runAction({action: "app_remove", target: String(modelData)})
+                    }
+                }
 
-                        Behavior on x {
-                            NumberAnimation { duration: 120 }
+                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+
+            QQC2.Label {
+                text: "Запущенные приложения"
+                font.bold: true
+                Layout.fillWidth: true
+            }
+
+            QQC2.Button {
+                text: "Обновить"
+                icon.name: "view-refresh"
+                enabled: !backend.busy
+                onClicked: backend.refreshRunning()
+            }
+        }
+
+        QQC2.TextField {
+            id: searchField
+            Layout.fillWidth: true
+            placeholderText: "Найти запущенное приложение…"
+        }
+
+        QQC2.Frame {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+
+            ListView {
+                anchors.fill: parent
+                clip: true
+                model: page.filteredRunningApps()
+                spacing: Kirigami.Units.smallSpacing
+
+                delegate: RowLayout {
+                    required property var modelData
+                    width: ListView.view.width
+                    spacing: Kirigami.Units.smallSpacing
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+
+                        QQC2.Label {
+                            Layout.fillWidth: true
+                            text: String(modelData.name || "")
+                            font.bold: true
+                            elide: Text.ElideRight
+                        }
+
+                        QQC2.Label {
+                            Layout.fillWidth: true
+                            text: String(modelData.exe || "")
+                            opacity: 0.62
+                            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                            elide: Text.ElideMiddle
                         }
                     }
 
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: !root.busy
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.toggleVpn()
+                    QQC2.Label {
+                        visible: Boolean(modelData.excluded)
+                        text: "Исключено"
+                        opacity: 0.7
+                    }
+
+                    QQC2.Button {
+                        visible: !Boolean(modelData.excluded)
+                        text: "Исключить"
+                        enabled: !backend.busy
+                        onClicked: backend.runAction({
+                            action: "app_add",
+                            target: String(modelData.name || "")
+                        })
                     }
                 }
 
-                PlasmaComponents3.ToolButton {
-                    Layout.preferredWidth: 34
-                    Layout.preferredHeight: 34
-                    icon.name: "configure"
-                    text: ""
-                    onClicked: root.settingsVisible = !root.settingsVisible
-                }
+                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            }
+        }
+
+        QQC2.Label {
+            visible: backend.lastError.length > 0 || page.messageText.length > 0
+            Layout.fillWidth: true
+            text: page.messageText.length > 0 ? page.messageText : backend.lastError
+            color: Kirigami.Theme.negativeTextColor
+            wrapMode: Text.WordWrap
+        }
+    }
+}
+'''
+PLASMOID_CONFIG_NETWORK_QML = r'''import QtQuick
+import QtQuick.Controls as QQC2
+import QtQuick.Layouts
+import org.kde.kirigami as Kirigami
+
+Item {
+    id: page
+    implicitWidth: Kirigami.Units.gridUnit * 38
+    implicitHeight: Kirigami.Units.gridUnit * 30
+
+    property var domains: []
+    property var networks: []
+    property var snapshots: []
+
+    function addManual() {
+        const value = targetField.text.trim()
+        if (value.length === 0)
+            return
+        backend.runAction({action: "direct_add", target: value})
+    }
+
+    Component.onCompleted: backend.refreshState()
+
+    VpnBackend {
+        id: backend
+        onStateReady: function(state) {
+            page.domains = state.domains || []
+            page.networks = state.networks || []
+            page.snapshots = state.dns_snapshots || []
+        }
+        onActionFinished: function(ok, message) {
+            if (ok)
+                targetField.clear()
+        }
+    }
+
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: Kirigami.Units.smallSpacing * 2
+
+        QQC2.Label {
+            text: "Сайты и IP без VPN"
+            font.bold: true
+        }
+
+        QQC2.Label {
+            Layout.fillWidth: true
+            text: "Добавь домен, IP или CIDR. Например: example.com, 203.0.113.10, 203.0.113.0/24."
+            wrapMode: Text.WordWrap
+            opacity: 0.72
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+
+            QQC2.TextField {
+                id: targetField
+                Layout.fillWidth: true
+                placeholderText: "example.com / IP / CIDR"
+                enabled: !backend.busy
+                onAccepted: page.addManual()
             }
 
-            ColumnLayout {
-                visible: root.settingsVisible
+            QQC2.Button {
+                text: "Добавить"
+                enabled: !backend.busy && targetField.text.trim().length > 0
+                onClicked: page.addManual()
+            }
+        }
+
+        QQC2.Label { text: "Домены"; font.bold: true }
+
+        QQC2.Frame {
+            Layout.fillWidth: true
+            Layout.preferredHeight: Kirigami.Units.gridUnit * 6
+            ListView {
+                anchors.fill: parent
+                clip: true
+                model: page.domains
+                delegate: RowLayout {
+                    required property var modelData
+                    width: ListView.view.width
+                    QQC2.Label {
+                        Layout.fillWidth: true
+                        text: String(modelData)
+                        elide: Text.ElideRight
+                    }
+                    QQC2.ToolButton {
+                        icon.name: "list-remove"
+                        text: "Удалить"
+                        enabled: !backend.busy
+                        onClicked: backend.runAction({action: "direct_remove", target: String(modelData)})
+                    }
+                }
+                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            }
+        }
+
+        QQC2.Label { text: "IP и сети"; font.bold: true }
+
+        QQC2.Frame {
+            Layout.fillWidth: true
+            Layout.preferredHeight: Kirigami.Units.gridUnit * 6
+            ListView {
+                anchors.fill: parent
+                clip: true
+                model: page.networks
+                delegate: RowLayout {
+                    required property var modelData
+                    width: ListView.view.width
+                    QQC2.Label {
+                        Layout.fillWidth: true
+                        text: String(modelData)
+                        elide: Text.ElideRight
+                    }
+                    QQC2.ToolButton {
+                        icon.name: "list-remove"
+                        text: "Удалить"
+                        enabled: !backend.busy
+                        onClicked: backend.runAction({action: "direct_remove", target: String(modelData)})
+                    }
+                }
+                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            }
+        }
+
+        QQC2.Label {
+            text: "DNS snapshots"
+            font.bold: true
+            visible: page.snapshots.length > 0
+        }
+
+        QQC2.Frame {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: page.snapshots.length > 0
+            ListView {
+                anchors.fill: parent
+                clip: true
+                model: page.snapshots
+                delegate: ColumnLayout {
+                    required property var modelData
+                    width: ListView.view.width
+                    QQC2.Label {
+                        text: String(modelData.domain || "")
+                        font.bold: true
+                    }
+                    QQC2.Label {
+                        Layout.fillWidth: true
+                        text: (modelData.networks || []).join(", ")
+                        wrapMode: Text.WrapAnywhere
+                        opacity: 0.65
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
+                }
+                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            }
+        }
+
+        QQC2.Label {
+            visible: backend.lastError.length > 0
+            Layout.fillWidth: true
+            text: backend.lastError
+            color: Kirigami.Theme.negativeTextColor
+            wrapMode: Text.WordWrap
+        }
+    }
+}
+'''
+PLASMOID_CONFIG_PORTS_QML = r'''import QtQuick
+import QtQuick.Controls as QQC2
+import QtQuick.Layouts
+import org.kde.kirigami as Kirigami
+
+Item {
+    id: page
+    implicitWidth: Kirigami.Units.gridUnit * 38
+    implicitHeight: Kirigami.Units.gridUnit * 24
+
+    property var ports: []
+
+    function addPort() {
+        const value = Number(portField.text)
+        if (isNaN(value) || value !== Math.floor(value) || value < 1 || value > 65535)
+            return
+        backend.runAction({
+            action: "port_add",
+            port: value,
+            proto: protoBox.currentText.toLowerCase()
+        })
+    }
+
+    Component.onCompleted: backend.refreshState()
+
+    VpnBackend {
+        id: backend
+        onStateReady: function(state) {
+            page.ports = state.server_ports || []
+        }
+        onActionFinished: function(ok, message) {
+            if (ok)
+                portField.clear()
+        }
+    }
+
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: Kirigami.Units.smallSpacing * 2
+
+        QQC2.Label {
+            text: "Входящие серверные порты"
+            font.bold: true
+        }
+
+        QQC2.Label {
+            Layout.fillWidth: true
+            text: "Ответы на входящие соединения к этим портам отправляются напрямую через физическую сеть, а остальной трафик остаётся в VPN."
+            wrapMode: Text.WordWrap
+            opacity: 0.72
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+
+            QQC2.TextField {
+                id: portField
                 Layout.fillWidth: true
+                placeholderText: "25565"
+                inputMethodHints: Qt.ImhDigitsOnly
+                enabled: !backend.busy
+                onAccepted: page.addPort()
+            }
+
+            QQC2.ComboBox {
+                id: protoBox
+                model: ["TCP", "UDP", "BOTH"]
+            }
+
+            QQC2.Button {
+                text: "Добавить"
+                enabled: !backend.busy && portField.text.length > 0
+                onClicked: page.addPort()
+            }
+        }
+
+        QQC2.Frame {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+
+            ListView {
+                anchors.fill: parent
+                clip: true
+                model: page.ports
                 spacing: Kirigami.Units.smallSpacing
 
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: Kirigami.Theme.textColor
-                    opacity: 0.12
+                delegate: RowLayout {
+                    required property var modelData
+                    width: ListView.view.width
+
+                    QQC2.Label {
+                        Layout.fillWidth: true
+                        text: String(modelData.proto || "").toUpperCase() + "  " + String(modelData.port || "")
+                    }
+
+                    QQC2.ToolButton {
+                        icon.name: "list-remove"
+                        text: "Удалить"
+                        enabled: !backend.busy
+                        onClicked: backend.runAction({
+                            action: "port_remove",
+                            port: Number(modelData.port),
+                            proto: String(modelData.proto)
+                        })
+                    }
                 }
 
-                PlasmaComponents3.Label {
-                    text: "Настройки"
-                    font.bold: true
-                }
-
-                PlasmaComponents3.Label {
-                    Layout.fillWidth: true
-                    text: "Приложения-исключения: " + root.appExclusions
-                    opacity: 0.82
-                }
-
-                PlasmaComponents3.Label {
-                    Layout.fillWidth: true
-                    text: "Исключённые сайты: " + root.domainExclusions
-                    opacity: 0.82
-                }
-
-                PlasmaComponents3.Label {
-                    Layout.fillWidth: true
-                    text: "Исключённые IP/сети: " + root.networkExclusions
-                    opacity: 0.82
-                }
-
-                PlasmaComponents3.Label {
-                    Layout.fillWidth: true
-                    text: "Редактирование этих списков появится здесь в следующих версиях."
-                    wrapMode: Text.WordWrap
-                    opacity: 0.58
-                }
+                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
             }
+        }
 
-            PlasmaComponents3.Label {
-                visible: root.errorText.length > 0
+        QQC2.Label {
+            visible: backend.lastError.length > 0
+            Layout.fillWidth: true
+            text: backend.lastError
+            color: Kirigami.Theme.negativeTextColor
+            wrapMode: Text.WordWrap
+        }
+    }
+}
+'''
+PLASMOID_CONFIG_GENERAL_QML = r'''import QtQuick
+import QtQuick.Controls as QQC2
+import QtQuick.Layouts
+import org.kde.kirigami as Kirigami
+
+Item {
+    id: page
+    implicitWidth: Kirigami.Units.gridUnit * 34
+    implicitHeight: Kirigami.Units.gridUnit * 20
+
+    property var state: ({})
+
+    Component.onCompleted: backend.refreshState()
+
+    VpnBackend {
+        id: backend
+        onStateReady: function(newState) {
+            page.state = newState
+        }
+    }
+
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: Kirigami.Units.smallSpacing * 2
+
+        RowLayout {
+            Layout.fillWidth: true
+            QQC2.Label {
+                text: "Состояние E-VPN"
+                font.bold: true
                 Layout.fillWidth: true
-                text: root.errorText
-                color: Kirigami.Theme.negativeTextColor
-                wrapMode: Text.WordWrap
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             }
+            QQC2.Button {
+                text: "Обновить"
+                icon.name: "view-refresh"
+                onClicked: backend.refreshState()
+            }
+        }
+
+        Kirigami.FormLayout {
+            Layout.fillWidth: true
+
+            QQC2.Label {
+                Kirigami.FormData.label: "VPN:"
+                text: Boolean(page.state.active) ? "Включён" : "Выключен"
+            }
+
+            QQC2.Label {
+                Kirigami.FormData.label: "Профиль:"
+                text: String(page.state.profile || page.state.last_profile || "—")
+            }
+
+            QQC2.Label {
+                Kirigami.FormData.label: "IPv6:"
+                text: String(page.state.ipv6_mode || "unknown")
+            }
+
+            QQC2.Label {
+                Kirigami.FormData.label: "Kill switch:"
+                text: Boolean(page.state.kill_switch) ? "Активен" : "Выключен"
+            }
+
+            QQC2.Label {
+                Kirigami.FormData.label: "Manager:"
+                text: String(page.state.manager || "")
+            }
+        }
+
+        Item { Layout.fillHeight: true }
+
+        QQC2.Label {
+            visible: backend.lastError.length > 0
+            Layout.fillWidth: true
+            text: backend.lastError
+            color: Kirigami.Theme.negativeTextColor
+            wrapMode: Text.WordWrap
         }
     }
 }
@@ -2327,6 +2973,180 @@ def cmd_status_json(settings: dict) -> None:
     print(json.dumps(_status_payload(settings), ensure_ascii=False, separators=(",", ":")))
 
 
+def _ui_direct_network_state(settings: dict) -> tuple[list[str], list[dict]]:
+    p = _safe_direct_path(settings, "direct_networks")
+    raw = p.read_text() if p.exists() else ""
+    blocks = _parse_dns_blocks(raw)
+    block_ips = {value for values in blocks.values() for value in values}
+    manual: set[str] = set()
+    for raw_line in raw.splitlines():
+        value = raw_line.strip()
+        if not value or value.startswith("#") or value in block_ips:
+            continue
+        with contextlib.suppress(ValueError):
+            manual.add(ipaddress.ip_network(value, strict=False).compressed)
+    snapshots = [
+        {"domain": domain, "networks": list(values)}
+        for domain, values in sorted(blocks.items())
+    ]
+    return sorted(
+        manual,
+        key=lambda value: (
+            ipaddress.ip_network(value, strict=False).version,
+            int(ipaddress.ip_network(value, strict=False).network_address),
+            ipaddress.ip_network(value, strict=False).prefixlen,
+        ),
+    ), snapshots
+
+
+def _direct_app_rule_matches(rule: str, process_name: str, executable: str) -> bool:
+    if "/" not in rule:
+        return rule == process_name
+    if rule.endswith("/"):
+        return executable.startswith(rule)
+    return executable == rule
+
+
+def _running_user_applications(settings: dict) -> list[dict]:
+    uid, _gid = _owner_ids(settings)
+    rules = read_direct_apps(settings)
+    grouped: dict[tuple[str, str], dict] = {}
+
+    try:
+        proc_entries = list(os.scandir("/proc"))
+    except OSError:
+        return []
+
+    for entry in proc_entries:
+        if not entry.name.isdigit():
+            continue
+        proc_dir = pathlib.Path("/proc") / entry.name
+        try:
+            if proc_dir.stat().st_uid != uid:
+                continue
+            name = (proc_dir / "comm").read_text(errors="replace").strip()
+            executable = os.readlink(proc_dir / "exe")
+        except (OSError, PermissionError):
+            continue
+
+        if executable.endswith(" (deleted)"):
+            executable = executable[:-10]
+        if not name or not executable.startswith("/"):
+            continue
+
+        key = (name, executable)
+        item = grouped.setdefault(
+            key,
+            {"name": name, "exe": executable, "count": 0, "excluded": False},
+        )
+        item["count"] += 1
+
+    out = []
+    for item in grouped.values():
+        item["excluded"] = any(
+            _direct_app_rule_matches(rule, str(item["name"]), str(item["exe"]))
+            for rule in rules
+        )
+        out.append(item)
+
+    return sorted(
+        out,
+        key=lambda item: (
+            0 if item["excluded"] else 1,
+            str(item["name"]).lower(),
+            str(item["exe"]).lower(),
+        ),
+    )
+
+
+def _ui_state_payload(settings: dict) -> dict:
+    state = _status_payload(settings)
+    manual_networks, snapshots = _ui_direct_network_state(settings)
+    tcp_ports, udp_ports = _server_port_sets(settings)
+    ports = (
+        [{"proto": "tcp", "port": port} for port in sorted(tcp_ports)]
+        + [{"proto": "udp", "port": port} for port in sorted(udp_ports)]
+    )
+    state.update(
+        {
+            "applications": read_direct_apps(settings),
+            "domains": [
+                ("=" if kind == "full" else "") + domain
+                for kind, domain in read_direct_sites(settings)
+            ],
+            "networks": manual_networks,
+            "dns_snapshots": snapshots,
+            "server_ports": ports,
+        }
+    )
+    return state
+
+
+def cmd_ui_state(settings: dict) -> None:
+    print(json.dumps(_ui_state_payload(settings), ensure_ascii=False, separators=(",", ":")))
+
+
+def cmd_ui_running(settings: dict) -> None:
+    print(
+        json.dumps(
+            {"applications": _running_user_applications(settings)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
+
+
+def _decode_ui_action_payload(token: str) -> dict:
+    if not token or len(token) > 16384:
+        fail("Некорректный UI payload.")
+    try:
+        encoded = base64.b64decode(token.encode("ascii"), validate=True).decode("ascii")
+        payload = json.loads(urllib.parse.unquote(encoded))
+    except Exception as exc:
+        fail(f"Некорректный UI payload: {exc}")
+    if not isinstance(payload, dict):
+        fail("UI payload должен быть JSON object.")
+    return payload
+
+
+def _ui_payload_target(payload: dict) -> str:
+    target = payload.get("target")
+    if not isinstance(target, str):
+        fail("UI action требует строковый target.")
+    return target
+
+
+def cmd_ui_action(settings: dict, token: str) -> None:
+    payload = _decode_ui_action_payload(token)
+    action = str(payload.get("action") or "")
+
+    if action == "app_add":
+        cmd_app_add(settings, _ui_payload_target(payload))
+        return
+    if action == "app_remove":
+        cmd_app_remove(settings, _ui_payload_target(payload))
+        return
+    if action == "direct_add":
+        cmd_direct_add(settings, _ui_payload_target(payload))
+        return
+    if action == "direct_remove":
+        cmd_direct_remove(settings, _ui_payload_target(payload))
+        return
+    if action in {"port_add", "port_remove"}:
+        try:
+            port = int(payload.get("port"))
+        except (TypeError, ValueError):
+            fail("UI action содержит некорректный port.")
+        proto = str(payload.get("proto") or "tcp").lower()
+        if action == "port_add":
+            cmd_port_add(settings, port, proto)
+        else:
+            cmd_port_remove(settings, port, proto)
+        return
+
+    fail(f"Неизвестная UI action: {action!r}.")
+
+
 def cmd_toggle(settings: dict) -> None:
     if service_active():
         deactivate()
@@ -2361,7 +3181,12 @@ def _widget_target_safe(settings: dict, package: pathlib.Path) -> None:
         package.resolve(strict=False).relative_to(home)
     except ValueError:
         fail("Некорректный путь установки Plasma-виджета.")
-    for candidate in (package, package / "contents", package / "contents" / "ui"):
+    for candidate in (
+        package,
+        package / "contents",
+        package / "contents" / "ui",
+        package / "contents" / "config",
+    ):
         if candidate.is_symlink():
             fail(f"Отказываюсь изменять symlink Plasma-виджета: {candidate}")
         if candidate.exists() and not candidate.is_dir():
@@ -2388,13 +3213,22 @@ def cmd_widget_install(settings: dict) -> None:
     _widget_target_safe(settings, package)
     uid, gid = _owner_ids(settings)
     ui = package / "contents" / "ui"
+    config = package / "contents" / "config"
     ui.mkdir(parents=True, exist_ok=True)
-    for directory in (package, package / "contents", ui):
+    config.mkdir(parents=True, exist_ok=True)
+    for directory in (package, package / "contents", ui, config):
         os.chown(directory, uid, gid)
         os.chmod(directory, 0o755)
 
     _write_owner_text(package / "metadata.json", PLASMOID_METADATA, uid, gid)
     _write_owner_text(ui / "main.qml", PLASMOID_MAIN_QML, uid, gid)
+    _write_owner_text(ui / "VpnBackend.qml", PLASMOID_BACKEND_QML, uid, gid)
+    _write_owner_text(ui / "configApplications.qml", PLASMOID_CONFIG_APPS_QML, uid, gid)
+    _write_owner_text(ui / "configNetwork.qml", PLASMOID_CONFIG_NETWORK_QML, uid, gid)
+    _write_owner_text(ui / "configPorts.qml", PLASMOID_CONFIG_PORTS_QML, uid, gid)
+    _write_owner_text(ui / "configGeneral.qml", PLASMOID_CONFIG_GENERAL_QML, uid, gid)
+    _write_owner_text(config / "config.qml", PLASMOID_CONFIG_QML, uid, gid)
+    _write_owner_text(config / "main.xml", PLASMOID_CONFIG_XML, uid, gid)
 
     kbuild = shutil.which("kbuildsycoca6")
     if kbuild:
@@ -2814,7 +3648,21 @@ def self_test() -> None:
         assert "/usr/local/bin/vpn status --json" in PLASMOID_MAIN_QML
         assert "/usr/local/bin/vpn toggle" in PLASMOID_MAIN_QML
         assert 'icon.name: "configure"' in PLASMOID_MAIN_QML
-        assert 'text: ""' in PLASMOID_MAIN_QML
+        assert 'text: "E-VPN"' in PLASMOID_MAIN_QML
+        assert 'plasmoid.action("configure")' in PLASMOID_MAIN_QML
+        assert 'ConfigCategory' in PLASMOID_CONFIG_QML
+        assert 'name: "Приложения"' in PLASMOID_CONFIG_QML
+        assert '/usr/local/bin/vpn ui state' in PLASMOID_BACKEND_QML
+        assert '/usr/local/bin/vpn ui running' in PLASMOID_BACKEND_QML
+        assert '/usr/local/bin/vpn ui action ' in PLASMOID_BACKEND_QML
+        assert 'target: String(modelData.name || "")' in PLASMOID_CONFIG_APPS_QML
+        assert _direct_app_rule_matches("firefox", "firefox", "/usr/lib/firefox/firefox")
+        assert _direct_app_rule_matches("/opt/example/", "helper", "/opt/example/bin/helper")
+        payload = {"action": "app_add", "target": "firefox"}
+        token = base64.b64encode(
+            urllib.parse.quote(json.dumps(payload, ensure_ascii=False)).encode("ascii")
+        ).decode("ascii")
+        assert _decode_ui_action_payload(token) == payload
     finally:
         globals()["resolve_server"] = old
     print("self-test OK")
@@ -2857,6 +3705,13 @@ def main(argv=None) -> int:
     pwsub = pw.add_subparsers(dest="widget_cmd")
     pwsub.add_parser("install")
     pwsub.add_parser("remove")
+
+    pui = sub.add_parser("ui")
+    puisub = pui.add_subparsers(dest="ui_cmd")
+    puisub.add_parser("state")
+    puisub.add_parser("running")
+    puia = puisub.add_parser("action")
+    puia.add_argument("payload")
 
     pp = sub.add_parser("port")
     ppsub = pp.add_subparsers(dest="port_cmd")
@@ -2999,6 +3854,17 @@ Local DIRECT SOCKS (only localhost, only while VPN is on):
             return 0
         if args.app_cmd == "remove":
             cmd_app_remove(settings, args.process)
+            return 0
+
+    if args.cmd == "ui":
+        if args.ui_cmd in {None, "state"}:
+            cmd_ui_state(settings)
+            return 0
+        if args.ui_cmd == "running":
+            cmd_ui_running(settings)
+            return 0
+        if args.ui_cmd == "action":
+            cmd_ui_action(settings, args.payload)
             return 0
 
     if args.cmd == "widget":
