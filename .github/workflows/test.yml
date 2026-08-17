@@ -60,9 +60,13 @@ jobs:
           assert base64.b64decode(vals['STANDALONE_GUI_QML_B64']) == Path('src/evgenium_gui.qml').read_bytes()
           print('embedded GUI assets match source')
           PY
-      - name: Validate nftables server-port rules
+      - name: Lint standalone Qt Quick UI
         run: |
           sudo apt-get update -qq
+          sudo apt-get install -y -qq qt6-declarative-dev-tools qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts
+          /usr/lib/qt6/bin/qmllint src/evgenium_gui.qml
+      - name: Validate nftables server-port rules
+        run: |
           sudo apt-get install -y -qq nftables
           python - <<'PY' > /tmp/vpn-guard.nft
           import importlib.util
