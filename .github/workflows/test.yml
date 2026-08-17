@@ -61,10 +61,24 @@ jobs:
           print('embedded GUI assets match source')
           PY
       - name: Lint standalone Qt Quick UI
+        shell: bash
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq qt6-declarative-dev-tools qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts
-          /usr/lib/qt6/bin/qmllint src/evgenium_gui.qml
+          set +e
+          /usr/lib/qt6/bin/qmllint src/evgenium_gui.qml > /tmp/qmllint.log 2>&1
+          status=$?
+          cat /tmp/qmllint.log
+          if [[ $status -ne 0 ]]; then
+            while IFS= read -r line; do
+              [[ -z "$line" ]] && continue
+              line=${line//'%'/'%25'}
+              line=${line//$'\r'/'%0D'}
+              line=${line//$'\n'/'%0A'}
+              echo "::error file=src/evgenium_gui.qml::$line"
+            done < /tmp/qmllint.log
+          fi
+          exit $status
       - name: Validate nftables server-port rules
         run: |
           sudo apt-get install -y -qq nftables
@@ -107,7 +121,6 @@ jobs:
               assert m['version']==v
               assert m['sha256']==digest
           with tarfile.open(archive,'r:gz') as tf:
-              # Keep this exact shape for compatibility with 0.2.x updaters.
               assert tf.getnames()==['vpnctl.py','vpnadmin.py','VERSION']
           print('release + manifests OK', digest)
           PY
