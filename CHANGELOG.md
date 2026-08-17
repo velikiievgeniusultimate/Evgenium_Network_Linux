@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.7
+
+- add a Plasma 6 desktop widget with a one-click VPN ON/OFF switch and a compact settings gear
+- add `vpn toggle` and remember the last successful VPN profile across `vpn off`
+- add `vpn status --json` for a stable machine-readable local UI interface
+- add `vpn widget install|remove`; the widget is embedded in the signed/hashed manager release rather than downloaded separately
+- expose current DIRECT app/domain/network counts in the widget settings scaffold for future GUI editing
+
 ## 0.2.6
 
 - automatically rebuild an active Xray runtime after manager migration

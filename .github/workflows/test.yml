@@ -29,6 +29,18 @@ jobs:
           grep -F '"process": apps' src/vpnctl.py
           grep -F 'DIRECT_SOCKS_PORT = 18443' src/vpnctl.py
           grep -F 'Применяю новые DIRECT-правила к активному VPN' src/vpnctl.py
+      - name: Validate Plasma widget contract
+        run: |
+          grep -F 'PLASMOID_ID = "com.evgenium.network"' src/vpnctl.py
+          grep -F 'sub.add_parser("toggle")' src/vpnctl.py
+          grep -F 'pst.add_argument("--json"' src/vpnctl.py
+          grep -F 'pwsub.add_parser("install")' src/vpnctl.py
+          grep -F 'pwsub.add_parser("remove")' src/vpnctl.py
+          grep -F '/usr/local/bin/vpn status --json' src/vpnctl.py
+          grep -F '/usr/local/bin/vpn toggle' src/vpnctl.py
+          grep -F '"last_active": path.name' src/vpnctl.py
+          grep -F 'save_state({"active": None, "last_active": last_active})' src/vpnctl.py
+          grep -F 'if _widget_package_dir(settings).exists()' src/vpnctl.py
       - name: Validate nftables server-port rules
         run: |
           sudo apt-get update -qq
