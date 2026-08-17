@@ -1,0 +1,70 @@
+name: Prepare VPN Manager 0.2.9 Plasma settings
+
+on:
+  push:
+    branches: [feature/plasma-settings-0.2.9]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply 0.2.9 source changes
+        run: |
+          python scripts/prepare_0_2_9.py
+          python -m py_compile src/vpnctl.py src/vpnadmin.py scripts/build_release.py
+          python src/vpnctl.py --self-test
+
+      - name: Verify graphical UI contract
+        run: |
+          grep -F 'text: "E-VPN"' src/vpnctl.py
+          grep -F 'plasmoid.action("configure")' src/vpnctl.py
+          grep -F 'PLASMOID_CONFIG_APPS_QML' src/vpnctl.py
+          grep -F 'PLASMOID_CONFIG_NETWORK_QML' src/vpnctl.py
+          grep -F 'PLASMOID_CONFIG_PORTS_QML' src/vpnctl.py
+          grep -F 'def _running_user_applications' src/vpnctl.py
+          grep -F 'pui = sub.add_parser("ui")' src/vpnctl.py
+          grep -F 'Qt.btoa(encodeURIComponent(JSON.stringify(payload)))' src/vpnctl.py
+
+      - name: Build deterministic release
+        run: |
+          python scripts/build_release.py --channels stable testing
+
+      - name: Verify release and manifests
+        run: |
+          python - <<'PY'
+          import hashlib, json, tarfile
+          from pathlib import Path
+          v = Path('VERSION').read_text().strip()
+          assert v == '0.2.9'
+          archive = Path(f'dist/vpn-manager-{v}.tar.gz')
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          for channel in ('stable', 'testing'):
+              manifest = json.loads(Path(f'update/{channel}.json').read_text())
+              assert manifest['version'] == v
+              assert manifest['sha256'] == digest
+          with tarfile.open(archive, 'r:gz') as tf:
+              assert tf.getnames() == ['vpnctl.py', 'vpnadmin.py', 'VERSION']
+          text = Path('src/vpnctl.py').read_text()
+          assert 'name: "Приложения"' in text
+          assert 'name: "Сайты и IP"' in text
+          assert 'name: "Порты"' in text
+          assert '/usr/local/bin/vpn ui running' in text
+          print('0.2.9 release OK', digest)
+          PY
+
+      - name: Commit prepared 0.2.9
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -r scripts/plasma_0_2_9 scripts/prepare_0_2_9.py .github/workflows/prepare-0.2.9.yml
+          git add src/vpnctl.py VERSION CHANGELOG.md README.md .github/workflows/test.yml update/stable.json update/testing.json dist/vpn-manager-0.2.9.tar.gz dist/vpn-manager-0.2.9.tar.gz.sha256
+          git commit -m 'VPN Manager 0.2.9: compact Plasma widget and graphical exclusions'
+          git push
