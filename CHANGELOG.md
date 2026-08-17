@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.11
+
+- replace the Plasma-owned settings dialog with a standalone Evgenium Network application
+- keep the desktop widget minimal: `E-VPN`, ON/OFF switch and a gear that launches the standalone GUI
+- add a custom Qt Quick interface for VPN status, DIRECT applications, sites/IPs, server ports and diagnostics
+- add one-click exclusions from currently running applications in the standalone GUI
+- install an `evgenium-network` launcher and desktop-menu entry without adding new package dependencies
+- keep the manager release archive backward-compatible with old updaters by embedding GUI assets inside `vpnctl.py`
+
 ## 0.2.10
 
 - fix the Plasma settings gear by explicitly enabling the configuration interface

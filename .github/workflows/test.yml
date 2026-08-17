@@ -24,26 +24,55 @@ jobs:
           grep -F 'vpn update' install.sh
       - name: Compile and self-test
         run: |
-          python -m py_compile src/vpnctl.py src/vpnadmin.py scripts/build_release.py
+          python -m py_compile src/vpnctl.py src/vpnadmin.py src/evgenium_gui.py scripts/build_release.py
           python src/vpnctl.py --self-test
+          python src/evgenium_gui.py --self-test
           grep -F '"process": apps' src/vpnctl.py
           grep -F 'DIRECT_SOCKS_PORT = 18443' src/vpnctl.py
           grep -F 'Применяю новые DIRECT-правила к активному VPN' src/vpnctl.py
-      - name: Validate Plasma widget contract
+      - name: Validate standalone GUI contract
         run: |
           grep -F 'PLASMOID_ID = "com.evgenium.network"' src/vpnctl.py
           grep -F 'sub.add_parser("toggle")' src/vpnctl.py
           grep -F 'pst.add_argument("--json"' src/vpnctl.py
           grep -F 'pwsub.add_parser("install")' src/vpnctl.py
-          grep -F 'pwsub.add_parser("remove")' src/vpnctl.py
+          grep -F 'pgsub.add_parser("install")' src/vpnctl.py
           grep -F '/usr/local/bin/vpn status --json' src/vpnctl.py
           grep -F '/usr/local/bin/vpn toggle' src/vpnctl.py
-          grep -F '"last_active": path.name' src/vpnctl.py
-          grep -F 'save_state({"active": None, "last_active": last_active})' src/vpnctl.py
-          grep -F 'if _widget_package_dir(settings).exists()' src/vpnctl.py
-      - name: Validate nftables server-port rules
+          grep -F '/usr/local/bin/evgenium-network --detach' src/vpnctl.py
+          grep -F 'cmd_gui_install(settings)' src/vpnctl.py
+          grep -F 'evgenium-network.desktop' src/vpnctl.py
+          grep -F '/api/running' src/evgenium_gui.py
+          grep -F '/api/action' src/evgenium_gui.py
+          grep -F 'Запущены сейчас' src/evgenium_gui.qml
+          grep -F 'target: String(modelData.exe || modelData.name || "")' src/evgenium_gui.qml
+          python - <<'PY'
+          import ast, base64
+          from pathlib import Path
+          tree=ast.parse(Path('src/vpnctl.py').read_text())
+          vals={}
+          for node in tree.body:
+              if isinstance(node, ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0], ast.Name):
+                  name=node.targets[0].id
+                  if name in {'STANDALONE_GUI_PY_B64','STANDALONE_GUI_QML_B64'}:
+                      vals[name]=ast.literal_eval(node.value)
+          assert base64.b64decode(vals['STANDALONE_GUI_PY_B64']) == Path('src/evgenium_gui.py').read_bytes()
+          assert base64.b64decode(vals['STANDALONE_GUI_QML_B64']) == Path('src/evgenium_gui.qml').read_bytes()
+          print('embedded GUI assets match source')
+          PY
+      - name: Lint standalone Qt Quick UI
         run: |
           sudo apt-get update -qq
+          sudo apt-get install -y -qq qt6-declarative-dev-tools qml6-module-qtqml qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-templates
+          cat > src/.qmllint.ini <<'EOF'
+          [Warnings]
+          UnqualifiedAccess=disable
+          ImportFailure=disable
+          EOF
+          /usr/lib/qt6/bin/qmllint src/evgenium_gui.qml
+          rm -f src/.qmllint.ini
+      - name: Validate nftables server-port rules
+        run: |
           sudo apt-get install -y -qq nftables
           python - <<'PY' > /tmp/vpn-guard.nft
           import importlib.util
