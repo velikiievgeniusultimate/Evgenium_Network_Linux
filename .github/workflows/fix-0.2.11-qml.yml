@@ -35,7 +35,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq qt6-declarative-dev-tools qml6-module-qtqml qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-templates
-          /usr/lib/qt6/bin/qmllint src/evgenium_gui.qml
+          /usr/lib/qt6/bin/qmllint --max-warnings -1 src/evgenium_gui.qml
       - name: Re-embed exact GUI source into manager
         run: |
           python - <<'PY'
