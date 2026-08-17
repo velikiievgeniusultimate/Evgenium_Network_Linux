@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.13
+
+- add an independent `VPN для Waydroid` switch in the standalone E-VPN application
+- when the main VPN is off, Waydroid is always direct regardless of the stored Waydroid preference
+- when the main VPN is on, Waydroid can either follow Xray TUN or use a dedicated IPv4 physical policy route
+- add a Waydroid-specific fail-closed FORWARD guard so a TUN failure cannot silently leak Waydroid traffic
+- apply Waydroid changes live without restarting Xray and keep the Plasma widget intentionally unchanged
+
 ## 0.2.12
 
 - fix the standalone GUI sidebar layout and make every navigation row fully clickable
