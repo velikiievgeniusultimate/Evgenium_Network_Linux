@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.8
+
+- fix Plasma 6 widget loading: representation and tooltip properties now use the direct `PlasmoidItem` API
+- keep the 0.2.7 widget behavior and local `vpn status --json` / `vpn toggle` contract unchanged
+
 ## 0.2.7
 
 - add a Plasma 6 desktop widget with a one-click VPN ON/OFF switch and a compact settings gear
