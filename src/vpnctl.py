@@ -26,7 +26,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.6"
+MANAGER_VERSION = "0.2.7"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -44,6 +44,254 @@ TUN_NAME = "xraytun"
 NFT_TABLE = "vpn_guard"
 DIRECT_SOCKS_HOST = "127.0.0.1"
 DIRECT_SOCKS_PORT = 18443
+
+PLASMOID_ID = "com.evgenium.network"
+PLASMOID_METADATA = r'''{
+  "KPlugin": {
+    "Authors": [
+      {
+        "Name": "Evgenium"
+      }
+    ],
+    "Category": "System Information",
+    "Description": "Quick VPN switch for Evgenium Network Linux",
+    "Icon": "network-vpn",
+    "Id": "com.evgenium.network",
+    "Name": "Evgenium Network",
+    "Version": "1.0"
+  },
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "KPackageStructure": "Plasma/Applet"
+}
+'''
+PLASMOID_MAIN_QML = r'''import QtQuick
+import QtQuick.Layouts
+import org.kde.kirigami as Kirigami
+import org.kde.plasma.components as PlasmaComponents3
+import org.kde.plasma.plasmoid
+import org.kde.plasma.plasma5support as Plasma5Support
+
+PlasmoidItem {
+    id: root
+
+    property bool vpnActive: false
+    property bool busy: false
+    property bool settingsVisible: false
+    property string activeProfile: ""
+    property string lastProfile: ""
+    property string errorText: ""
+    property int appExclusions: 0
+    property int domainExclusions: 0
+    property int networkExclusions: 0
+
+    readonly property string statusCommand: "/usr/local/bin/vpn status --json"
+    readonly property string toggleCommand: "/usr/local/bin/vpn toggle"
+
+    Plasmoid.icon: "network-vpn"
+    Plasmoid.toolTipMainText: "Evgenium Network"
+    Plasmoid.toolTipSubText: busy
+        ? "Переключаю VPN…"
+        : (vpnActive ? "VPN включён" : "VPN выключен")
+    Plasmoid.preferredRepresentation: Plasmoid.fullRepresentation
+
+    function requestStatus() {
+        statusSource.connectSource(statusCommand)
+    }
+
+    function toggleVpn() {
+        if (busy)
+            return
+        busy = true
+        errorText = ""
+        actionSource.connectSource(toggleCommand)
+    }
+
+    Component.onCompleted: requestStatus()
+
+    Timer {
+        interval: 1500
+        repeat: true
+        running: true
+        onTriggered: root.requestStatus()
+    }
+
+    Plasma5Support.DataSource {
+        id: statusSource
+        engine: "executable"
+
+        onNewData: function(sourceName, data) {
+            if (sourceName !== root.statusCommand)
+                return
+            const output = String(data["stdout"] || "").trim()
+            if (output.length > 0) {
+                try {
+                    const state = JSON.parse(output)
+                    root.vpnActive = Boolean(state.active)
+                    root.activeProfile = String(state.profile || "")
+                    root.lastProfile = String(state.last_profile || "")
+                    root.appExclusions = Number(state.direct_applications || 0)
+                    root.domainExclusions = Number(state.direct_domains || 0)
+                    root.networkExclusions = Number(state.direct_networks || 0)
+                } catch (error) {
+                    root.errorText = "Не удалось прочитать состояние VPN"
+                }
+            }
+            statusSource.disconnectSource(sourceName)
+        }
+    }
+
+    Plasma5Support.DataSource {
+        id: actionSource
+        engine: "executable"
+
+        onNewData: function(sourceName, data) {
+            const exitCode = Number(data["exit code"] === undefined ? 0 : data["exit code"])
+            const stderrText = String(data["stderr"] || "").trim()
+            const stdoutText = String(data["stdout"] || "").trim()
+            if (exitCode !== 0)
+                root.errorText = stderrText.length > 0 ? stderrText : stdoutText
+            root.busy = false
+            actionSource.disconnectSource(sourceName)
+            root.requestStatus()
+        }
+    }
+
+    Plasmoid.fullRepresentation: Item {
+        Layout.minimumWidth: Kirigami.Units.gridUnit * 14
+        Layout.preferredWidth: Kirigami.Units.gridUnit * 15
+        Layout.minimumHeight: root.settingsVisible
+            ? Kirigami.Units.gridUnit * 10
+            : Kirigami.Units.gridUnit * 4
+        Layout.preferredHeight: Layout.minimumHeight
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: Kirigami.Units.smallSpacing * 2
+            spacing: Kirigami.Units.smallSpacing
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 0
+
+                    PlasmaComponents3.Label {
+                        text: "VPN"
+                        font.bold: true
+                    }
+
+                    PlasmaComponents3.Label {
+                        text: root.busy
+                            ? "Переключаю…"
+                            : (root.vpnActive
+                                ? "Включён" + (root.activeProfile.length > 0 ? " • " + root.activeProfile : "")
+                                : "Выключен")
+                        opacity: 0.72
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+                }
+
+                Item {
+                    id: switchControl
+                    Layout.preferredWidth: 48
+                    Layout.preferredHeight: 26
+                    opacity: root.busy ? 0.55 : 1.0
+
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: height / 2
+                        color: root.vpnActive
+                            ? Kirigami.Theme.highlightColor
+                            : Kirigami.Theme.disabledTextColor
+                        opacity: root.vpnActive ? 0.95 : 0.45
+                    }
+
+                    Rectangle {
+                        width: 20
+                        height: 20
+                        radius: 10
+                        y: 3
+                        x: root.vpnActive ? switchControl.width - width - 3 : 3
+                        color: Kirigami.Theme.backgroundColor
+
+                        Behavior on x {
+                            NumberAnimation { duration: 120 }
+                        }
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !root.busy
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleVpn()
+                    }
+                }
+
+                PlasmaComponents3.ToolButton {
+                    icon.name: "configure"
+                    text: "Настройки"
+                    onClicked: root.settingsVisible = !root.settingsVisible
+                }
+            }
+
+            ColumnLayout {
+                visible: root.settingsVisible
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    color: Kirigami.Theme.textColor
+                    opacity: 0.12
+                }
+
+                PlasmaComponents3.Label {
+                    text: "Настройки"
+                    font.bold: true
+                }
+
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    text: "Приложения-исключения: " + root.appExclusions
+                    opacity: 0.82
+                }
+
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    text: "Исключённые сайты: " + root.domainExclusions
+                    opacity: 0.82
+                }
+
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    text: "Исключённые IP/сети: " + root.networkExclusions
+                    opacity: 0.82
+                }
+
+                PlasmaComponents3.Label {
+                    Layout.fillWidth: true
+                    text: "Редактирование этих списков появится здесь в следующих версиях."
+                    wrapMode: Text.WordWrap
+                    opacity: 0.58
+                }
+            }
+
+            PlasmaComponents3.Label {
+                visible: root.errorText.length > 0
+                Layout.fillWidth: true
+                text: root.errorText
+                color: Kirigami.Theme.negativeTextColor
+                wrapMode: Text.WordWrap
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+            }
+        }
+    }
+}
+'''
 
 RELEASES = pathlib.Path("/opt/vpn-manager/releases")
 CURRENT = pathlib.Path("/opt/vpn-manager/current")
@@ -1865,6 +2113,7 @@ def activate(settings: dict, path: pathlib.Path) -> None:
             if v6_ok:
                 save_state({
                     "active": path.name,
+                    "last_active": path.name,
                     "node": nodes[0]["name"],
                     "server_ip": nodes[0]["server_ip"],
                     "ipv6_mode": "vpn",
@@ -1895,6 +2144,7 @@ def activate(settings: dict, path: pathlib.Path) -> None:
                     # Публичный IPv6 физического интерфейса режеч vpn_guard.
                     save_state({
                         "active": path.name,
+                    "last_active": path.name,
                         "node": nodes[0]["name"],
                         "server_ip": nodes[0]["server_ip"],
                         "ipv6_mode": "blocked",
@@ -1949,10 +2199,12 @@ def activate(settings: dict, path: pathlib.Path) -> None:
 
 def deactivate() -> None:
     info("Выключаю VPN...")
+    st = load_state()
+    last_active = st.get("active") or st.get("last_active")
     stop_core()
     RUNTIME_CONFIG.unlink(missing_ok=True)
     remove_guard()
-    save_state({"active": None})
+    save_state({"active": None, "last_active": last_active})
     ok("VPN выключен. Прямой интернет разрешён.")
 
 def default_physical_iface() -> str | None:
@@ -2047,6 +2299,117 @@ def cmd_status(settings: dict, with_ip=False) -> None:
                 print(f"IPv6 reason:  {v6_detail}")
         elif ipv6_mode == "blocked":
             print("IPv6 health:  BLOCKED BY DESIGN")
+
+
+def _status_payload(settings: dict) -> dict:
+    st = load_state()
+    active = service_active()
+    return {
+        "manager": MANAGER_VERSION,
+        "active": active,
+        "profile": str(st.get("active") or "") if active else "",
+        "last_profile": str(st.get("last_active") or st.get("active") or ""),
+        "ipv6_mode": str(st.get("ipv6_mode") or "unknown"),
+        "tun": pathlib.Path(f"/sys/class/net/{TUN_NAME}").exists(),
+        "kill_switch": nft_exists(),
+        "direct_domains": len(read_direct_sites(settings)),
+        "direct_networks": len(read_direct_networks(settings)),
+        "direct_applications": len(read_direct_apps(settings)),
+    }
+
+
+def cmd_status_json(settings: dict) -> None:
+    print(json.dumps(_status_payload(settings), ensure_ascii=False, separators=(",", ":")))
+
+
+def cmd_toggle(settings: dict) -> None:
+    if service_active():
+        deactivate()
+        return
+
+    st = load_state()
+    requested = str(st.get("last_active") or st.get("active") or "").strip()
+    if requested:
+        activate(settings, choose_config(settings, requested))
+        return
+
+    paths = list_config_paths(settings)
+    if len(paths) == 1:
+        activate(settings, paths[0])
+        return
+    if not paths:
+        fail("Нет VPN-конфигов. Добавь конфиг в папку VPN configs.")
+    fail(
+        "Виджет пока не знает, какой профиль включать. Один раз выполни "
+        "`vpn on <имя>`; после этого переключатель запомнит последний профиль."
+    )
+
+
+def _widget_package_dir(settings: dict) -> pathlib.Path:
+    home = pathlib.Path(str(settings["owner_home"]))
+    return home / ".local" / "share" / "plasma" / "plasmoids" / PLASMOID_ID
+
+
+def _widget_target_safe(settings: dict, package: pathlib.Path) -> None:
+    home = pathlib.Path(str(settings["owner_home"])).resolve()
+    try:
+        package.resolve(strict=False).relative_to(home)
+    except ValueError:
+        fail("Некорректный путь установки Plasma-виджета.")
+    for candidate in (package, package / "contents", package / "contents" / "ui"):
+        if candidate.is_symlink():
+            fail(f"Отказываюсь изменять symlink Plasma-виджета: {candidate}")
+        if candidate.exists() and not candidate.is_dir():
+            fail(f"Ожидалась папка Plasma-виджета: {candidate}")
+
+
+def _write_owner_text(path: pathlib.Path, text: str, uid: int, gid: int) -> None:
+    fd, tmpname = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmpname, 0o644)
+        os.chown(tmpname, uid, gid)
+        os.replace(tmpname, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmpname)
+
+
+def cmd_widget_install(settings: dict) -> None:
+    package = _widget_package_dir(settings)
+    _widget_target_safe(settings, package)
+    uid, gid = _owner_ids(settings)
+    ui = package / "contents" / "ui"
+    ui.mkdir(parents=True, exist_ok=True)
+    for directory in (package, package / "contents", ui):
+        os.chown(directory, uid, gid)
+        os.chmod(directory, 0o755)
+
+    _write_owner_text(package / "metadata.json", PLASMOID_METADATA, uid, gid)
+    _write_owner_text(ui / "main.qml", PLASMOID_MAIN_QML, uid, gid)
+
+    kbuild = shutil.which("kbuildsycoca6")
+    if kbuild:
+        run([kbuild], check=False, capture=True, user=str(settings["owner_user"]))
+
+    ok(f"Plasma 6 виджет установлен: {package}")
+    print("Добавь его один раз: ПКМ по рабочему столу -> Добавить виджеты -> Evgenium Network.")
+
+
+def cmd_widget_remove(settings: dict) -> None:
+    package = _widget_package_dir(settings)
+    _widget_target_safe(settings, package)
+    if package.exists():
+        shutil.rmtree(package)
+        kbuild = shutil.which("kbuildsycoca6")
+        if kbuild:
+            run([kbuild], check=False, capture=True, user=str(settings["owner_user"]))
+        ok("Plasma-виджет Evgenium Network удалён.")
+    else:
+        ok("Plasma-виджет не установлен.")
 
 def cmd_test(settings: dict) -> None:
     if not service_active():
@@ -2437,6 +2800,14 @@ def self_test() -> None:
         assert "tcp sport { 25565 }" in guard
         assert "udp sport { 19132 }" in guard
         assert f"meta mark 0x{SERVER_BYPASS_MARK:08x}" in guard
+
+        metadata = json.loads(PLASMOID_METADATA)
+        assert metadata["KPlugin"]["Id"] == PLASMOID_ID
+        assert metadata["X-Plasma-API-Minimum-Version"] == "6.0"
+        assert "PlasmoidItem" in PLASMOID_MAIN_QML
+        assert 'engine: "executable"' in PLASMOID_MAIN_QML
+        assert "/usr/local/bin/vpn status --json" in PLASMOID_MAIN_QML
+        assert "/usr/local/bin/vpn toggle" in PLASMOID_MAIN_QML
     finally:
         globals()["resolve_server"] = old
     print("self-test OK")
@@ -2451,7 +2822,8 @@ def main(argv=None) -> int:
     pon = sub.add_parser("on"); pon.add_argument("config", nargs="?")
     psw = sub.add_parser("switch"); psw.add_argument("config")
     sub.add_parser("off")
-    pst = sub.add_parser("status"); pst.add_argument("--ip", action="store_true")
+    sub.add_parser("toggle")
+    pst = sub.add_parser("status"); pst.add_argument("--ip", action="store_true"); pst.add_argument("--json", action="store_true")
     sub.add_parser("test")
     pr = sub.add_parser("route"); pr.add_argument("target")
 
@@ -2473,6 +2845,11 @@ def main(argv=None) -> int:
     pasub.add_parser("list")
     paa = pasub.add_parser("add"); paa.add_argument("process")
     par = pasub.add_parser("remove"); par.add_argument("process")
+
+    pw = sub.add_parser("widget")
+    pwsub = pw.add_subparsers(dest="widget_cmd")
+    pwsub.add_parser("install")
+    pwsub.add_parser("remove")
 
     pp = sub.add_parser("port")
     ppsub = pp.add_subparsers(dest="port_cmd")
@@ -2512,7 +2889,8 @@ def main(argv=None) -> int:
   vpn on [CONFIG]
   vpn switch CONFIG
   vpn off
-  vpn status [--ip]
+  vpn toggle
+  vpn status [--ip|--json]
   vpn test
   vpn route DOMAIN|IP
   vpn direct list
@@ -2523,6 +2901,7 @@ def main(argv=None) -> int:
   vpn app list
   vpn app add PROCESS|/absolute/path|/directory/
   vpn app remove PROCESS|/absolute/path|/directory/
+  vpn widget install|remove
   vpn port list
   vpn port add PORT [tcp|udp|both]
   vpn port remove PORT [tcp|udp|both]
@@ -2568,8 +2947,15 @@ Local DIRECT SOCKS (only localhost, only while VPN is on):
         deactivate()
         return 0
 
+    if args.cmd == "toggle":
+        cmd_toggle(settings)
+        return 0
+
     if args.cmd == "status":
-        cmd_status(settings, args.ip)
+        if args.json:
+            cmd_status_json(settings)
+        else:
+            cmd_status(settings, args.ip)
         return 0
 
     if args.cmd == "test":
@@ -2606,6 +2992,14 @@ Local DIRECT SOCKS (only localhost, only while VPN is on):
             return 0
         if args.app_cmd == "remove":
             cmd_app_remove(settings, args.process)
+            return 0
+
+    if args.cmd == "widget":
+        if args.widget_cmd in {None, "install"}:
+            cmd_widget_install(settings)
+            return 0
+        if args.widget_cmd == "remove":
+            cmd_widget_remove(settings)
             return 0
 
     if args.cmd == "port":

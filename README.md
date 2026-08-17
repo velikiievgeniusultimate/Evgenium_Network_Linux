@@ -2,7 +2,7 @@
 
 A small Linux VPN manager built around **Xray-core**.
 
-Current stable baseline: **0.2.6**.
+Current stable baseline: **0.2.7**.
 
 ## Install
 
@@ -48,7 +48,9 @@ vpn inspect Estonia
 vpn on Estonia
 vpn switch Estonia
 vpn off
+vpn toggle
 vpn status --ip
+vpn status --json
 vpn test
 vpn route example.com
 vpn direct list
@@ -60,6 +62,8 @@ vpn direct refresh
 vpn app list
 vpn app add evgenium-waydroid-mapper
 vpn app remove evgenium-waydroid-mapper
+vpn widget install
+vpn widget remove
 vpn port list
 vpn port add 25565
 vpn port remove 25565
@@ -93,6 +97,19 @@ While the VPN is active, the manager also exposes a no-auth SOCKS endpoint on
 localhost only (`127.0.0.1:18443`). EWM automatically detects this endpoint and
 uses it only for its GitHub update downloads. Other applications and ordinary
 browser traffic remain on the VPN.
+
+
+## KDE Plasma 6 widget
+
+Version 0.2.7 includes a native Plasma 6 widget. Install it for the current desktop user with:
+
+```bash
+vpn widget install
+```
+
+Then right-click the desktop, choose **Add Widgets**, search for **Evgenium Network**, and place it on the desktop. The widget contains a single VPN ON/OFF switch and a settings gear. Turning the VPN back on uses the last successfully connected profile remembered by the manager. The settings area currently shows DIRECT application/domain/network counts and is intentionally reserved for the upcoming graphical exclusion editors.
+
+The widget talks only to the local `vpn` command using `vpn status --json` and `vpn toggle`; it never receives or displays VLESS credentials.
 
 ## Update channel
 
