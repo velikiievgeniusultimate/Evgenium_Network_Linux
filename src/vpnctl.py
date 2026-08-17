@@ -231,8 +231,10 @@ PlasmoidItem {
                 }
 
                 PlasmaComponents3.ToolButton {
+                    Layout.preferredWidth: 34
+                    Layout.preferredHeight: 34
                     icon.name: "configure"
-                    text: "Настройки"
+                    text: ""
                     onClicked: root.settingsVisible = !root.settingsVisible
                 }
             }
@@ -2144,7 +2146,7 @@ def activate(settings: dict, path: pathlib.Path) -> None:
                     # Публичный IPv6 физического интерфейса режеч vpn_guard.
                     save_state({
                         "active": path.name,
-                    "last_active": path.name,
+                        "last_active": path.name,
                         "node": nodes[0]["name"],
                         "server_ip": nodes[0]["server_ip"],
                         "ipv6_mode": "blocked",
@@ -2190,7 +2192,10 @@ def activate(settings: dict, path: pathlib.Path) -> None:
 
     RUNTIME_CONFIG.unlink(missing_ok=True)
     remove_guard()
-    save_state({"active": None})
+    save_state({
+        "active": None,
+        "last_active": old_state.get("last_active") or old_state.get("active"),
+    })
     fail(
         "VPN не прошёл реальную проверку; прямой интернет "
         "автоматически восстановлен.\n"
@@ -2808,6 +2813,8 @@ def self_test() -> None:
         assert 'engine: "executable"' in PLASMOID_MAIN_QML
         assert "/usr/local/bin/vpn status --json" in PLASMOID_MAIN_QML
         assert "/usr/local/bin/vpn toggle" in PLASMOID_MAIN_QML
+        assert 'icon.name: "configure"' in PLASMOID_MAIN_QML
+        assert 'text: ""' in PLASMOID_MAIN_QML
     finally:
         globals()["resolve_server"] = old
     print("self-test OK")
@@ -3076,6 +3083,8 @@ Local DIRECT SOCKS (only localhost, only while VPN is on):
 
     if args.cmd == "internal-after-update":
         sync_system_files()
+        if _widget_package_dir(settings).exists():
+            cmd_widget_install(settings)
         # Migrate an active 0.2.3 rule -> main without cycling the VPN.
         if service_active() and nft_exists() and read_server_ports(settings):
             info("Мигрирую SERVER-port bypass на выделенную физическую routing table...")
