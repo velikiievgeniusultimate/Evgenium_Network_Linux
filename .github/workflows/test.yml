@@ -45,6 +45,11 @@ jobs:
           grep -F '/api/running' src/evgenium_gui.py
           grep -F '/api/action' src/evgenium_gui.py
           grep -F 'Запущены сейчас' src/evgenium_gui.qml
+          grep -F 'Профили VPN' src/evgenium_gui.qml
+          grep -F 'profile_activate' src/vpnctl.py
+          grep -F '"profiles": profiles' src/vpnctl.py
+          grep -F 'APP_ICON_SVG' src/vpnctl.py
+          grep -F 'Icon=evgenium-network' src/vpnctl.py
           grep -F 'target: String(modelData.exe || modelData.name || "")' src/evgenium_gui.qml
           python - <<'PY'
           import ast, base64
