@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.12
+
+- fix the standalone GUI sidebar layout and make every navigation row fully clickable
+- add a dedicated VPN profiles page with one-click switching between configs
+- expose VPN profiles and config directory through the existing local UI state API
+- add an original E-VPN application icon inspired by an anime drill-pigtail silhouette and install it for the desktop entry and Plasma widget
+
 ## 0.2.11
 
 - replace the Plasma-owned settings dialog with a standalone Evgenium Network application

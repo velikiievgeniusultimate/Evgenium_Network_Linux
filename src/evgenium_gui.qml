@@ -165,6 +165,8 @@ C.ApplicationWindow {
         required property int index
         property string shortLabel: ""
         signal clicked()
+        Layout.fillWidth: true
+        implicitWidth: 186
         height: 48
         radius: 11
         color: root.pageIndex === index ? "#253246" : (navMouse.containsMouse ? root.sidebarHover : "transparent")
@@ -262,13 +264,14 @@ C.ApplicationWindow {
                 }
 
                 NavButton { label: "VPN"; shortLabel: "VPN"; index: 0 }
+                NavButton { label: "Профили VPN"; shortLabel: "PRF"; index: 1 }
                 NavButton {
-                    label: "Приложения"; shortLabel: "APP"; index: 1
+                    label: "Приложения"; shortLabel: "APP"; index: 2
                     onClicked: root.refreshRunning()
                 }
-                NavButton { label: "Сайты и IP"; shortLabel: "NET"; index: 2 }
-                NavButton { label: "Порты"; shortLabel: "PRT"; index: 3 }
-                NavButton { label: "Диагностика"; shortLabel: "SYS"; index: 4 }
+                NavButton { label: "Сайты и IP"; shortLabel: "NET"; index: 3 }
+                NavButton { label: "Порты"; shortLabel: "PRT"; index: 4 }
+                NavButton { label: "Диагностика"; shortLabel: "SYS"; index: 5 }
 
                 Item { Layout.fillHeight: true }
 
@@ -321,7 +324,7 @@ C.ApplicationWindow {
                     Layout.fillWidth: true
                     C.Label {
                         Layout.fillWidth: true
-                        text: ["VPN", "Приложения без VPN", "Сайты и IP без VPN", "Входящие порты", "Диагностика"][root.pageIndex]
+                        text: ["VPN", "Профили VPN", "Приложения без VPN", "Сайты и IP без VPN", "Входящие порты", "Диагностика"][root.pageIndex]
                         color: root.textMain
                         font.pixelSize: 25
                         font.weight: Font.Bold
@@ -337,7 +340,7 @@ C.ApplicationWindow {
                         enabledButton: !root.busy
                         onClicked: {
                             root.refreshState()
-                            if (root.pageIndex === 1)
+                            if (root.pageIndex === 2)
                                 root.refreshRunning()
                         }
                     }
@@ -455,6 +458,137 @@ C.ApplicationWindow {
                                 }
 
                                 Item { Layout.fillHeight: true }
+                            }
+                        }
+                    }
+
+
+                    // VPN profiles
+                    Item {
+                        ColumnLayout {
+                            anchors.fill: parent
+                            spacing: 14
+
+                            Card {
+                                Layout.fillWidth: true
+                                height: 78
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 16
+                                    spacing: 12
+                                    Rectangle {
+                                        width: 42
+                                        height: 42
+                                        radius: 12
+                                        color: root.accentSoft
+                                        C.Label {
+                                            anchors.centerIn: parent
+                                            text: "PRF"
+                                            color: root.accent
+                                            font.pixelSize: 11
+                                            font.weight: Font.Bold
+                                        }
+                                    }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 2
+                                        C.Label {
+                                            text: "VPN-профили"
+                                            color: root.textMain
+                                            font.pixelSize: 16
+                                            font.weight: Font.Bold
+                                        }
+                                        C.Label {
+                                            Layout.fillWidth: true
+                                            text: String(root.state.config_dir || "")
+                                            color: root.textMuted
+                                            font.pixelSize: 11
+                                            elide: Text.ElideMiddle
+                                        }
+                                    }
+                                    C.Label {
+                                        text: String((root.state.profiles || []).length) + " шт."
+                                        color: root.textMuted
+                                        font.pixelSize: 12
+                                    }
+                                }
+                            }
+
+                            Card {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                ListView {
+                                    anchors.fill: parent
+                                    anchors.margins: 10
+                                    clip: true
+                                    spacing: 7
+                                    model: root.state.profiles || []
+                                    delegate: Rectangle {
+                                        id: profileRow
+                                        required property var modelData
+                                        width: ListView.view.width
+                                        height: 66
+                                        radius: 12
+                                        color: Boolean(profileRow.modelData.active) ? root.accentSoft : "#f8fafc"
+                                        border.width: Boolean(profileRow.modelData.active) ? 1 : 0
+                                        border.color: root.accent
+
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 14
+                                            anchors.rightMargin: 10
+                                            spacing: 12
+
+                                            Rectangle {
+                                                width: 12
+                                                height: 12
+                                                radius: 6
+                                                color: Boolean(profileRow.modelData.active)
+                                                    ? root.good
+                                                    : (Boolean(profileRow.modelData.last) ? root.accent : "#cbd5e1")
+                                            }
+
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 2
+                                                C.Label {
+                                                    Layout.fillWidth: true
+                                                    text: String(profileRow.modelData.stem || profileRow.modelData.name || "")
+                                                    color: root.textMain
+                                                    font.pixelSize: 14
+                                                    font.weight: Font.DemiBold
+                                                    elide: Text.ElideRight
+                                                }
+                                                C.Label {
+                                                    Layout.fillWidth: true
+                                                    text: Boolean(profileRow.modelData.active)
+                                                        ? "Активный профиль"
+                                                        : (Boolean(profileRow.modelData.last) ? "Последний использованный" : String(profileRow.modelData.name || ""))
+                                                    color: Boolean(profileRow.modelData.active) ? root.good : root.textMuted
+                                                    font.pixelSize: 11
+                                                    elide: Text.ElideMiddle
+                                                }
+                                            }
+
+                                            FlatButton {
+                                                label: Boolean(profileRow.modelData.active) ? "Активен" : "Подключить"
+                                                primary: !Boolean(profileRow.modelData.active)
+                                                enabledButton: !root.busy && !Boolean(profileRow.modelData.active)
+                                                onClicked: root.action({
+                                                    action: "profile_activate",
+                                                    target: String(profileRow.modelData.name || "")
+                                                })
+                                            }
+                                        }
+                                    }
+                                    C.ScrollBar.vertical: C.ScrollBar {}
+                                    C.Label {
+                                        anchors.centerIn: parent
+                                        visible: (root.state.profiles || []).length === 0
+                                        text: "В папке VPN configs пока нет профилей"
+                                        color: root.textMuted
+                                    }
+                                }
                             }
                         }
                     }
