@@ -17,15 +17,35 @@ jobs:
           python-version: '3.12'
       - name: Prepare source and release
         run: |
+          if grep -q 'MANAGER_VERSION = "0.2.6"' src/vpnctl.py; then
+            python - <<'PY'
+            from pathlib import Path
+            p = Path('scripts/prepare_widget_0_2_7.py')
+            s = p.read_text()
+            s = s.replace("widget_constants = r'''", 'widget_constants = r"""', 1)
+            s = s.replace("'''\n'''\n\ns = replace_once(\n    s,\n    'DIRECT_SOCKS_PORT = 18443\\n',", "'''\n\"\"\"\n\ns = replace_once(\n    s,\n    'DIRECT_SOCKS_PORT = 18443\\n',", 1)
+            p.write_text(s)
+            PY
+            python scripts/prepare_widget_0_2_7.py
+          fi
+
           python - <<'PY'
           from pathlib import Path
-          p = Path('scripts/prepare_widget_0_2_7.py')
+          p = Path('src/vpnctl.py')
           s = p.read_text()
-          s = s.replace("widget_constants = r'''", 'widget_constants = r"""', 1)
-          s = s.replace("'''\n'''\n\ns = replace_once(\n    s,\n    'DIRECT_SOCKS_PORT = 18443\\n',", "'''\n\"\"\"\n\ns = replace_once(\n    s,\n    'DIRECT_SOCKS_PORT = 18443\\n',", 1)
+          s = s.replace(
+              '                        "active": path.name,\n                    "last_active": path.name,\n',
+              '                        "active": path.name,\n                        "last_active": path.name,\n',
+              1,
+          )
+          s = s.replace(
+              '    save_state({"active": None})\n    fail(\n        "VPN не прошёл реальную проверку; прямой интернет "',
+              '    save_state({"active": None, "last_active": old_state.get("last_active") or old_state.get("active")})\n    fail(\n        "VPN не прошёл реальную проверку; прямой интернет "',
+              1,
+          )
           p.write_text(s)
           PY
-          python scripts/prepare_widget_0_2_7.py
+
           python -m py_compile src/vpnctl.py src/vpnadmin.py scripts/build_release.py
           python src/vpnctl.py --self-test
           python scripts/build_release.py --channels stable testing
@@ -48,6 +68,8 @@ jobs:
           assert 'PLASMOID_ID = "com.evgenium.network"' in text
           assert '/usr/local/bin/vpn status --json' in text
           assert '/usr/local/bin/vpn toggle' in text
+          assert '"last_active": path.name' in text
+          assert 'save_state({"active": None, "last_active": last_active})' in text
           print('0.2.7 release OK', digest)
           PY
       - name: Commit prepared 0.2.7
@@ -56,6 +78,6 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src/vpnctl.py VERSION CHANGELOG.md README.md update/stable.json update/testing.json dist/vpn-manager-0.2.7.tar.gz dist/vpn-manager-0.2.7.tar.gz.sha256
           if ! git diff --cached --quiet; then
-            git commit -m 'VPN Manager 0.2.7: add Plasma 6 widget'
+            git commit -m 'VPN Manager 0.2.7: harden Plasma widget toggle state'
             git push
           fi
