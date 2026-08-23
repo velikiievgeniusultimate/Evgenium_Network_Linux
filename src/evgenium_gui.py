@@ -21,10 +21,16 @@ MAX_BODY = 64 * 1024
 
 
 def find_qml_runtime() -> str | None:
-    for candidate in ("/usr/bin/qml6", "/usr/lib/qt6/bin/qml", "/usr/bin/qml"):
+    for candidate in (
+        "/usr/bin/qml6",
+        "/usr/bin/qml-qt6",
+        "/usr/lib/qt6/bin/qml",
+        "/usr/lib64/qt6/bin/qml",
+        "/usr/bin/qml",
+    ):
         if pathlib.Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return candidate
-    return shutil.which("qml6") or shutil.which("qml")
+    return shutil.which("qml6") or shutil.which("qml-qt6") or shutil.which("qml")
 
 
 def run_vpn(args: list[str], timeout: int = 120) -> str:
@@ -174,7 +180,7 @@ def launch_detached() -> int:
         print(f"Не найден интерфейс: {QML_FILE}", file=sys.stderr)
         return 1
     if not find_qml_runtime():
-        print("Не найден qml6. Нужен Qt 6 QML runtime (qt6-declarative).", file=sys.stderr)
+        print("Не найден Qt 6 QML runtime (Arch: qt6-declarative; Fedora: qt6-qtdeclarative-devel).", file=sys.stderr)
         return 1
     log_path = state_log_path()
     with log_path.open("ab", buffering=0) as log:
@@ -192,7 +198,7 @@ def launch_detached() -> int:
 def run_gui() -> int:
     qml = find_qml_runtime()
     if not qml:
-        print("Не найден qml6. Нужен Qt 6 QML runtime (qt6-declarative).", file=sys.stderr)
+        print("Не найден Qt 6 QML runtime (Arch: qt6-declarative; Fedora: qt6-qtdeclarative-devel).", file=sys.stderr)
         return 1
     if not QML_FILE.is_file():
         print(f"Не найден интерфейс: {QML_FILE}", file=sys.stderr)
