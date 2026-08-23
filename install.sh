@@ -47,9 +47,12 @@ find_python() {
 }
 
 is_existing_install() {
+    # Treat a manager+settings installation as recoverable even if the final
+    # Xray download was interrupted. This lets rerunning install.sh repair a
+    # partial installation instead of rebuilding it from scratch.
     [[ -x /usr/local/sbin/vpnctl ]] || return 1
     [[ -f /opt/vpn-manager/current/VERSION ]] || return 1
-    [[ -x /opt/vpn-manager/bin/xray ]] || return 1
+    [[ -f /etc/vpn-manager/settings.json ]] || return 1
     return 0
 }
 
@@ -102,6 +105,10 @@ PY
     fi
 
     sudo /usr/local/sbin/vpnctl update
+    # `core-update` is idempotent. Calling it explicitly also repairs a previous
+    # clean install that reached the manager/GUI stage but lost the Xray asset
+    # download to a transient GitHub/CDN error.
+    sudo /usr/local/sbin/vpnctl core-update
     ok "${APP_NAME} уже установлен. Ничего заново не переустанавливалось."
     echo
     echo "Дальше достаточно: vpn update"

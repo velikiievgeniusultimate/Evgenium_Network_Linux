@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.16
+
+- retry transient HTTPS failures (including HTTP 429/500/502/503/504) while downloading GitHub manifests, checksums and Xray assets
+- keep certificate verification fail-closed; TLS certificate errors are never retried with weaker security
+- retry the whole response read so interrupted release-asset transfers cannot leave a partial core download
+- make rerunning `install.sh` recover an installation where the manager/GUI were installed but the final Xray download failed
+- explicitly run the idempotent core repair step after updating an existing/partial installation
+- keep Xray 26.7.28 and all VPN routing, kill-switch, Waydroid and DIRECT behavior unchanged
+
 ## 0.2.15
 
 - add clean-install support for Fedora Linux alongside Arch Linux
