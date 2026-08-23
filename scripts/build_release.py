@@ -14,7 +14,7 @@ SRC = ROOT / "src"
 DIST = ROOT / "dist"
 UPDATE = ROOT / "update"
 REPO_RAW = "https://raw.githubusercontent.com/velikiievgeniusultimate/Evgenium_Network_Linux/main"
-SAFE_XRAY_VERSION = "26.6.27"
+SAFE_XRAY_VERSION = "26.7.28"
 
 
 def version() -> str:
