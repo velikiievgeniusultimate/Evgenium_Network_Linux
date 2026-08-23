@@ -26,11 +26,11 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.13"
+MANAGER_VERSION = "0.2.14"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
-SAFE_XRAY_VERSION = "26.6.27"
+SAFE_XRAY_VERSION = "26.7.28"
 
 SETTINGS = pathlib.Path("/etc/vpn-manager/settings.json")
 STATE = pathlib.Path("/var/lib/vpn-manager/state.json")
@@ -1470,7 +1470,7 @@ def parse_vless_url(url: str, fallback_name: str) -> dict:
         reality = {
             "serverName": sni,
             "fingerprint": fp,
-            # 26.6.27 принимает publicKey; в новых версиях это alias password.
+            # Xray accepts publicKey here; newer builds also expose password as an alias.
             "publicKey": pbk,
             "shortId": sid,
             "spiderX": spx,

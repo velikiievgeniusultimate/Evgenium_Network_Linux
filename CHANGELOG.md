@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.14
+
+- update the pinned official Xray core from 26.6.27 to 26.7.28
+- pick up upstream Linux TUN `autoOutboundsInterface` fix merged in Xray-core PR #6413
+- keep the existing fail-closed kill switch, DIRECT rules, Waydroid policy and profile behavior unchanged
+- preserve SHA-256 verification, config validation and automatic Xray binary rollback during core updates
+
 ## 0.2.13
 
 - add an independent `VPN для Waydroid` switch in the standalone E-VPN application
