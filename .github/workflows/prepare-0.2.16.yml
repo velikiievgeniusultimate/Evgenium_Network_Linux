@@ -1,0 +1,108 @@
+name: Prepare VPN Manager 0.2.16
+
+on:
+  push:
+    branches: [fix/core-download-retry-0.2.16]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/core-download-retry-0.2.16
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare release sources and archive
+        run: python scripts/prepare_0_2_16.py
+      - name: Validate source and installer
+        run: |
+          bash -n install.sh
+          python -m py_compile src/vpnctl.py src/vpnadmin.py src/evgenium_gui.py scripts/build_release.py
+          python src/vpnctl.py --self-test
+          python src/evgenium_gui.py --self-test
+          grep -F 'MANAGER_VERSION = "0.2.16"' src/vpnctl.py
+          grep -F 'import urllib.error' src/vpnctl.py
+          grep -F 'retryable_http = {408, 425, 429, 500, 502, 503, 504}' src/vpnctl.py
+          grep -F 'HTTPS certificate verification failed' src/vpnctl.py
+          grep -F '[[ -f /etc/vpn-manager/settings.json ]] || return 1' install.sh
+      - name: Test transient HTTP retry contract
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import io
+          import urllib.error
+
+          spec = importlib.util.spec_from_file_location('vpnctl', 'src/vpnctl.py')
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          class Response:
+              def __init__(self, data):
+                  self._io = io.BytesIO(data)
+              def __enter__(self):
+                  return self
+              def __exit__(self, *args):
+                  return False
+              def read(self, n=-1):
+                  return self._io.read(n)
+
+          calls = {'n': 0}
+          def flaky(req, timeout=0, context=None):
+              calls['n'] += 1
+              if calls['n'] < 3:
+                  raise urllib.error.HTTPError(req.full_url, 504, 'Gateway Timeout', {}, None)
+              return Response(b'healthy')
+
+          mod.urllib.request.urlopen = flaky
+          mod.time.sleep = lambda _: None
+          assert mod.http_get('https://example.com/test', 64) == b'healthy'
+          assert calls['n'] == 3, calls
+
+          calls404 = {'n': 0}
+          def not_found(req, timeout=0, context=None):
+              calls404['n'] += 1
+              raise urllib.error.HTTPError(req.full_url, 404, 'Not Found', {}, None)
+          mod.urllib.request.urlopen = not_found
+          try:
+              mod.http_get('https://example.com/missing', 64)
+          except mod.VPNError:
+              pass
+          else:
+              raise AssertionError('404 must fail')
+          assert calls404['n'] == 1, calls404
+          print('transient retry + non-retryable HTTP contract OK')
+          PY
+      - name: Verify release and manifests
+        run: |
+          python - <<'PY'
+          import hashlib, json, tarfile
+          from pathlib import Path
+          v=Path('VERSION').read_text().strip()
+          assert v == '0.2.16'
+          archive=Path(f'dist/vpn-manager-{v}.tar.gz')
+          digest=hashlib.sha256(archive.read_bytes()).hexdigest()
+          for channel in ('stable','testing'):
+              m=json.loads(Path(f'update/{channel}.json').read_text())
+              assert m['version']==v
+              assert m['sha256']==digest
+              assert m['xray_version']=='26.7.28'
+          with tarfile.open(archive,'r:gz') as tf:
+              assert tf.getnames()==['vpnctl.py','vpnadmin.py','VERSION']
+          print('0.2.16 release contract OK', digest)
+          PY
+      - name: Commit generated release
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add VERSION CHANGELOG.md README.md install.sh src/vpnctl.py dist update
+          if git diff --cached --quiet; then
+            echo 'Nothing to commit'
+          else
+            git commit -m 'VPN Manager 0.2.16: resilient core downloads'
+            git push origin HEAD:fix/core-download-retry-0.2.16
+          fi
