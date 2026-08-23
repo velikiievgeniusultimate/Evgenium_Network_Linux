@@ -21,12 +21,13 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.15"
+MANAGER_VERSION = "0.2.16"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -1324,28 +1325,62 @@ def http_get(url: str, max_bytes: int = MAX_DOWNLOAD_BYTES) -> bytes:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != "https":
         fail("Разрешены только HTTPS URL.")
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": f"EvgeniusVPNManager/{MANAGER_VERSION}",
-            "Accept": "application/vnd.github+json, application/json, text/plain, */*",
-        },
-    )
+
     ctx = ssl.create_default_context()
-    try:
-        r = urllib.request.urlopen(req, timeout=40, context=ctx)
-    except Exception as exc:
-        fail(f"HTTPS download failed: {exc}")
-    with r:
-        out = bytearray()
-        while True:
-            chunk = r.read(65536)
-            if not chunk:
-                break
-            out += chunk
-            if len(out) > max_bytes:
-                fail(f"Загрузка превысила лимит {max_bytes} bytes.")
-        return bytes(out)
+    retryable_http = {408, 425, 429, 500, 502, 503, 504}
+    attempts = 4
+    last_error: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": f"EvgeniusVPNManager/{MANAGER_VERSION}",
+                "Accept": "application/vnd.github+json, application/json, text/plain, */*",
+            },
+        )
+        retryable = False
+        try:
+            with urllib.request.urlopen(req, timeout=40, context=ctx) as r:
+                out = bytearray()
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    out += chunk
+                    if len(out) > max_bytes:
+                        fail(f"Загрузка превысила лимит {max_bytes} bytes.")
+                return bytes(out)
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            retryable = int(exc.code) in retryable_http
+        except urllib.error.URLError as exc:
+            # Certificate verification failures are not transient and must never
+            # be worked around by retries or weaker TLS settings.
+            if isinstance(getattr(exc, "reason", None), ssl.SSLCertVerificationError):
+                fail(f"HTTPS certificate verification failed: {exc}")
+            last_error = exc
+            retryable = True
+        except (TimeoutError, socket.timeout, ConnectionResetError, BrokenPipeError) as exc:
+            last_error = exc
+            retryable = True
+        except ssl.SSLCertVerificationError as exc:
+            fail(f"HTTPS certificate verification failed: {exc}")
+        except Exception as exc:
+            fail(f"HTTPS download failed: {exc}")
+
+        if not retryable or attempt >= attempts:
+            fail(f"HTTPS download failed after {attempt} attempt(s): {last_error}")
+
+        delay = min(8, 2 ** (attempt - 1))
+        warn(
+            f"Временная ошибка HTTPS ({last_error}); "
+            f"повтор {attempt + 1}/{attempts} через {delay} с."
+        )
+        time.sleep(delay)
+
+    fail(f"HTTPS download failed: {last_error}")
+
 
 def list_config_paths(settings: dict) -> list[pathlib.Path]:
     d = pathlib.Path(settings["config_dir"])
