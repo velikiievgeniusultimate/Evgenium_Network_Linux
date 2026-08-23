@@ -188,7 +188,7 @@ sudo install -d -o vpn-xray -g vpn-xray -m 0750 /var/lib/vpn-manager /var/lib/vp
 # On SELinux-enabled Fedora, restore the distribution-defined labels for the
 # application directories. Arch simply skips this because restorecon is absent.
 if command -v restorecon >/dev/null 2>&1; then
-    sudo restorecon -RF /opt/vpn-manager /etc/vpn-manager /var/lib/vpn-manager /usr/local/sbin /usr/local/bin >/dev/null 2>&1 || true
+    sudo restorecon -RF /opt/vpn-manager /etc/vpn-manager /var/lib/vpn-manager >/dev/null 2>&1 || true
 fi
 
 tmp="$(mktemp -d)"
@@ -304,7 +304,12 @@ sudo /usr/local/sbin/vpnctl internal-sync
 sudo systemctl disable vpn-xray.service >/dev/null 2>&1 || true
 
 if command -v restorecon >/dev/null 2>&1; then
-    sudo restorecon -RF /opt/vpn-manager /etc/vpn-manager /var/lib/vpn-manager /usr/local/sbin /usr/local/bin >/dev/null 2>&1 || true
+    sudo restorecon -RF /opt/vpn-manager /etc/vpn-manager /var/lib/vpn-manager >/dev/null 2>&1 || true
+    for path in /usr/local/sbin/vpnctl /usr/local/sbin/vpn-manager-admin /usr/local/bin/vpn /usr/local/bin/evgenium-network; do
+        if [[ -e "$path" || -L "$path" ]]; then
+            sudo restorecon -F "$path" >/dev/null 2>&1 || true
+        fi
+    done
 fi
 
 say "Устанавливаю совместимый Xray-core..."
