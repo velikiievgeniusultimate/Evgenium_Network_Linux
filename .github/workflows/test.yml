@@ -25,8 +25,10 @@ jobs:
           grep -F 'DISTRO="arch"' install.sh
           grep -F 'DISTRO="fedora"' install.sh
           grep -F 'packages=(python curl nftables iproute2 ca-certificates qt6-declarative)' install.sh
-          grep -F 'packages=(python3 curl nftables iproute ca-certificates shadow-utils qt6-qtdeclarative-devel)' install.sh
-          grep -F 'sudo dnf install -y --setopt=install_weak_deps=False' install.sh
+          grep -F 'packages=(python3 curl nftables iproute ca-certificates shadow-utils)' install.sh
+          grep -F 'QT_DECL_VERSION="$(rpm -q --qf' install.sh
+          grep -F 'QT_DECL_DEVEL="qt6-qtdeclarative-devel-${QT_DECL_VERSION}"' install.sh
+          grep -F 'sudo dnf install -y --no-best --setopt=install_weak_deps=False' install.sh
           grep -F 'command -v nologin' install.sh
           grep -F 'restorecon -RF /opt/vpn-manager' install.sh
       - name: Compile and self-test
