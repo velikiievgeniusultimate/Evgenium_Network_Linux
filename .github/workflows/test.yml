@@ -22,6 +22,13 @@ jobs:
           bash -n install.sh
           grep -F 'update/stable.json' install.sh
           grep -F 'vpn update' install.sh
+          grep -F 'DISTRO="arch"' install.sh
+          grep -F 'DISTRO="fedora"' install.sh
+          grep -F 'packages=(python curl nftables iproute2 ca-certificates qt6-declarative)' install.sh
+          grep -F 'packages=(python3 curl nftables iproute ca-certificates shadow-utils qt6-qtdeclarative-devel)' install.sh
+          grep -F 'sudo dnf install -y --setopt=install_weak_deps=False' install.sh
+          grep -F 'command -v nologin' install.sh
+          grep -F 'restorecon -RF /opt/vpn-manager' install.sh
       - name: Compile and self-test
         run: |
           python -m py_compile src/vpnctl.py src/vpnadmin.py src/evgenium_gui.py scripts/build_release.py
@@ -44,6 +51,8 @@ jobs:
           grep -F 'evgenium-network.desktop' src/vpnctl.py
           grep -F '/api/running' src/evgenium_gui.py
           grep -F '/api/action' src/evgenium_gui.py
+          grep -F '/usr/bin/qml-qt6' src/evgenium_gui.py
+          grep -F '/usr/lib64/qt6/bin/qml' src/evgenium_gui.py
           grep -F 'Запущены сейчас' src/evgenium_gui.qml
           grep -F 'Профили VPN' src/evgenium_gui.qml
           grep -F 'profile_activate' src/vpnctl.py

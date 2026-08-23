@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.15
+
+- add clean-install support for Fedora Linux alongside Arch Linux
+- install only official distro dependencies with dnf on Fedora, including the Qt 6 QML runner used by the standalone KDE GUI
+- support Fedora's `qml-qt6` and `/usr/lib64/qt6/bin/qml` runtime locations
+- use `python3` portably instead of assuming an unversioned `python` command during installation
+- discover the distro `nologin` path and restore SELinux labels when `restorecon` is available
+- keep Xray 26.7.28, the fail-closed kill switch, Waydroid routing and existing VPN behavior unchanged
+
 ## 0.2.14
 
 - update the pinned official Xray core from 26.6.27 to 26.7.28

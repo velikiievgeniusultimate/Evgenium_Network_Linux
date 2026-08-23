@@ -2,17 +2,17 @@
 
 A small Linux VPN manager built around **Xray-core**.
 
-Current stable baseline: **0.2.9**.
+Current stable baseline: **0.2.15**.
 
 ## Install
 
-Fresh Arch Linux installation:
+Fresh **Arch Linux** or **Fedora Linux (KDE Plasma 6)** installation:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/velikiievgeniusultimate/Evgenium_Network_Linux/main/install.sh | bash
 ```
 
-The installer runs as the normal desktop user, asks for `sudo` only for system changes, installs the required official Arch packages, creates the isolated `vpn-xray` service account, verifies the stable manager archive by SHA-256, runs compile/self-tests, installs the pinned compatible Xray-core, configures the GitHub stable update channel and creates the `vpn` command.
+The installer runs as the normal desktop user, asks for `sudo` only for system changes, installs the required packages from the distribution's official repositories (`pacman` on Arch, `dnf` on Fedora), creates the isolated `vpn-xray` service account, verifies the stable manager archive by SHA-256, runs compile/self-tests, installs the pinned compatible Xray-core, configures the GitHub stable update channel and creates the `vpn` command plus the standalone Evgenium Network GUI. Fedora x86_64 and aarch64 are supported by the same installer; Xray's architecture-specific official asset is selected automatically.
 
 After installation, normal updates are simply:
 
