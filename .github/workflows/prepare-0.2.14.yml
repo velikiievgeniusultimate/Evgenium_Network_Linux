@@ -1,0 +1,57 @@
+name: Prepare VPN Manager 0.2.14
+
+on:
+  push:
+    branches: [fix/xray-tun-stability-0.2.14]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/xray-tun-stability-0.2.14
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare source and deterministic release
+        run: python scripts/prepare_0_2_14.py
+      - name: Validate prepared release
+        run: |
+          python -m py_compile src/vpnctl.py src/vpnadmin.py src/evgenium_gui.py scripts/build_release.py
+          python src/vpnctl.py --self-test
+          python src/evgenium_gui.py --self-test
+          grep -F 'MANAGER_VERSION = "0.2.14"' src/vpnctl.py
+          grep -F 'SAFE_XRAY_VERSION = "26.7.28"' src/vpnctl.py
+          grep -F 'SAFE_XRAY_VERSION = "26.7.28"' scripts/build_release.py
+          python - <<'PY'
+          import hashlib, json, tarfile
+          from pathlib import Path
+          v = Path('VERSION').read_text().strip()
+          assert v == '0.2.14'
+          archive = Path(f'dist/vpn-manager-{v}.tar.gz')
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          for channel in ('stable', 'testing'):
+              m = json.loads(Path(f'update/{channel}.json').read_text())
+              assert m['version'] == v
+              assert m['xray_version'] == '26.7.28'
+              assert m['sha256'] == digest
+          with tarfile.open(archive, 'r:gz') as tf:
+              assert tf.getnames() == ['vpnctl.py', 'vpnadmin.py', 'VERSION']
+          print('0.2.14 prepared', digest)
+          PY
+      - name: Commit prepared release
+        run: |
+          if git diff --quiet; then
+            echo 'Release already prepared; nothing to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/vpnctl.py scripts/build_release.py VERSION CHANGELOG.md dist update
+          git commit -m 'release: prepare 0.2.14 with Xray 26.7.28'
+          git push origin HEAD:fix/xray-tun-stability-0.2.14
