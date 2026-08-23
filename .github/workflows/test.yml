@@ -132,18 +132,25 @@ jobs:
       - name: Verify current release and manifests
         run: |
           python - <<'PY'
-          import hashlib, json, tarfile
+          import hashlib, json, re, tarfile
           from pathlib import Path
           v=Path('VERSION').read_text().strip()
           archive=Path(f'dist/vpn-manager-{v}.tar.gz')
           assert archive.is_file()
           digest=hashlib.sha256(archive.read_bytes()).hexdigest()
+          vpnctl=Path('src/vpnctl.py').read_text()
+          builder=Path('scripts/build_release.py').read_text()
+          core1=re.search(r'^SAFE_XRAY_VERSION\s*=\s*"([^"]+)"', vpnctl, re.M)
+          core2=re.search(r'^SAFE_XRAY_VERSION\s*=\s*"([^"]+)"', builder, re.M)
+          assert core1 and core2 and core1.group(1)==core2.group(1)
+          core=core1.group(1)
           for channel in ('stable','testing'):
               m=json.loads(Path(f'update/{channel}.json').read_text())
               assert m['channel']==channel
               assert m['version']==v
               assert m['sha256']==digest
+              assert m['xray_version']==core
           with tarfile.open(archive,'r:gz') as tf:
               assert tf.getnames()==['vpnctl.py','vpnadmin.py','VERSION']
-          print('release + manifests OK', digest)
+          print('release + manifests OK', digest, 'Xray', core)
           PY
