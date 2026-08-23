@@ -31,6 +31,8 @@ jobs:
           grep -F 'sudo dnf install -y --no-best --setopt=install_weak_deps=False' install.sh
           grep -F 'command -v nologin' install.sh
           grep -F 'restorecon -RF /opt/vpn-manager' install.sh
+          grep -F '[[ -f /etc/vpn-manager/settings.json ]] || return 1' install.sh
+          grep -F 'sudo /usr/local/sbin/vpnctl core-update' install.sh
       - name: Compile and self-test
         run: |
           python -m py_compile src/vpnctl.py src/vpnadmin.py src/evgenium_gui.py scripts/build_release.py
@@ -39,6 +41,57 @@ jobs:
           grep -F '"process": apps' src/vpnctl.py
           grep -F 'DIRECT_SOCKS_PORT = 18443' src/vpnctl.py
           grep -F 'Применяю новые DIRECT-правила к активному VPN' src/vpnctl.py
+      - name: Validate resilient HTTPS downloader
+        run: |
+          grep -F 'import urllib.error' src/vpnctl.py
+          grep -F 'retryable_http = {408, 425, 429, 500, 502, 503, 504}' src/vpnctl.py
+          grep -F 'HTTPS certificate verification failed' src/vpnctl.py
+          python - <<'PY'
+          import importlib.util
+          import io
+          import urllib.error
+
+          spec = importlib.util.spec_from_file_location('vpnctl', 'src/vpnctl.py')
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          class Response:
+              def __init__(self, data):
+                  self._io = io.BytesIO(data)
+              def __enter__(self):
+                  return self
+              def __exit__(self, *args):
+                  return False
+              def read(self, n=-1):
+                  return self._io.read(n)
+
+          calls = {'n': 0}
+          def flaky(req, timeout=0, context=None):
+              calls['n'] += 1
+              if calls['n'] < 3:
+                  raise urllib.error.HTTPError(req.full_url, 504, 'Gateway Timeout', {}, None)
+              return Response(b'healthy')
+
+          mod.urllib.request.urlopen = flaky
+          mod.time.sleep = lambda _: None
+          assert mod.http_get('https://example.com/test', 64) == b'healthy'
+          assert calls['n'] == 3, calls
+
+          calls404 = {'n': 0}
+          def not_found(req, timeout=0, context=None):
+              calls404['n'] += 1
+              raise urllib.error.HTTPError(req.full_url, 404, 'Not Found', {}, None)
+
+          mod.urllib.request.urlopen = not_found
+          try:
+              mod.http_get('https://example.com/missing', 64)
+          except mod.VPNError:
+              pass
+          else:
+              raise AssertionError('404 must fail without retry')
+          assert calls404['n'] == 1, calls404
+          print('transient HTTPS retry contract OK')
+          PY
       - name: Validate standalone GUI contract
         run: |
           grep -F 'PLASMOID_ID = "com.evgenium.network"' src/vpnctl.py
