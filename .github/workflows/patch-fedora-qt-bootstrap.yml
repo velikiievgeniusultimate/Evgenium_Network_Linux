@@ -1,0 +1,30 @@
+name: Patch Fedora Qt bootstrap
+on:
+  push:
+    branches: [fix/fedora-qt-bootstrap]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/fedora-qt-bootstrap
+      - name: Patch installer
+        run: |
+          python scripts/patch_fedora_qt_bootstrap.py
+          bash -n install.sh
+          grep -F 'QT_DECL_DEVEL="qt6-qtdeclarative-devel-${QT_DECL_VERSION}"' install.sh
+          grep -F 'dnf install -y --no-best' install.sh
+      - name: Commit patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add install.sh
+          if git diff --cached --quiet; then
+            echo 'Nothing to commit'
+          else
+            git commit -m 'Installer: match Fedora QML runner to installed Qt'
+            git push origin HEAD:fix/fedora-qt-bootstrap
+          fi
