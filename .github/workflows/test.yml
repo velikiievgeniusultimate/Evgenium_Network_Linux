@@ -42,6 +42,7 @@ jobs:
           grep -F 'DIRECT_SOCKS_PORT = 18443' src/vpnctl.py
           grep -F 'Применяю новые DIRECT-правила к активному VPN' src/vpnctl.py
           grep -F 'sub.add_parser("diagnostic")' src/vpnctl.py
+          grep -F '"event": "user_mark"' src/vpnctl.py
           grep -F 'internal-diagnostic-monitor' src/vpnctl.py
           grep -F 'DIAGNOSTIC_INTERVAL = 5.0' src/vpnctl.py
           grep -F 'DIAGNOSTIC_LOG_SEGMENT_BYTES = 50 * 1024 * 1024 * 1024' src/vpnctl.py

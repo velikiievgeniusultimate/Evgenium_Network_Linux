@@ -54,6 +54,7 @@ vpn status --json
 vpn test
 vpn diagnostic on Estonia
 vpn diagnostic status
+vpn diagnostic mark "Discord висит, YouTube работает"
 vpn diagnostic report > ~/vpn-diagnostic.jsonl
 vpn diagnostic off
 vpn route example.com
@@ -94,6 +95,13 @@ inside the rolling window. Healthy lightweight samples are stored once per
 minute so gradual resource or retransmission growth remains visible without a
 huge log. Diagnostic JSONL uses two rotating 50 GiB segments (100 GiB maximum
 export size), so capture depth is not reduced during an extended investigation.
+When you notice a visible problem, add a timestamped marker so it can be
+correlated with transport state and counters around that exact moment:
+
+```bash
+vpn diagnostic mark "Discord висит, YouTube работает"
+```
+
 Export it without exposing VPN credentials:
 
 ```bash

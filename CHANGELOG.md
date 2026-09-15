@@ -9,6 +9,7 @@
 - record detailed snapshots only during real multi-target, structural or repeated active-flow failures
 - never restart Xray or alter routing from diagnostic mode
 - provide `vpn diagnostic status|report|off` with up to 100 GiB of rotating diagnostic history
+- add `vpn diagnostic mark NOTE` to timestamp user-visible failures for later correlation
 - keep Xray 26.7.28 and normal `vpn on` behavior unchanged
 
 ## 0.2.16

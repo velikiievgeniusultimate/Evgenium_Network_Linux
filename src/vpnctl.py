@@ -3539,6 +3539,14 @@ def diagnostic_service_active() -> bool:
 def stop_diagnostic() -> None:
     run(["/usr/bin/systemctl", "stop", DIAGNOSTIC_SERVICE], check=False, capture=True)
 
+def cmd_diagnostic_mark(note_parts: list[str]) -> None:
+    note = " ".join(note_parts).strip()
+    if not note:
+        fail('Добавьте описание, например: vpn diagnostic mark "Discord висит"')
+    note = note.replace("\n", " ")[:500]
+    _diagnostic_write({"event": "user_mark", "note": note})
+    ok(f"Diagnostic mark saved: {note}")
+
 def cmd_diagnostic_on(settings: dict, config: str | None) -> None:
     stop_diagnostic()
     profile_path = choose_config(settings, config)
@@ -4766,6 +4774,7 @@ def main(argv=None) -> int:
     pdiagsub.add_parser("off")
     pdiagsub.add_parser("status")
     pdiagsub.add_parser("report")
+    pdiagmark = pdiagsub.add_parser("mark"); pdiagmark.add_argument("note", nargs="+")
     pr = sub.add_parser("route"); pr.add_argument("target")
 
     pd = sub.add_parser("direct")
@@ -4941,6 +4950,9 @@ Local DIRECT SOCKS (only localhost, only while VPN is on):
                 if path.exists():
                     with path.open(encoding="utf-8", errors="replace") as fh:
                         shutil.copyfileobj(fh, sys.stdout)
+            return 0
+        if args.diagnostic_cmd == "mark":
+            cmd_diagnostic_mark(args.note)
             return 0
 
     if args.cmd == "route":
