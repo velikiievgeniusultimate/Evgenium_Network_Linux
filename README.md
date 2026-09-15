@@ -2,7 +2,7 @@
 
 A small Linux VPN manager built around **Xray-core**.
 
-Current stable baseline: **0.2.16**.
+Current stable baseline: **0.2.17**.
 
 ## Install
 
@@ -52,6 +52,10 @@ vpn toggle
 vpn status --ip
 vpn status --json
 vpn test
+vpn diagnostic on Estonia
+vpn diagnostic status
+vpn diagnostic report > ~/vpn-diagnostic.jsonl
+vpn diagnostic off
 vpn route example.com
 vpn direct list
 vpn direct add example.com
@@ -74,6 +78,30 @@ vpn update
 vpn core-update
 vpn version
 ```
+
+## Non-invasive diagnostic mode
+
+`vpn diagnostic on [PROFILE]` starts the selected VPN normally and runs a
+separate observer every five seconds. It never restarts Xray, changes routes or
+repairs failures. The observer combines independent DNS/TLS/UDP quorum probes
+with passive inspection of the connections already in use, including XHTTP
+socket queues, retransmissions, repeated transport failures for active domains,
+TUN counters, Xray resource growth and physical route/DNS changes.
+
+A one-off failure of one website is suppressed. A domain name is retained only
+when Xray reports at least three transport failures for that active destination
+inside the rolling window. Healthy lightweight samples are stored once per
+minute so gradual resource or retransmission growth remains visible without a
+huge log. Diagnostic JSONL uses two rotating 50 GiB segments (100 GiB maximum
+export size), so capture depth is not reduced during an extended investigation.
+Export it without exposing VPN credentials:
+
+```bash
+vpn diagnostic report > ~/vpn-diagnostic.jsonl
+```
+
+The normal `vpn on` command disables the observer; `vpn diagnostic off` stops
+only the observer and leaves the current VPN connection running.
 
 VPN configs are stored in:
 

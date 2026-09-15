@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.17
+
+- add `vpn diagnostic on [PROFILE]` for non-invasive long-running failure capture
+- probe independent DNS, HTTPS and UDP targets every five seconds using quorum rules so one unavailable website is ignored
+- passively detect XHTTP transport stalls, active TUN socket backlogs and repeated failures for domains already in use
+- store minute-level Xray resource, kernel TCP, TUN, physical-link and route/DNS metrics to reveal gradual degradation
+- record detailed snapshots only during real multi-target, structural or repeated active-flow failures
+- never restart Xray or alter routing from diagnostic mode
+- provide `vpn diagnostic status|report|off` with up to 100 GiB of rotating diagnostic history
+- keep Xray 26.7.28 and normal `vpn on` behavior unchanged
+
 ## 0.2.16
 
 - retry transient HTTPS failures (including HTTP 429/500/502/503/504) while downloading GitHub manifests, checksums and Xray assets

@@ -41,6 +41,12 @@ jobs:
           grep -F '"process": apps' src/vpnctl.py
           grep -F 'DIRECT_SOCKS_PORT = 18443' src/vpnctl.py
           grep -F 'Применяю новые DIRECT-правила к активному VPN' src/vpnctl.py
+          grep -F 'sub.add_parser("diagnostic")' src/vpnctl.py
+          grep -F 'internal-diagnostic-monitor' src/vpnctl.py
+          grep -F 'DIAGNOSTIC_INTERVAL = 5.0' src/vpnctl.py
+          grep -F 'DIAGNOSTIC_LOG_SEGMENT_BYTES = 50 * 1024 * 1024 * 1024' src/vpnctl.py
+          grep -F 'policy": "quorum failures only; no automatic recovery"' src/vpnctl.py
+          grep -F 'repeated_active_destination_failures' src/vpnctl.py
       - name: Validate resilient HTTPS downloader
         run: |
           grep -F 'import urllib.error' src/vpnctl.py

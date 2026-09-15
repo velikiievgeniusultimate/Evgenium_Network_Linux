@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import contextlib
 import hashlib
 import ipaddress
@@ -11,6 +12,7 @@ import os
 import pwd
 import pathlib
 import random
+import signal
 import struct
 import re
 import shutil
@@ -27,7 +29,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.16"
+MANAGER_VERSION = "0.2.17"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -37,10 +39,14 @@ SETTINGS = pathlib.Path("/etc/vpn-manager/settings.json")
 STATE = pathlib.Path("/var/lib/vpn-manager/state.json")
 RUNTIME_DIR = pathlib.Path("/run/vpn-manager")
 RUNTIME_CONFIG = RUNTIME_DIR / "config.json"
+DIAGNOSTIC_LOG = pathlib.Path("/var/lib/vpn-manager/diagnostic.jsonl")
+DIAGNOSTIC_INTERVAL = 5.0
+DIAGNOSTIC_LOG_SEGMENT_BYTES = 50 * 1024 * 1024 * 1024
 
 XRAY = pathlib.Path("/opt/vpn-manager/bin/xray")
 XRAY_PREVIOUS = pathlib.Path("/opt/vpn-manager/bin/xray.previous")
 SERVICE = "vpn-xray.service"
+DIAGNOSTIC_SERVICE = "vpn-diagnostic.service"
 TUN_NAME = "xraytun"
 NFT_TABLE = "vpn_guard"
 DIRECT_SOCKS_HOST = "127.0.0.1"
@@ -1213,6 +1219,30 @@ UMask=0077
 
 [Install]
 WantedBy=multi-user.target
+"""
+
+DIAGNOSTIC_SERVICE_TEXT = r"""[Unit]
+Description=Evgenium VPN non-invasive diagnostic monitor
+After=vpn-xray.service
+ConditionPathExists=/run/vpn-manager/config.json
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/vpnctl internal-diagnostic-monitor
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ReadWritePaths=/var/lib/vpn-manager /run/vpn-manager
+UMask=0077
 """
 
 WRAPPER_TEXT = r"""#!/usr/bin/env bash
@@ -3130,6 +3160,471 @@ def udp_dns_check(timeout: float = 5.0) -> tuple[bool, str]:
     finally:
         s.close()
 
+def _diagnostic_udp_probe(resolver: str, timeout: float = 3.0) -> tuple[bool, str]:
+    tid = random.randrange(65536)
+    qname = b"\x07example\x03com\0"
+    packet = (
+        struct.pack("!HHHHHH", tid, 0x0100, 1, 0, 0, 0)
+        + qname + struct.pack("!HH", 1, 1)
+    )
+    started = time.monotonic()
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        s.sendto(packet, (resolver, 53))
+        data, _ = s.recvfrom(4096)
+        if len(data) < 12 or struct.unpack("!H", data[:2])[0] != tid:
+            return False, "invalid DNS response"
+        return True, f"{(time.monotonic() - started) * 1000:.0f}ms"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        s.close()
+
+def _diagnostic_tls_probe(address: str, server_name: str, timeout: float = 5.0) -> tuple[bool, str]:
+    started = time.monotonic()
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.settimeout(timeout)
+    try:
+        raw.connect((address, 443))
+        ctx = ssl.create_default_context()
+        with ctx.wrap_socket(raw, server_hostname=server_name) as tls:
+            tls.sendall(
+                f"HEAD / HTTP/1.1\r\nHost: {server_name}\r\nConnection: close\r\n\r\n".encode()
+            )
+            first = tls.recv(32)
+            if not first.startswith(b"HTTP/"):
+                return False, "unexpected HTTPS response"
+        return True, f"{(time.monotonic() - started) * 1000:.0f}ms"
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            raw.close()
+        return False, f"{type(exc).__name__}: {exc}"
+
+def _diagnostic_system_dns(name: str, timeout: float = 4.0) -> tuple[bool, str]:
+    # getent has a bounded subprocess timeout; a stuck libc resolver must not
+    # stall the monitor itself.
+    try:
+        cp = run(
+            ["/usr/bin/getent", "ahostsv4", name], check=False,
+            capture=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "timeout"
+    if cp.returncode != 0 or not (cp.stdout or "").strip():
+        return False, f"exit {cp.returncode}"
+    return True, "ok"
+
+def _diagnostic_cmd(args: list[str], timeout: float = 3.0) -> str:
+    try:
+        cp = run(args, check=False, capture=True, timeout=timeout)
+        return ((cp.stdout or "") + (cp.stderr or "")).strip()[:4000]
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+def _diagnostic_process_metrics() -> dict:
+    pid_text = _diagnostic_cmd([
+        "/usr/bin/systemctl", "show", SERVICE, "--property=MainPID", "--value",
+    ])
+    pid = int(pid_text) if pid_text.isdigit() else 0
+    metrics: dict = {"pid": pid}
+    if pid <= 0:
+        return metrics
+    with contextlib.suppress(Exception):
+        status = pathlib.Path(f"/proc/{pid}/status").read_text()
+        for key in ("VmRSS", "VmSize", "Threads"):
+            match = re.search(rf"^{key}:\s*(.+)$", status, re.MULTILINE)
+            if match:
+                metrics[key] = match.group(1)
+    with contextlib.suppress(Exception):
+        metrics["fd_count"] = len(list(pathlib.Path(f"/proc/{pid}/fd").iterdir()))
+    with contextlib.suppress(Exception):
+        stat = pathlib.Path(f"/proc/{pid}/stat").read_text().split()
+        metrics["cpu_ticks"] = int(stat[13]) + int(stat[14])
+    return metrics
+
+def _diagnostic_link_counters(interface: str) -> dict:
+    out = {}
+    stats_dir = pathlib.Path(f"/sys/class/net/{interface}/statistics")
+    for key in (
+        "rx_bytes", "tx_bytes", "rx_packets", "tx_packets",
+        "rx_errors", "tx_errors", "rx_dropped", "tx_dropped",
+    ):
+        with contextlib.suppress(Exception):
+            out[key] = int((stats_dir / key).read_text().strip())
+    return out
+
+def _diagnostic_kernel_tcp_counters() -> dict:
+    wanted = {
+        "Tcp": {"CurrEstab", "OutSegs", "RetransSegs", "InErrs", "OutRsts"},
+        "TcpExt": {
+            "TCPTimeouts", "TCPSynRetrans", "TCPAbortOnTimeout",
+            "TCPFastRetrans", "TCPLostRetransmit",
+        },
+    }
+    out = {}
+    for path in (pathlib.Path("/proc/net/snmp"), pathlib.Path("/proc/net/netstat")):
+        with contextlib.suppress(Exception):
+            lines = path.read_text().splitlines()
+            for index in range(len(lines) - 1):
+                header = lines[index].split()
+                values = lines[index + 1].split()
+                if not header or not values or header[0] != values[0]:
+                    continue
+                section = header[0].rstrip(":")
+                if section not in wanted:
+                    continue
+                for key, value in zip(header[1:], values[1:]):
+                    if key in wanted[section]:
+                        with contextlib.suppress(ValueError):
+                            out[f"{section}.{key}"] = int(value)
+    return out
+
+def _diagnostic_tun_client_sockets() -> dict:
+    raw = _diagnostic_cmd([
+        "/usr/bin/ss", "-Htinp", "src", "172.31.255.1",
+    ], timeout=4)
+    result = {"connections": 0, "send_queue": 0, "stalled_endpoints": []}
+    lines = raw.splitlines()
+    for index in range(0, len(lines), 2):
+        head = lines[index].split()
+        if len(head) < 4 or not head[0].isdigit() or not head[1].isdigit():
+            continue
+        result["connections"] += 1
+        send_queue = int(head[1])
+        result["send_queue"] += send_queue
+        detail = lines[index + 1] if index + 1 < len(lines) else ""
+        retrans = re.search(r"\bretrans:(\d+)/(\d+)", detail)
+        current_retrans = int(retrans.group(1)) if retrans else 0
+        if send_queue >= 128 * 1024 or current_retrans >= 3:
+            process = ""
+            owner = re.search(r'users:\(\(\"([^\"]+)\"', lines[index])
+            if owner:
+                process = owner.group(1)[:80]
+            result["stalled_endpoints"].append({
+                "destination": head[3],
+                "process": process,
+                "send_queue": send_queue,
+                "current_retrans": current_retrans,
+            })
+    result["stalled_endpoints"] = result["stalled_endpoints"][:20]
+    return result
+
+def _diagnostic_network_fingerprint() -> dict:
+    iface = default_physical_iface()
+    nameservers = []
+    with contextlib.suppress(Exception):
+        for line in pathlib.Path("/etc/resolv.conf").read_text().splitlines():
+            fields = line.split()
+            if len(fields) == 2 and fields[0] == "nameserver":
+                nameservers.append(fields[1])
+    st = load_state()
+    server_ip = str(st.get("server_ip") or "")
+    return {
+        "interface": iface,
+        "default_route": _diagnostic_cmd([
+            "/usr/bin/ip", "-4", "route", "show", "default", "table", "main",
+        ]),
+        "server_route": _diagnostic_cmd([
+            "/usr/bin/ip", "-4", "route", "get", server_ip,
+        ]) if server_ip else "unknown",
+        "nameservers": nameservers,
+    }
+
+def _diagnostic_xray_errors() -> list[dict]:
+    raw = _diagnostic_cmd([
+        "/usr/bin/journalctl", "-u", SERVICE, "--since", "-30 seconds",
+        "--no-pager", "-o", "cat", "-n", "500",
+    ], timeout=5)
+    patterns = (
+        "failed", "timeout", "timed out", "reset", "broken pipe",
+        "unexpected eof", "context canceled", "handshake", "invalid",
+        "closed pipe", "no recent network activity",
+    )
+    ignored = (
+        "unable to find local process", "unables to find local process",
+        "not found in /proc/net", "no process found for inode",
+    )
+    counts: dict[str, int] = {}
+    for line in raw.splitlines():
+        low = line.lower()
+        if not any(word in low for word in patterns):
+            continue
+        if any(word in low for word in ignored):
+            continue
+        # Keep the transport failure while removing connection IDs and
+        # destination-specific endpoints. A single unavailable website must
+        # not turn this into browsing-history collection.
+        clean = re.sub(r"\[\d+\]", "[connection]", line)
+        clean = re.sub(r"\b(?:tcp|udp):\S+", "endpoint", clean)
+        clean = re.sub(r"\bvia\s+\S+", "via server", clean)
+        clean = re.sub(r"https?://\S+", "https://endpoint", clean)
+        clean = clean[-1200:]
+        counts[clean] = counts.get(clean, 0) + 1
+    return [
+        {"count": count, "message": message}
+        for message, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:20]
+    ]
+
+def _diagnostic_active_failures() -> list[dict]:
+    """Return repeated failures for domains the user is actually using.
+
+    Successful destinations are never retained. A domain is emitted only when
+    Xray associates it with at least three transport-level failures in the
+    rolling journal window, which filters an ordinary one-off unavailable site.
+    """
+    raw = _diagnostic_cmd([
+        "/usr/bin/journalctl", "-u", SERVICE, "--since", "-45 seconds",
+        "--no-pager", "-o", "cat", "-n", "1200",
+    ], timeout=5)
+    domains: dict[str, str] = {}
+    failures: dict[str, list[str]] = {}
+    failure_words = (
+        "failed to process outbound", "failed to open", "timeout",
+        "timed out", "connection reset", "broken pipe", "unexpected eof",
+        "no recent network activity", "failed to transport",
+    )
+    for line in raw.splitlines():
+        conn = re.search(r"\[(\d+)\]", line)
+        if not conn:
+            continue
+        connection_id = conn.group(1)
+        sniffed = re.search(r"sniffed domain:\s*([^\s]+)", line, re.IGNORECASE)
+        if sniffed:
+            domains[connection_id] = sniffed.group(1).lower().rstrip(".")[:253]
+            continue
+        low = line.lower()
+        if not any(word in low for word in failure_words):
+            continue
+        domain = domains.get(connection_id)
+        if not domain:
+            continue
+        clean = re.sub(r"\[\d+\]", "[connection]", line)
+        clean = re.sub(r"\b(?:tcp|udp):\S+", "endpoint", clean)
+        clean = re.sub(r"\bvia\s+\S+", "via server", clean)
+        failures.setdefault(domain, []).append(clean[-700:])
+    return [
+        {"domain": domain, "count": len(messages), "last_error": messages[-1]}
+        for domain, messages in sorted(failures.items())
+        if len(messages) >= 3
+    ][:20]
+
+def _diagnostic_transport_sockets(server_ip: str) -> dict:
+    if not server_ip:
+        return {"connections": 0}
+    raw = _diagnostic_cmd([
+        "/usr/bin/ss", "-Htin", "dst", server_ip,
+    ], timeout=4)
+    totals = {
+        "connections": 0, "send_queue": 0, "unacked": 0,
+        "current_retrans": 0, "bytes_retrans": 0, "max_rto_ms": 0,
+    }
+    lines = raw.splitlines()
+    for index in range(0, len(lines), 2):
+        head = lines[index].split()
+        if len(head) >= 2 and head[0].isdigit() and head[1].isdigit():
+            totals["connections"] += 1
+            totals["send_queue"] += int(head[1])
+        detail = lines[index + 1] if index + 1 < len(lines) else ""
+        for key, pattern in (
+            ("unacked", r"\bunacked:(\d+)"),
+            ("bytes_retrans", r"\bbytes_retrans:(\d+)"),
+            ("max_rto_ms", r"\brto:(\d+)"),
+        ):
+            match = re.search(pattern, detail)
+            if match:
+                value = int(match.group(1))
+                if key == "max_rto_ms":
+                    totals[key] = max(totals[key], value)
+                else:
+                    totals[key] += value
+        retrans = re.search(r"\bretrans:(\d+)/(\d+)", detail)
+        if retrans:
+            totals["current_retrans"] += int(retrans.group(1))
+    return totals
+
+def _diagnostic_snapshot(settings: dict, probes: dict, reasons: list[str]) -> dict:
+    st = load_state()
+    server_ip = str(st.get("server_ip") or "")
+    return {
+        "event": "degraded",
+        "reasons": reasons,
+        "profile": str(st.get("active") or ""),
+        "probes": probes,
+        "service_active": service_active(),
+        "tun_exists": pathlib.Path(f"/sys/class/net/{TUN_NAME}").exists(),
+        "kill_switch": nft_exists(),
+        "physical_interface": default_physical_iface(),
+        "route_probe": _diagnostic_cmd(["/usr/bin/ip", "-4", "route", "get", "1.1.1.1"]),
+        "route_server": _diagnostic_cmd(["/usr/bin/ip", "-4", "route", "get", server_ip]) if server_ip else "unknown",
+        "ip_rules": _diagnostic_cmd(["/usr/bin/ip", "rule", "show"]),
+        "socket_summary": _diagnostic_cmd(["/usr/bin/ss", "-s"]),
+        "xhttp_transport_sockets": _diagnostic_transport_sockets(server_ip),
+        "active_tun_sockets": _diagnostic_tun_client_sockets(),
+        "kernel_tcp": _diagnostic_kernel_tcp_counters(),
+        "xray_process": _diagnostic_process_metrics(),
+        "tun_counters": _diagnostic_link_counters(TUN_NAME),
+        "network": _diagnostic_network_fingerprint(),
+        "xray_errors_30s": _diagnostic_xray_errors(),
+    }
+
+def _diagnostic_write(payload: dict) -> None:
+    DIAGNOSTIC_LOG.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+    if DIAGNOSTIC_LOG.exists() and DIAGNOSTIC_LOG.stat().st_size > DIAGNOSTIC_LOG_SEGMENT_BYTES:
+        previous = DIAGNOSTIC_LOG.with_suffix(".previous.jsonl")
+        previous.unlink(missing_ok=True)
+        os.replace(DIAGNOSTIC_LOG, previous)
+    record = {"time": int(time.time()), **payload}
+    with DIAGNOSTIC_LOG.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    os.chmod(DIAGNOSTIC_LOG, 0o600)
+
+def _diagnostic_probe_round() -> tuple[dict, list[str]]:
+    structural = {
+        "service": service_active(),
+        "tun": pathlib.Path(f"/sys/class/net/{TUN_NAME}").exists(),
+        "kill_switch": nft_exists(),
+    }
+    dns_targets = ("example.com", "github.com", "wikipedia.org")
+    jobs = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=7) as pool:
+        for name in dns_targets:
+            jobs[("dns", name)] = pool.submit(_diagnostic_system_dns, name)
+        jobs[("tls", "cloudflare")] = pool.submit(
+            _diagnostic_tls_probe, "1.1.1.1", "cloudflare-dns.com"
+        )
+        jobs[("tls", "google")] = pool.submit(
+            _diagnostic_tls_probe, "8.8.8.8", "dns.google"
+        )
+        jobs[("udp", "cloudflare")] = pool.submit(_diagnostic_udp_probe, "1.1.1.1")
+        jobs[("udp", "google")] = pool.submit(_diagnostic_udp_probe, "8.8.8.8")
+        results = {key: future.result() for key, future in jobs.items()}
+    dns = {name: results[("dns", name)] for name in dns_targets}
+    tls = {name: results[("tls", name)] for name in ("cloudflare", "google")}
+    udp = {name: results[("udp", name)] for name in ("cloudflare", "google")}
+    st = load_state()
+    transport = _diagnostic_transport_sockets(str(st.get("server_ip") or ""))
+    tun_clients = _diagnostic_tun_client_sockets()
+    active_failures = _diagnostic_active_failures()
+    reasons = [name for name, good in structural.items() if not good]
+    if sum(1 for good, _ in dns.values() if good) < 2:
+        reasons.append("system_dns_quorum")
+    if not any(good for good, _ in tls.values()):
+        reasons.append("https_quorum")
+    if not any(good for good, _ in udp.values()):
+        reasons.append("udp_quorum")
+    if (
+        transport.get("current_retrans", 0) >= 3
+        or transport.get("send_queue", 0) >= 512 * 1024
+        or transport.get("max_rto_ms", 0) >= 5000
+    ):
+        reasons.append("xhttp_transport_stall")
+    if active_failures:
+        reasons.append("repeated_active_destination_failures")
+    if tun_clients.get("stalled_endpoints"):
+        reasons.append("active_tun_flow_stall")
+    return {
+        "structural": structural, "dns": dns, "tls": tls, "udp": udp,
+        "xhttp_transport": transport,
+        "active_tun_sockets": tun_clients,
+        "active_destination_failures": active_failures,
+    }, reasons
+
+def diagnostic_service_active() -> bool:
+    return run(
+        ["/usr/bin/systemctl", "is-active", "--quiet", DIAGNOSTIC_SERVICE],
+        check=False,
+    ).returncode == 0
+
+def stop_diagnostic() -> None:
+    run(["/usr/bin/systemctl", "stop", DIAGNOSTIC_SERVICE], check=False, capture=True)
+
+def cmd_diagnostic_on(settings: dict, config: str | None) -> None:
+    stop_diagnostic()
+    profile_path = choose_config(settings, config)
+    activate(settings, profile_path)
+    node = load_profile(profile_path)[0]
+    stream = node.get("outbound", {}).get("streamSettings", {})
+    xhttp = stream.get("xhttpSettings", {})
+    DIAGNOSTIC_LOG.unlink(missing_ok=True)
+    _diagnostic_write({
+        "event": "started",
+        "manager": MANAGER_VERSION,
+        "xray": SAFE_XRAY_VERSION,
+        "profile": str(load_state().get("active") or ""),
+        "transport": stream.get("network"),
+        "security": stream.get("security"),
+        "xhttp_mode": xhttp.get("mode", "auto") if isinstance(xhttp, dict) else None,
+        "network": _diagnostic_network_fingerprint(),
+        "xray_process": _diagnostic_process_metrics(),
+        "interval_seconds": DIAGNOSTIC_INTERVAL,
+        "maximum_report_bytes": DIAGNOSTIC_LOG_SEGMENT_BYTES * 2,
+        "policy": "quorum failures only; no automatic recovery",
+    })
+    cp = run(
+        ["/usr/bin/systemctl", "start", DIAGNOSTIC_SERVICE],
+        check=False, capture=True,
+    )
+    if cp.returncode != 0:
+        fail("VPN включён, но diagnostic monitor не запустился: " + (cp.stderr or cp.stdout or ""))
+    ok("Diagnostic mode ON: VPN работает обычно, монитор ничего не перезапускает.")
+    print("Через 2–6 часов: vpn diagnostic report > ~/vpn-diagnostic.jsonl")
+
+def cmd_diagnostic_monitor(settings: dict) -> None:
+    stopping = False
+
+    def request_stop(_signum, _frame):
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    last_state = "healthy"
+    last_sample = 0.0
+    last_network: dict | None = None
+    last_pid = 0
+    while not stopping:
+        if not service_active() or not load_state().get("active"):
+            _diagnostic_write({"event": "monitor_stopped", "reason": "VPN is off"})
+            return
+        started = time.monotonic()
+        probes, reasons = _diagnostic_probe_round()
+        state = "degraded" if reasons else "healthy"
+        now = time.monotonic()
+        network = _diagnostic_network_fingerprint()
+        process = _diagnostic_process_metrics()
+        if last_network is not None and network != last_network:
+            _diagnostic_write({
+                "event": "network_changed", "before": last_network,
+                "after": network,
+            })
+        if last_pid and process.get("pid") != last_pid:
+            _diagnostic_write({
+                "event": "xray_pid_changed", "before": last_pid,
+                "after": process.get("pid", 0),
+            })
+        if reasons:
+            _diagnostic_write(_diagnostic_snapshot(settings, probes, reasons))
+        elif last_state == "degraded":
+            _diagnostic_write({"event": "recovered", "probes": probes})
+        if now - last_sample >= 60:
+            _diagnostic_write({
+                "event": "sample", "state": state, "probes": probes,
+                "xray_process": process,
+                "tun_counters": _diagnostic_link_counters(TUN_NAME),
+                "physical_counters": _diagnostic_link_counters(str(network.get("interface") or "")),
+                "kernel_tcp": _diagnostic_kernel_tcp_counters(),
+                "network": network,
+            })
+            last_sample = now
+        last_state = state
+        last_network = network
+        last_pid = int(process.get("pid") or 0)
+        remaining = max(0.0, DIAGNOSTIC_INTERVAL - (time.monotonic() - started))
+        deadline = time.monotonic() + remaining
+        while not stopping and time.monotonic() < deadline:
+            time.sleep(min(0.5, deadline - time.monotonic()))
+
 def ipv6_tun_route_present() -> bool:
     cp = run(
         ["/usr/bin/ip", "-6", "route", "get", "2606:4700:4700::1111"],
@@ -3280,6 +3775,7 @@ def activate(settings: dict, path: pathlib.Path) -> None:
 
 def deactivate() -> None:
     info("Выключаю VPN...")
+    stop_diagnostic()
     st = load_state()
     last_active = st.get("active") or st.get("last_active")
     stop_core()
@@ -4018,6 +4514,9 @@ def sync_system_files() -> None:
     pathlib.Path("/etc/systemd/system/vpn-xray.service").write_text(SERVICE_TEXT)
     os.chmod("/etc/systemd/system/vpn-xray.service", 0o644)
 
+    pathlib.Path("/etc/systemd/system/vpn-diagnostic.service").write_text(DIAGNOSTIC_SERVICE_TEXT)
+    os.chmod("/etc/systemd/system/vpn-diagnostic.service", 0o644)
+
     pathlib.Path("/usr/local/bin/vpn").write_text(WRAPPER_TEXT)
     os.chmod("/usr/local/bin/vpn", 0o755)
 
@@ -4127,6 +4626,7 @@ def manager_rollback() -> None:
 def self_test() -> None:
     # Никакой сети. Проверяем парсер на VLESS + XHTTP + REALITY.
     old = globals()["resolve_server"]
+    old_diagnostic_cmd = globals()["_diagnostic_cmd"]
     globals()["resolve_server"] = lambda host: "203.0.113.1"
     try:
         sample = (
@@ -4214,8 +4714,37 @@ def self_test() -> None:
             urllib.parse.quote(json.dumps(payload, ensure_ascii=False)).encode("ascii")
         ).decode("ascii")
         assert _decode_ui_action_payload(token) == payload
+        assert "internal-diagnostic-monitor" in DIAGNOSTIC_SERVICE_TEXT
+        assert "Restart=on-failure" in DIAGNOSTIC_SERVICE_TEXT
+        assert "systemctl restart" not in DIAGNOSTIC_SERVICE_TEXT
+        assert DIAGNOSTIC_INTERVAL == 5.0
+        assert DIAGNOSTIC_LOG_SEGMENT_BYTES * 2 == 100 * 1024 * 1024 * 1024
+        socket_sample = (
+            "0 600000 192.0.2.10:41000 203.0.113.1:443\n"
+            " cubic rto:6200 unacked:4 bytes_retrans:8192 retrans:3/8\n"
+        )
+        globals()["_diagnostic_cmd"] = lambda *_args, **_kwargs: socket_sample
+        metrics = _diagnostic_transport_sockets("203.0.113.1")
+        assert metrics["connections"] == 1
+        assert metrics["send_queue"] == 600000
+        assert metrics["current_retrans"] == 3
+        assert metrics["max_rto_ms"] == 6200
+        journal_sample = "\n".join([
+            "[101] app/dispatcher: sniffed domain: discord.com",
+            "[101] transport: failed to open endpoint: timeout",
+            "[102] app/dispatcher: sniffed domain: discord.com",
+            "[102] transport: failed to open endpoint: timeout",
+            "[103] app/dispatcher: sniffed domain: discord.com",
+            "[103] transport: failed to open endpoint: timeout",
+            "[201] app/dispatcher: sniffed domain: one-off.example",
+            "[201] transport: failed to open endpoint: timeout",
+        ])
+        globals()["_diagnostic_cmd"] = lambda *_args, **_kwargs: journal_sample
+        active_failures = _diagnostic_active_failures()
+        assert [item["domain"] for item in active_failures] == ["discord.com"]
     finally:
         globals()["resolve_server"] = old
+        globals()["_diagnostic_cmd"] = old_diagnostic_cmd
     print("self-test OK")
 
 def main(argv=None) -> int:
@@ -4231,6 +4760,12 @@ def main(argv=None) -> int:
     sub.add_parser("toggle")
     pst = sub.add_parser("status"); pst.add_argument("--ip", action="store_true"); pst.add_argument("--json", action="store_true")
     sub.add_parser("test")
+    pdiag = sub.add_parser("diagnostic")
+    pdiagsub = pdiag.add_subparsers(dest="diagnostic_cmd")
+    pdiagon = pdiagsub.add_parser("on"); pdiagon.add_argument("config", nargs="?")
+    pdiagsub.add_parser("off")
+    pdiagsub.add_parser("status")
+    pdiagsub.add_parser("report")
     pr = sub.add_parser("route"); pr.add_argument("target")
 
     pd = sub.add_parser("direct")
@@ -4288,6 +4823,7 @@ def main(argv=None) -> int:
     sub.add_parser("version")
     sub.add_parser("internal-sync")
     sub.add_parser("internal-after-update")
+    sub.add_parser("internal-diagnostic-monitor")
     sub.add_parser("manager-rollback")
 
     args = p.parse_args(argv)
@@ -4310,6 +4846,8 @@ def main(argv=None) -> int:
   vpn toggle
   vpn status [--ip|--json]
   vpn test
+  vpn diagnostic on [CONFIG]
+  vpn diagnostic status|report|off
   vpn route DOMAIN|IP
   vpn direct list
   vpn direct add DOMAIN|IP|CIDR
@@ -4360,6 +4898,7 @@ Local DIRECT SOCKS (only localhost, only while VPN is on):
         return 0
 
     if args.cmd in {"on", "switch"}:
+        stop_diagnostic()
         activate(settings, choose_config(settings, args.config))
         return 0
 
@@ -4381,6 +4920,28 @@ Local DIRECT SOCKS (only localhost, only while VPN is on):
     if args.cmd == "test":
         cmd_test(settings)
         return 0
+
+    if args.cmd == "diagnostic":
+        if args.diagnostic_cmd == "on":
+            cmd_diagnostic_on(settings, args.config)
+            return 0
+        if args.diagnostic_cmd == "off":
+            stop_diagnostic()
+            ok("Diagnostic mode OFF. VPN оставлен в текущем состоянии.")
+            return 0
+        if args.diagnostic_cmd in {None, "status"}:
+            print(f"Diagnostic: {'ON' if diagnostic_service_active() else 'OFF'}")
+            print(f"Log: {DIAGNOSTIC_LOG}")
+            if DIAGNOSTIC_LOG.exists():
+                print(f"Size: {DIAGNOSTIC_LOG.stat().st_size} bytes")
+            return 0
+        if args.diagnostic_cmd == "report":
+            previous = DIAGNOSTIC_LOG.with_suffix(".previous.jsonl")
+            for path in (previous, DIAGNOSTIC_LOG):
+                if path.exists():
+                    with path.open(encoding="utf-8", errors="replace") as fh:
+                        shutil.copyfileobj(fh, sys.stdout)
+            return 0
 
     if args.cmd == "route":
         cmd_route(settings, args.target)
@@ -4535,6 +5096,10 @@ Local DIRECT SOCKS (only localhost, only while VPN is on):
             info("Применяю новые DIRECT-правила к активному VPN...")
             activate(settings, choose_config(settings, str(st["active"])))
         ok("Обновление manager полностью применено.")
+        return 0
+
+    if args.cmd == "internal-diagnostic-monitor":
+        cmd_diagnostic_monitor(settings)
         return 0
 
     if args.cmd == "manager-rollback":
