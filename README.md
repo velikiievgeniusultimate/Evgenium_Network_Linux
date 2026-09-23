@@ -40,6 +40,9 @@ Running the installer again on an existing Xray edition installation is safe: it
 - atomic manager updates with `current` / `previous` rollback layout
 - Xray version pinning instead of blindly tracking latest
 
+For VPN servers whose download path to clients is slow despite fast server
+internet access, see the optional [server-side BBR guide](docs/SERVER-BBR.md).
+
 ## User commands
 
 ```bash
