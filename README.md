@@ -2,7 +2,7 @@
 
 A small Linux VPN manager built around **Xray-core**.
 
-Current stable baseline: **0.2.17**.
+Current installed candidate: **0.2.18** (startup transaction fixes).
 
 ## Install
 

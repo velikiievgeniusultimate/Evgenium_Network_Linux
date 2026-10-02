@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.18
+
+- serialize VPN mutation commands so GUI, CLI and autostart cannot race core stop/start
+- make `vpn on PROFILE` idempotent when the exact configuration is already healthy
+- reuse verified IPv4-only mode for the identical active configuration for up to 24 hours; do not repeat known-failing IPv6 negotiation on every start
+- check actual HTTPS transport readiness with a bounded two-provider quorum, without restarting the core between probes
+- convert probe subprocess timeouts into transactional failures and bypass inherited HTTP proxy environment for probes
+- preserve Xray pin, TLS certificate validation, rollback and fail-closed kill switch
+
+This fixes demonstrated startup logic defects; it does not claim to repair an
+unidentified remote XHTTP/server timeout.
+
 ## 0.2.17
 
 - add `vpn diagnostic on [PROFILE]` for non-invasive long-running failure capture
