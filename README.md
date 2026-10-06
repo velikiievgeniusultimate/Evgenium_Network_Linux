@@ -2,7 +2,12 @@
 
 A small Linux VPN manager built around **Xray-core**.
 
-Current installed candidate: **0.2.18** (startup transaction fixes).
+Current stable release: **0.2.19** (completed startup transaction release).
+
+Existing supported Arch/Fedora installations on x86_64 and aarch64 receive the
+same architecture-independent manager archive through `vpn update`. Xray-core
+remains architecture-specific and pinned to 26.7.28. Update availability is not
+a claim that every distribution/architecture has been runtime-tested.
 
 ## Install
 

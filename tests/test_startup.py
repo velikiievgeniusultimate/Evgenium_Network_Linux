@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('vpnctl', Path(__file__).parents[1] / 'src/vpnctl.py')
@@ -44,7 +45,7 @@ class StartupTests(unittest.TestCase):
              patch.object(vpn,'load_state',return_value=st), \
              patch.object(vpn,'RUNTIME_CONFIG') as runtime, \
              patch.object(vpn,'service_active',return_value=True), \
-             patch.object(vpn,'load_profile',return_value=[{}]), \
+             patch.object(vpn,'load_profile',return_value=[{'name':'node','server_ip':'192.0.2.1'}]), \
              patch.object(vpn,'build_config',return_value={'a':1}), \
              patch.object(vpn,'validate_candidate'), \
              patch.object(vpn,'save_state'), \
@@ -63,6 +64,49 @@ class StartupTests(unittest.TestCase):
         with patch.object(vpn.time,'time',return_value=1100):
             self.assertTrue(vpn.reuse_ipv4_mode(st,Path('Estonia'),None,{'a':1}))
             self.assertFalse(vpn.reuse_ipv4_mode(st,Path('Estonia'),None,{'a':2}))
+
+    def test_runtime_match_cannot_override_stale_fingerprint(self):
+        st={'active':'Estonia','ipv6_mode':'blocked','since':1000,
+            'ipv4_config_sha256':vpn.config_fingerprint({'a':1})}
+        with patch.object(vpn.time,'time',return_value=1100):
+            self.assertFalse(vpn.reuse_ipv4_mode(st,Path('Estonia'),b'{"a":2}',{'a':2}))
+            self.assertTrue(vpn.reuse_ipv4_mode(st,Path('Estonia'),b'{"a":1}',{'a':1}))
+
+    def test_gui_actions_lock_but_read_only_queries_do_not(self):
+        for command in ('action','state','running',None):
+            self.assertEqual(vpn.operation_requires_lock(SimpleNamespace(cmd='ui',ui_cmd=command)), command=='action')
+        for command in ('on','off','switch','toggle','update','reload-rules'):
+            self.assertTrue(vpn.operation_requires_lock(SimpleNamespace(cmd=command)))
+        for command in ('status','list','help'):
+            self.assertFalse(vpn.operation_requires_lock(SimpleNamespace(cmd=command)))
+
+    def test_real_gui_parser_reaches_lock_predicate(self):
+        with patch.object(vpn,'ensure_root'), patch.object(vpn,'load_settings',return_value={}), \
+             patch.object(vpn,'operation_requires_lock',side_effect=RuntimeError('captured')) as locking:
+            with self.assertRaisesRegex(RuntimeError,'captured'):
+                vpn.main(['ui','action','payload'])
+            args=locking.call_args.args[0]
+            self.assertEqual((args.cmd,args.ui_cmd),('ui','action'))
+
+    def test_idempotent_same_config_saves_selected_profile(self):
+        st={'active':'Old','last_active':'Old','ipv6_mode':'vpn','since':1000}
+        with patch.object(vpn,'load_state',return_value=st), \
+             patch.object(vpn,'RUNTIME_CONFIG') as runtime, \
+             patch.object(vpn,'service_active',return_value=True), \
+             patch.object(vpn,'load_profile',return_value=[{'name':'node','server_ip':'192.0.2.1'}]), \
+             patch.object(vpn,'build_config',return_value={'a':1}), \
+             patch.object(vpn,'validate_candidate'), \
+             patch.object(vpn,'save_state') as save, \
+             patch.object(vpn,'health_check_v4',return_value=(True,'1.1.1.1')), \
+             patch.object(vpn,'stop_core') as stop, \
+             patch.object(vpn,'start_config') as start:
+            runtime.exists.return_value=True
+            runtime.read_bytes.return_value=b'{"a":1}'
+            vpn.activate({},Path('Other'))
+            saved=save.call_args.args[0]
+            self.assertEqual((saved['active'],saved['last_active']),('Other','Other'))
+            self.assertEqual(saved['since'],1000)
+            stop.assert_not_called();start.assert_not_called()
 
     def test_cold_start_uses_known_v4_without_ipv6_probe(self):
         cfg={'a':1}

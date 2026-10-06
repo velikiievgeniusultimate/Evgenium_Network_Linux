@@ -1,6 +1,16 @@
 # Changelog
 
-## 0.2.18
+## 0.2.19
+
+- publish the common manager archive through both stable and testing update channels
+- lock real `ui action` operations, preserve profile selection on idempotent success,
+  and reject a stale saved configuration fingerprint even when runtime config matches
+
+- use a new version so locally installed 0.2.18 candidates also receive fixes
+- pass 14 native regression/package checks on both Arch aarch64 and x86_64;
+  Fedora installer support retained, but no fresh Fedora runtime test claimed
+
+## 0.2.18 (candidate, superseded by 0.2.19)
 
 - serialize VPN mutation commands so GUI, CLI and autostart cannot race core stop/start
 - make `vpn on PROFILE` idempotent when the exact configuration is already healthy

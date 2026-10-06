@@ -30,7 +30,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.18"
+MANAGER_VERSION = "0.2.19"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -3143,9 +3143,12 @@ def reuse_ipv4_mode(st: dict, path: pathlib.Path, old_config: bytes | None,
     if not isinstance(checked, (int, float)) or not 0 <= time.time() - checked < 86400:
         return False
     try:
+        saved = st.get("ipv4_config_sha256")
+        if saved is not None and saved != config_fingerprint(v4_config):
+            return False
         if old_config is not None:
             return json.loads(old_config) == v4_config
-        return st.get("ipv4_config_sha256") == config_fingerprint(v4_config)
+        return saved == config_fingerprint(v4_config)
     except (ValueError, TypeError):
         return False
 
@@ -3728,8 +3731,11 @@ def activate(settings: dict, path: pathlib.Path) -> None:
         if unchanged:
             healthy, detail = health_check_v4()
             if healthy:
+                state = {**old_state, "active": path.name, "last_active": path.name,
+                         "node": nodes[0]["name"], "server_ip": nodes[0]["server_ip"]}
                 if reuse_v4:
-                    save_state({**old_state, "ipv4_config_sha256": config_fingerprint(cfg_v4)})
+                    state["ipv4_config_sha256"] = config_fingerprint(cfg_v4)
+                save_state(state)
                 ok(f"VPN уже работает: {path.name}; HTTPS проверен, Xray не перезапускаю.")
                 return
 
@@ -4822,6 +4828,12 @@ def self_test() -> None:
         globals()["_diagnostic_cmd"] = old_diagnostic_cmd
     print("self-test OK")
 
+def operation_requires_lock(args) -> bool:
+    return (args.cmd in {"on", "switch", "off", "toggle", "reload-rules",
+                         "core-update", "update", "manager-rollback", "direct",
+                         "app", "port", "diagnostic"}
+            or (args.cmd == "ui" and getattr(args, "ui_cmd", None) == "action"))
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="vpn", add_help=False)
     p.add_argument("--self-test", action="store_true")
@@ -4913,7 +4925,7 @@ def main(argv=None) -> int:
     # CLI, GUI and autostart must not stop/reconfigure each other's core midway
     # through a transaction. Status/read-only commands remain lock-free.
     operation_lock = None
-    if args.cmd in {"on", "switch", "off", "toggle", "reload-rules", "core-update", "update", "manager-rollback", "ui-action", "direct", "app", "port", "diagnostic"}:
+    if operation_requires_lock(args):
         ensure_runtime(settings)
         operation_lock = open(RUNTIME_DIR / "operation.lock", "a")
         try:
