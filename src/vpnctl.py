@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import base64
 import concurrent.futures
 import contextlib
@@ -29,7 +30,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.17"
+MANAGER_VERSION = "0.2.19"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -3072,8 +3073,8 @@ def service_active() -> bool:
     ).returncode == 0
 
 def wait_service(timeout=12) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         if service_active() and pathlib.Path(f"/sys/class/net/{TUN_NAME}").exists():
             return True
         time.sleep(0.25)
@@ -3087,20 +3088,15 @@ def journal_tail(lines=100) -> str:
     )
     return cp.stdout or ""
 
-def health_check_v4() -> tuple[bool, str]:
-    dns = run(
-        ["/usr/bin/getent", "ahostsv4", "example.com"],
-        check=False, capture=True, timeout=5
-    )
-    if dns.returncode != 0 or not (dns.stdout or "").strip():
-        return False, "IPv4 DNS resolution через активный VPN не работает."
-
-    cp = run(
-        ["/usr/bin/curl", "-4", "--fail", "--silent", "--show-error",
-         "--connect-timeout", "5", "--max-time", "12",
-         "https://api.ipify.org"],
-        check=False, capture=True, timeout=15
-    )
+def _health_check_v4_once(url: str, max_time: float = 12) -> tuple[bool, str]:
+    try:
+        cp = run(
+            ["/usr/bin/curl", "-4", "--noproxy", "*", "--fail", "--silent", "--show-error",
+             "--connect-timeout", str(min(5, max_time)), "--max-time", str(max_time), url],
+            check=False, capture=True, timeout=max_time + 0.5
+        )
+    except subprocess.TimeoutExpired:
+        return False, "HTTPS probe subprocess timed out"
     if cp.returncode != 0:
         return False, "IPv4 HTTPS через VPN не работает: " + (cp.stderr or "").strip()
     ip = (cp.stdout or "").strip()
@@ -3111,6 +3107,53 @@ def health_check_v4() -> tuple[bool, str]:
     except ValueError:
         return False, f"Health endpoint вернул неожиданный ответ: {ip[:120]!r}"
     return True, ip
+
+def health_check_v4() -> tuple[bool, str]:
+    # TUN presence is not transport readiness. Give the SAME core a bounded
+    # startup window; never restart it or depend on one remote health provider.
+    targets = ("https://api.ipify.org", "https://checkip.amazonaws.com")
+    successes = set()
+    last_ip = ""
+    failures = []
+    deadline = time.monotonic() + 45
+    for _ in range(3):
+        for url in targets:
+            if time.monotonic() >= deadline:
+                break
+            remaining = min(12, max(0.25, deadline - time.monotonic()))
+            good, detail = _health_check_v4_once(url, remaining)
+            if good:
+                successes.add(url)
+                last_ip = detail
+                if len(successes) == 2:
+                    return True, last_ip
+            else:
+                failures.append(f"{urllib.parse.urlsplit(url).hostname}: {detail}")
+        if time.monotonic() >= deadline:
+            break
+    return False, "IPv4 HTTPS readiness failed (two-provider quorum): " + "; ".join(failures[-4:])
+
+def reuse_ipv4_mode(st: dict, path: pathlib.Path, old_config: bytes | None,
+                   v4_config: dict) -> bool:
+    # Reuse only the SAME actual configuration, not just a profile filename:
+    # editing a profile/DIRECT rules must invalidate this decision.
+    if st.get("active") != path.name or st.get("ipv6_mode") != "blocked":
+        return False
+    checked = st.get("ipv6_checked_at", st.get("since", 0))
+    if not isinstance(checked, (int, float)) or not 0 <= time.time() - checked < 86400:
+        return False
+    try:
+        saved = st.get("ipv4_config_sha256")
+        if saved is not None and saved != config_fingerprint(v4_config):
+            return False
+        if old_config is not None:
+            return json.loads(old_config) == v4_config
+        return saved == config_fingerprint(v4_config)
+    except (ValueError, TypeError):
+        return False
+
+def config_fingerprint(config: dict) -> str:
+    return hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 def probe_ipv6_via_vpn(timeout: float = 4.0) -> tuple[bool, str]:
     """
@@ -3673,8 +3716,28 @@ def activate(settings: dict, path: pathlib.Path) -> None:
 
     # Сначала пробуем настоящий dual-stack. Если удалённый VPS не умеет IPv6,
     # автоматически перестраиваем TUN в IPv4-only fail-closed режиме.
-    cfg_dual = build_config(settings, nodes, ipv6_enabled=True)
+    cfg_v4 = build_config(settings, nodes, ipv6_enabled=False)
+    reuse_v4 = reuse_ipv4_mode(old_state, path, old_config, cfg_v4)
+    cfg_dual = cfg_v4 if reuse_v4 else build_config(settings, nodes, ipv6_enabled=True)
+    if reuse_v4:
+        info("Использую проверенный IPv4-only режим этого конфига (IPv6 BLOCKED).")
     validate_candidate(settings, cfg_dual)
+
+    if was_active and old_config is not None:
+        try:
+            unchanged = json.loads(old_config) == cfg_dual
+        except (ValueError, TypeError):
+            unchanged = False
+        if unchanged:
+            healthy, detail = health_check_v4()
+            if healthy:
+                state = {**old_state, "active": path.name, "last_active": path.name,
+                         "node": nodes[0]["name"], "server_ip": nodes[0]["server_ip"]}
+                if reuse_v4:
+                    state["ipv4_config_sha256"] = config_fingerprint(cfg_v4)
+                save_state(state)
+                ok(f"VPN уже работает: {path.name}; HTTPS проверен, Xray не перезапускаю.")
+                return
 
     if not was_active:
         install_guard(settings)
@@ -3688,6 +3751,14 @@ def activate(settings: dict, path: pathlib.Path) -> None:
         v4_ok, v4_detail = health_check_v4()
 
         if v4_ok:
+            if reuse_v4:
+                save_state({**old_state, "since": int(time.time()),
+                            "ipv4_config_sha256": config_fingerprint(cfg_v4),
+                            "ipv6_checked_at": old_state.get("ipv6_checked_at", old_state.get("since", 0))})
+                ok(f"VPN включён: {path.name}")
+                ok(f"IPv4: VPN, внешний адрес {v4_detail}")
+                ok("IPv6: BLOCKED (повторно использован проверенный режим)")
+                return
             info("IPv4 работает. Проверяю IPv6 egress через тот же VPN...")
             v6_ok, v6_detail = probe_ipv6_via_vpn()
 
@@ -3698,6 +3769,7 @@ def activate(settings: dict, path: pathlib.Path) -> None:
                     "node": nodes[0]["name"],
                     "server_ip": nodes[0]["server_ip"],
                     "ipv6_mode": "vpn",
+                    "ipv6_checked_at": int(time.time()),
                     "since": int(time.time()),
                 })
                 ok(f"VPN включён: {path.name}")
@@ -3714,7 +3786,6 @@ def activate(settings: dict, path: pathlib.Path) -> None:
 
             # Guard не снимаем ни на мгновение.
             stop_core()
-            cfg_v4 = build_config(settings, nodes, ipv6_enabled=False)
             validate_candidate(settings, cfg_v4)
 
             if start_config(settings, cfg_v4):
@@ -3729,6 +3800,8 @@ def activate(settings: dict, path: pathlib.Path) -> None:
                         "node": nodes[0]["name"],
                         "server_ip": nodes[0]["server_ip"],
                         "ipv6_mode": "blocked",
+                        "ipv6_checked_at": int(time.time()),
+                        "ipv4_config_sha256": config_fingerprint(cfg_v4),
                         "ipv6_probe_error": v6_detail,
                         "since": int(time.time()),
                     })
@@ -4755,6 +4828,12 @@ def self_test() -> None:
         globals()["_diagnostic_cmd"] = old_diagnostic_cmd
     print("self-test OK")
 
+def operation_requires_lock(args) -> bool:
+    return (args.cmd in {"on", "switch", "off", "toggle", "reload-rules",
+                         "core-update", "update", "manager-rollback", "direct",
+                         "app", "port", "diagnostic"}
+            or (args.cmd == "ui" and getattr(args, "ui_cmd", None) == "action"))
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="vpn", add_help=False)
     p.add_argument("--self-test", action="store_true")
@@ -4843,6 +4922,16 @@ def main(argv=None) -> int:
 
     ensure_root()
     settings = load_settings()
+    # CLI, GUI and autostart must not stop/reconfigure each other's core midway
+    # through a transaction. Status/read-only commands remain lock-free.
+    operation_lock = None
+    if operation_requires_lock(args):
+        ensure_runtime(settings)
+        operation_lock = open(RUNTIME_DIR / "operation.lock", "a")
+        try:
+            fcntl.flock(operation_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fail("Другая операция VPN ещё выполняется. Дождись её завершения; Xray не изменён.")
     ensure_direct_apps_file(settings)
 
     if args.cmd in {None, "help"}:
