@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.parse
 import socket
+import argparse
 
 LOG = Path('/var/log/evgenium-experimental')
 LOCK = threading.Lock()
@@ -76,6 +77,33 @@ def clean_report(body):
         raise ValueError('schema')
     if body.get('event') == 'global_test':
         return clean_global_report(body)
+    if body.get('event') == 'connection_diagnostic':
+        stages={'prepare','daemon','credentials','guard','handshake','dns','health','connected','disconnected','manual'}
+        errors={'none','certificate','tls','authentication','proposal','permission','timeout','network','other'}
+        if body.get('stage') not in stages or body.get('error') not in errors: raise ValueError('category')
+        if not re.fullmatch('[a-f0-9]{32}',str(body.get('report_id',''))): raise ValueError('report_id')
+        elapsed=body.get('elapsed_ms')
+        if type(elapsed) is not int or not 0 <= elapsed <= 1800000: raise ValueError('elapsed')
+        version=str(body.get('manager',''))
+        if not re.fullmatch(r'[0-9A-Za-z._+-]{1,32}',version): raise ValueError('manager')
+        result = {'schema':1,'event':'connection_diagnostic','manager':version,
+                'report_id':body['report_id'],'stage':body['stage'],'error':body['error'],
+                'elapsed_ms':elapsed,'guard':body.get('guard') is True,'ipsec':body.get('ipsec') is True}
+        for key in ('ike_received','ike_sent','retransmits'):
+            value=body.get(key,0)
+            if type(value) is not int or not 0 <= value <= 1000: raise ValueError('counter')
+            result[key]=value
+        platform=body.get('platform','other')
+        if platform not in {'steamos','arch','fedora','other'}: raise ValueError('platform')
+        result['platform']=platform
+        stamp=body.get('time',0)
+        if type(stamp) is not int or not 0 <= stamp <= 4102444800: raise ValueError('time')
+        result['time']=stamp
+        previous=body.get('previous_delivery_error','')
+        if previous and not re.fullmatch(r'(credentials|route|tcp|tls|http)_(certificate|tls|authentication|proposal|permission|timeout|network|other|disabled|invalid_report|rejected|ack_mismatch)',str(previous)):
+            raise ValueError('delivery_error')
+        result['previous_delivery_error']=previous
+        return result
     if body.get('event') not in ('sample', 'site_report'):
         raise ValueError('event')
     probes = body.get('probes')
@@ -137,8 +165,12 @@ def clean_global_report(body):
         result.append(row)
     duration=body.get('duration_ms',0)
     if type(duration) is not int or not 0 <= duration <= 1800000: raise ValueError('duration')
+    previous=body.get('previous_delivery_error','')
+    if previous and not re.fullmatch(r'(credentials|route|tcp|tls|http)_(certificate|tls|authentication|proposal|permission|timeout|network|other|disabled|invalid_report|rejected|ack_mismatch)',str(previous)):
+        raise ValueError('delivery_error')
     return {'schema':1,'event':'global_test','manager':version,'run':run,
-            'outcome':outcome,'duration_ms':duration,'records':result}
+            'outcome':outcome,'duration_ms':duration,'records':result,
+            'previous_delivery_error':previous}
 
 
 def prune():
@@ -181,6 +213,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
     def do_GET(self):
+        if getattr(self.server,'direct_only',False):
+            self.reply(404,{}); return
         path=urllib.parse.urlsplit(self.path)
         if path.path == '/health':
             self.reply(200, {'service': 'evgenium-starfive', 'egress': 'RU-test', 'test_api':1})
@@ -215,6 +249,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not Path('/etc/evgenium-diagnostics-enabled').exists():
             self.reply(403, {}); return
         try:
+            if getattr(self.server,'direct_only',False) and self.path != '/report':
+                self.reply(404,{}); return
             size=int(self.headers.get('Content-Length','0'))
             if self.path == '/upload':
                 if not 0 < size <= 8*1024*1024: raise ValueError('size')
@@ -226,10 +262,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.reply(200,{'received_bytes':size,'sha256':digest.hexdigest()}); return
             if self.path != '/report' or not 0 < size <= 131072:
                 raise ValueError('size')
-            store_report(self.connection.getpeercert(binary_form=True), json.loads(self.rfile.read(size)))
+            body=json.loads(self.rfile.read(size))
+            store_report(self.connection.getpeercert(binary_form=True), body)
         except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
             self.reply(400, {'accepted': False}); return
-        self.reply(200, {'accepted': True})
+        self.reply(200, {'accepted': True, 'report_id':body.get('report_id','')})
 
 
 class Server(http.server.ThreadingHTTPServer):
@@ -255,8 +292,13 @@ class Server(http.server.ThreadingHTTPServer):
 
 
 if __name__ == '__main__':
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--listen',default='10.77.0.1')
+    parser.add_argument('--direct-only',action='store_true')
+    args=parser.parse_args()
     prune()
-    server = Server(('10.77.0.1', 8443), Handler)
+    server = Server((args.listen, 8443), Handler)
+    server.direct_only=args.direct_only
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain('/etc/swanctl/x509/starfive.pem', '/etc/swanctl/private/starfive.pem')

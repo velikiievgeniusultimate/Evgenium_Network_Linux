@@ -12,6 +12,9 @@ import subprocess
 import time
 import urllib.request
 import urllib.error
+import http.client
+import uuid
+import fcntl
 
 ROOT = pathlib.Path("/etc/vpn-manager/starfive")
 STATE = pathlib.Path("/var/lib/vpn-manager/starfive.json")
@@ -24,6 +27,138 @@ URI = "unix:///run/evgenium-ikev2/charon.vici"
 SERVER = "109.194.67.159"
 HEALTH = "https://10.77.0.1:8443"
 REQID = 77
+DIRECT_PORT = 8443
+DIRECT_MARK = 0xE771
+DELIVERY = "evgenium-ikev2-delivery.service"
+
+
+def failure_code(exc):
+    text = str(exc).lower()
+    if isinstance(exc, ssl.SSLCertVerificationError): return 'certificate'
+    if isinstance(exc, ssl.SSLError): return 'tls'
+    if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)): return 'timeout'
+    if 'certificate' in text or 'authentication' in text: return 'authentication'
+    if 'proposal' in text: return 'proposal'
+    if 'retransmit' in text or 'timed out' in text: return 'timeout'
+    if 'permission' in text or 'operation not permitted' in text: return 'permission'
+    if isinstance(exc, OSError): return 'network'
+    return 'other'
+
+
+def queue_connection(stage, error, elapsed=0):
+    if not stored().get('telemetry'): return
+    directory = ROOT / 'outbox'
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    files = sorted(directory.glob('*.json'), key=lambda p: p.stat().st_mtime)
+    for old in files[:-9]: old.unlink(missing_ok=True)
+    report_id = uuid.uuid4().hex
+    body = {'schema':1, 'event':'connection_diagnostic', 'manager':'0.2.22',
+            'time':int(time.time()),
+            'report_id':report_id, 'stage':stage, 'error':error,
+            'elapsed_ms':min(1800000, max(0, int(elapsed))),
+            'guard':active_guard(), 'ipsec':connected()}
+    try:
+        # Send counts and fixed categories, never raw journal lines or addresses.
+        journal=cmd(['journalctl','-u',UNIT,'--since','2 minutes ago','-n','80','--no-pager'],check=False,timeout=3).stdout.lower()
+        body.update(ike_received=journal.count('received packet:'),
+                    ike_sent=journal.count('sending packet:'),
+                    retransmits=journal.count('retransmit'))
+        if error == 'other':
+            if 'authentication' in journal and 'failed' in journal: body['error']='authentication'
+            elif 'no proposal' in journal: body['error']='proposal'
+        os_release=pathlib.Path('/etc/os-release').read_text().lower()
+        body['platform']='steamos' if 'steamos' in os_release else ('fedora' if 'fedora' in os_release else ('arch' if 'arch' in os_release else 'other'))
+    except Exception: pass
+    write(directory / (report_id + '.json'), json.dumps(body))
+    patch_state({ 'delivery_status':'queued', 'delivery_error':''})
+    kick_delivery()
+
+
+def kick_delivery():
+    if stored().get('telemetry'):
+        cmd(['systemctl','start','--no-block',DELIVERY], check=False)
+
+
+def direct_endpoint(body):
+    ROOT.mkdir(mode=0o700,parents=True,exist_ok=True)
+    with (ROOT/"delivery.lock").open("a") as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        return _direct_endpoint(body)
+
+
+def _direct_endpoint(body):
+    # Only this root-owned socket can bypass the guard; never environment proxies.
+    # The marked socket selects the physical route before IPsec source selection.
+    sock = None
+    connection = None
+    stage = 'credentials'
+    try:
+        context = ssl.create_default_context(cafile=str(ROOT / 'ca.pem'))
+        context.load_cert_chain(str(ROOT / 'client.pem'),str(ROOT / 'client-key.pem'))
+        stage = 'route'
+        rule=['priority','90','fwmark',str(DIRECT_MARK),'to',SERVER+'/32','lookup','main']
+        # Clean up an exact stale rule left by process termination before adding it.
+        cmd(['ip','rule','del',*rule],check=False)
+        cmd(['ip','rule','add',*rule])
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        stage = 'tcp'
+        sock.settimeout(6)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_MARK, DIRECT_MARK)
+        sock.connect((SERVER,DIRECT_PORT))
+        stage = 'tls'
+        tls = context.wrap_socket(sock,server_hostname=SERVER)
+        connection = http.client.HTTPConnection(SERVER,DIRECT_PORT,timeout=6)
+        connection.sock = tls
+        stage = 'http'
+        data = json.dumps(body,separators=(',',':')).encode()
+        connection.request('POST','/report',body=data,
+                           headers={'Content-Type':'application/json','Connection':'close'})
+        response = connection.getresponse()
+        reply = json.loads(response.read(4096))
+        if response.status != 200 or reply.get('accepted') is not True:
+            error=RuntimeError('Report rejected')
+            error.delivery_code={403:'disabled',400:'invalid_report'}.get(response.status,'rejected')
+            raise error
+        if body.get('report_id') and reply.get('report_id') != body['report_id']:
+            error=RuntimeError('Acknowledgement mismatch')
+            error.delivery_code='ack_mismatch'
+            raise error
+        return reply
+    except Exception as exc:
+        patch_state({ 'delivery_status':'retry',
+              'delivery_error':stage+'_'+getattr(exc,'delivery_code',failure_code(exc))})
+        raise
+    finally:
+        if connection: connection.close()
+        if sock: sock.close()
+        # Remove our exact scoped rule, including on failed TCP/TLS handshakes.
+        cmd(['ip','rule','del','priority','90','fwmark',str(DIRECT_MARK),
+             'to',SERVER+'/32','lookup','main'],check=False)
+
+
+def deliver_report(body):
+    if not stored().get('telemetry'): return False
+    patch_state({ 'delivery_status':'sending', 'delivery_attempt':int(time.time())})
+    body={**body, 'previous_delivery_error':stored().get('delivery_error','')}
+    direct_endpoint(body)
+    patch_state({ 'delivery_status':'sent', 'delivery_error':'',
+          'last_report':time.strftime('%Y-%m-%d %H:%M:%S UTC',time.gmtime())})
+    return True
+
+
+def delivery_worker():
+    delay=15
+    while stored().get('telemetry'):
+        files=list((ROOT/'outbox').glob('*.json'))
+        if not files and not PENDING_TEST.exists(): return
+        try:
+            for path in files:
+                if deliver_report(json.loads(path.read_text())): path.unlink(missing_ok=True)
+            flush_test_report()
+            delay=15
+        except Exception:
+            time.sleep(delay)
+            delay=min(delay*2,300)
 
 
 def cmd(args, check=True, timeout=20, data=None):
@@ -54,6 +189,14 @@ def stored():
 
 def save(state):
     write(STATE, json.dumps(state, ensure_ascii=False) + "\n")
+
+
+def patch_state(changes):
+    # Keep sender updates from overwriting a concurrent telemetry-off operation.
+    ROOT.mkdir(mode=0o700,parents=True,exist_ok=True)
+    with (ROOT/'state.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        save({**stored(),**changes})
 
 
 def active_guard():
@@ -89,6 +232,10 @@ def status():
             "server": SERVER, "egress": "Россия — тестовый выход",
             "last_report": state.get("last_report", ""),
             "last_error": state.get("last_error", ""),
+            "delivery": {"status":state.get('delivery_status','idle'),
+                         "error":state.get('delivery_error',''),
+                         "attempt":state.get('delivery_attempt',0),
+                         "pending":len(list((ROOT/'outbox').glob('*.json'))) + int(PENDING_TEST.exists())},
             "test": test_status(),
             "profile_path": "~/Vpn/StarFive/profile.json"}
 
@@ -163,6 +310,7 @@ def render_guard():
   type filter hook output priority -10; policy drop;
   oifname "lo" accept
   ip daddr {SERVER} udp dport {{ 500, 4500 }} accept
+  meta skuid 0 meta mark {DIRECT_MARK} ip daddr {SERVER} tcp dport {DIRECT_PORT} accept
   meta nfproto ipv4 udp sport 68 udp dport 67 accept
   meta nfproto ipv4 ipsec out reqid {REQID} accept
  }}
@@ -237,7 +385,7 @@ def service_files():
 }}
 charon-systemd {{
  journal {{
-  default = -1
+  default = 1
  }}
 }}
 """)
@@ -277,7 +425,30 @@ StandardOutput=null
 StandardError=null
 Restart=no
 """, 0o644)
+    install_delivery()
+
+
+def install_delivery():
+    write(pathlib.Path('/etc/systemd/system') / DELIVERY, """[Unit]
+Description=Experimental direct mTLS diagnostic delivery
+After=network.target
+[Service]
+ExecStart=/usr/local/sbin/vpnctl internal-starfive-delivery
+StandardOutput=null
+StandardError=null
+Restart=on-failure
+RestartSec=30
+[Install]
+WantedBy=multi-user.target
+""", 0o644)
     cmd(["systemctl", "daemon-reload"])
+    cmd(['systemctl','enable',DELIVERY],check=False)
+    # Upgrade an already active experimental guard without opening ordinary traffic.
+    if active_guard():
+        rules=cmd(['nft','list','chain','inet',TABLE,'output'],check=False).stdout
+        if str(DIRECT_MARK) not in rules and hex(DIRECT_MARK) not in rules:
+            cmd(['nft','insert','rule','inet',TABLE,'output','meta','skuid','0',
+                 'meta','mark',str(DIRECT_MARK),'ip','daddr',SERVER,'tcp','dport',str(DIRECT_PORT),'accept'])
 
 
 def set_dns():
@@ -327,6 +498,8 @@ def endpoint(path, payload=None):
 
 
 def on(api, settings):
+    started=time.monotonic()
+    stage='prepare'
     if api.service_active():
         raise RuntimeError("Сначала выключи обычный Xray VPN. Одновременно два режима не запускаются.")
     if active_guard():
@@ -341,10 +514,13 @@ def on(api, settings):
     p = validate_profile(json.loads((ROOT / "profile.json").read_text()))
     service_files()
     write(ROOT / "connection.conf", render_connection(p))
-    cmd(["systemctl", "start", UNIT])
     try:
+        stage='daemon'
+        cmd(["systemctl", "start", UNIT])
+        stage='credentials'
         swan("--load-creds", "--file", ROOT / "connection.conf")
         swan("--load-conns", "--file", ROOT / "connection.conf")
+        stage='guard'
         write(RUNTIME / "guard.nft", render_guard())
         cmd(["nft", "-c", "-f", RUNTIME / "guard.nft"])
         # All preparatory checks above are non-disruptive. The guard goes first.
@@ -354,25 +530,34 @@ def on(api, settings):
             cmd(["nft", "-f", ROOT / "guard.nft"])
         if not active_guard():
             raise RuntimeError("Не удалось подтвердить установку kill switch.")
-        save({**stored(), "phase": "connecting", "last_error": ""})
+        patch_state({ "phase": "connecting", "last_error": ""})
+        stage='handshake'
         swan("--initiate", "--child", "starfive-net", timeout=55)
         if not connected():
             raise RuntimeError("IPsec CHILD_SA не установлен.")
+        stage='dns'
         set_dns()
+        stage='health'
         health = endpoint("/health")
         if health.get("service") != "evgenium-starfive":
             raise RuntimeError("Не подтверждён диагностический сервер StarFive.")
-        save({**stored(), "phase": "connected", "since": int(time.time()), "last_error": ""})
+        patch_state({ "phase": "connected", "since": int(time.time()), "last_error": ""})
         if stored().get("telemetry"):
             cmd(["systemctl", "start", MONITOR])
+        try: queue_connection('connected','none',(time.monotonic()-started)*1000)
+        except Exception: pass
         print("StarFive подключён. Тестовый выход: Россия. IPv6 и DIRECT-исключения заблокированы.")
     except Exception as exc:
         cmd(["systemctl", "stop", MONITOR], check=False)
         cmd(["systemctl", "stop", UNIT], check=False)
         restore_dns()
-        save({**stored(), "phase": "blocked", "last_error": "Подключение не установлено; интернет заблокирован до выключения режима."})
-        raise RuntimeError("Подключение StarFive не удалось. Kill switch оставлен включённым. "
-                           "Нажми переключатель ещё раз или выполни vpn experimental off. " + str(exc)) from exc
+        patch_state({ "phase": "blocked", "last_error": "Подключение не установлено; интернет заблокирован до выключения режима."})
+        try: queue_connection(stage,failure_code(exc),(time.monotonic()-started)*1000)
+        except Exception: pass
+        error=RuntimeError("Подключение StarFive не удалось. Kill switch оставлен включённым. "
+                           "Нажми переключатель ещё раз или выполни vpn experimental off. " + str(exc))
+        error.diagnostic_queued=True
+        raise error from exc
 
 
 def off():
@@ -382,14 +567,17 @@ def off():
     restore_dns()
     cmd(["systemctl", "disable", "--now", GUARD], check=False)
     cmd(["nft", "delete", "table", "inet", TABLE], check=False)
-    save({**stored(), "phase": "off", "last_error": ""})
+    patch_state({ "phase": "off", "last_error": ""})
     print("Экспериментальное соединение выключено. Обычный интернет восстановлен.")
 
 
 def telemetry(enabled):
-    if not enabled: cmd(["systemctl", "stop", TEST_UNIT], check=False)
-    save({**stored(), "telemetry": bool(enabled)})
+    patch_state({ "telemetry": bool(enabled)})
+    if not enabled:
+        cmd(['systemctl','stop',DELIVERY],check=False)
+        cmd(["systemctl", "stop", TEST_UNIT], check=False)
     cmd(["systemctl", "start" if enabled and connected() else "stop", MONITOR], check=False)
+    if enabled: kick_delivery()
     print("Временная диагностика " + ("включена" if enabled else "выключена"))
 
 
@@ -442,10 +630,10 @@ def report(domain=None):
     domains = [domain_only(domain)] if domain else list(RU_DOMAINS)
     probes = [probe_domain(x) for x in domains]
     body = {"schema": 1, "event": "site_report" if domain else "sample",
-            "time": int(time.time()), "manager": "0.2.21", "platform": "linux",
+            "time": int(time.time()), "manager": "0.2.22", "platform": "linux",
             "probes": probes, "ipsec": "installed"}
     endpoint("/report", body)
-    save({**stored(), "last_report": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()) + " UTC"})
+    patch_state({ "last_report": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()) + " UTC"})
     print(json.dumps({"sent": True, "probes": probes}, ensure_ascii=False))
 
 
@@ -457,6 +645,9 @@ def monitor():
         except Exception:
             pass
         time.sleep(60)
+    if stored().get('telemetry') and active_guard():
+        try: queue_connection('disconnected','network')
+        except Exception: pass
 
 
 def dispatch(api, settings, action, target=""):
@@ -470,9 +661,19 @@ def dispatch(api, settings, action, target=""):
         elif action == "telemetry-on": telemetry(True)
         elif action == "telemetry-off": telemetry(False)
         elif action == "report": report(target or None)
+        elif action == "send-diagnostics":
+            if not ROOT.joinpath('profile.json').exists(): raise RuntimeError('Сначала импортируй профиль.')
+            install_delivery()
+            queue_connection('manual','none')
+            print('Диагностика сохранена. Прямая отправка выполняется в фоне.')
         elif action == "status": print(json.dumps(status(), ensure_ascii=False))
         else: raise ValueError("Неизвестная экспериментальная операция.")
     except (ValueError, RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+        if action == 'on' and not getattr(exc,'diagnostic_queued',False):
+            try:
+                install_delivery()
+                queue_connection('prepare',failure_code(exc))
+            except Exception: pass
         raise api.VPNError(str(exc)) from exc
 
 
@@ -579,10 +780,10 @@ def transport_counters():
 
 
 def flush_test_report():
-    if not stored().get('telemetry') or not PENDING_TEST.exists() or not connected(): return False
+    if not stored().get('telemetry') or not PENDING_TEST.exists(): return False
     body=json.loads(PENDING_TEST.read_text())
-    endpoint('/report',body)
-    PENDING_TEST.unlink()
+    if not deliver_report(body): return False
+    PENDING_TEST.unlink(missing_ok=True)
     test_state(sent=True,message='Тест завершён. Отчёт доставлен на StarFive.')
     return True
 
@@ -721,13 +922,13 @@ def run_global_test():
         if outcome!='cancelled' and not connected():
             try: measure('daemon_restart',lambda:reconnect(True))
             except Exception: pass
-        body={'schema':1,'event':'global_test','manager':'0.2.21','run':test_status().get('run',os.urandom(12).hex()),'outcome':outcome,'duration_ms':round((time.monotonic()-started)*1000),'records':records[:256]}
+        body={'schema':1,'event':'global_test','manager':'0.2.22','run':test_status().get('run',os.urandom(12).hex()),'outcome':outcome,'duration_ms':round((time.monotonic()-started)*1000),'records':records[:256]}
         write(PENDING_TEST,json.dumps(body))
         test_state(phase=outcome,progress=100,sent=False,duration_s=round(time.monotonic()-started),
                    passed=sum(bool(x.get('ok')) for x in records),failed=sum(not x.get('ok') for x in records),
                    message='Отчёт сохранён. Ожидает отправки через StarFive.')
         try: flush_test_report()
-        except Exception: pass
+        except Exception: kick_delivery()
         if connected() and stored().get('telemetry'):
             cmd(['systemctl','start',MONITOR],check=False)
         signal.signal(signal.SIGTERM,old)

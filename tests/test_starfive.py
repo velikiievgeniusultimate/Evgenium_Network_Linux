@@ -21,6 +21,47 @@ exp = load('experiment', ROOT / 'src/starfive_experimental.py')
 collector = load('collector', ROOT / 'server/diagnostic_collector.py')
 
 class ExperimentalTests(unittest.TestCase):
+    def test_connection_report_strips_raw_logs_and_rejects_unbounded_fields(self):
+        body={'schema':1,'event':'connection_diagnostic','manager':'0.2.22',
+              'report_id':'a'*32,'stage':'handshake','error':'timeout','elapsed_ms':55000,
+              'guard':True,'ipsec':False,'platform':'steamos','raw_log':'SECRET',
+              'ike_sent':5,'ike_received':0,'retransmits':4,'previous_delivery_error':'tcp_timeout'}
+        report=collector.clean_report(body)
+        self.assertNotIn('SECRET',json.dumps(report))
+        self.assertEqual(report['previous_delivery_error'],'tcp_timeout')
+        for key,value in [('stage','arbitrary'),('ike_sent',-1),('platform','hostname'),('previous_delivery_error','SECRET')]:
+            with self.subTest(key=key),self.assertRaises(ValueError):
+                collector.clean_report({**body,key:value})
+
+    def test_direct_route_cleanup_and_failure_status_without_raw_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);calls=[]
+            def command(args,**kw):
+                calls.append(args);return subprocess.CompletedProcess(args,0,'','')
+            with patch.object(exp,'ROOT',root),patch.object(exp,'STATE',root/'state.json'), \
+                 patch.object(exp,'cmd',side_effect=command), \
+                 patch.object(exp.ssl,'create_default_context',side_effect=OSError('SECRET')):
+                exp.save({'telemetry':True})
+                with self.assertRaises(OSError): exp.direct_endpoint({})
+                self.assertEqual(exp.stored()['delivery_error'],'credentials_network')
+                self.assertNotIn('SECRET',json.dumps(exp.stored()))
+                self.assertEqual(calls[-1][:3],['ip','rule','del'])
+
+    def test_queue_is_bounded_private_and_diagnostics_off_does_not_queue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            with patch.object(exp,'ROOT',root),patch.object(exp,'STATE',root/'state.json'), \
+                 patch.object(exp,'active_guard',return_value=True),patch.object(exp,'connected',return_value=False), \
+                 patch.object(exp,'kick_delivery'),patch.object(exp,'cmd',return_value=subprocess.CompletedProcess([],0,'','')):
+                exp.save({'telemetry':False});exp.queue_connection('manual','none')
+                self.assertFalse((root/'outbox').exists())
+                exp.save({'telemetry':True})
+                for _ in range(12): exp.queue_connection('handshake','timeout')
+                files=list((root/'outbox').glob('*.json'))
+                self.assertEqual(len(files),10)
+                self.assertEqual(files[0].stat().st_mode & 0o777,0o600)
+                for path in files: collector.clean_report(json.loads(path.read_text()))
+
     def test_only_domains_accepted(self):
         self.assertEqual(exp.domain_only('Example.COM.'), 'example.com')
         for value in ('https://site.example/token', 'site.example?password=x',
@@ -158,14 +199,14 @@ class GlobalTestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'pending.json';path.write_text('{}')
             with patch.object(exp,'PENDING_TEST',path),patch.object(exp,'stored',return_value={'telemetry':True}), \
-                 patch.object(exp,'connected',return_value=True),patch.object(exp,'endpoint',side_effect=OSError('offline')):
+                 patch.object(exp,'connected',return_value=True),patch.object(exp,'deliver_report',side_effect=OSError('offline')):
                 with self.assertRaises(OSError): exp.flush_test_report()
                 self.assertTrue(path.exists())
             with patch.object(exp,'PENDING_TEST',path),patch.object(exp,'stored',return_value={'telemetry':False}), \
-                 patch.object(exp,'endpoint') as send:
+                 patch.object(exp,'deliver_report') as send:
                 self.assertFalse(exp.flush_test_report());send.assert_not_called()
             with patch.object(exp,'PENDING_TEST',path),patch.object(exp,'stored',return_value={'telemetry':True}), \
-                 patch.object(exp,'connected',return_value=True),patch.object(exp,'endpoint',return_value={'accepted':True}),patch.object(exp,'test_state'):
+                 patch.object(exp,'connected',return_value=True),patch.object(exp,'deliver_report',return_value=True),patch.object(exp,'test_state'):
                 self.assertTrue(exp.flush_test_report());self.assertFalse(path.exists())
 
     def test_full_worker_retains_guard_and_emits_only_typed_ru_report(self):
@@ -198,6 +239,7 @@ class GlobalTestTests(unittest.TestCase):
                 if payload is not None: sent.append(payload)
                 return {'service':'evgenium-starfive','accepted':True}
             stack.enter_context(patch.object(exp,'endpoint',side_effect=endpoint))
+            stack.enter_context(patch.object(exp,'direct_endpoint',side_effect=lambda body: endpoint('/report',body)))
             exp.run_global_test()
             self.assertEqual(exp.test_status()['failed'],0)
             self.assertTrue(exp.test_status()['sent'])
