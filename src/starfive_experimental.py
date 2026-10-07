@@ -690,11 +690,15 @@ def on(api, settings):
         cmd(["systemctl", "stop", MONITOR], check=False)
         cmd(["systemctl", "stop", UNIT], check=False)
         restore_dns()
-        patch_state({ "phase": "blocked", "last_error": "Подключение не установлено; интернет заблокирован до выключения режима."})
+        guarded=active_guard()
+        patch_state({ "phase": "blocked" if guarded else "off", "last_error":
+                     "Подключение не установлено; интернет заблокирован до выключения режима." if guarded else
+                     "Подготовка не завершена; подключение и защита не включились."})
         try: queue_connection(stage,failure_code(exc),(time.monotonic()-started)*1000)
         except Exception: pass
-        error=RuntimeError("Подключение StarFive не удалось. Kill switch оставлен включённым. "
-                           "Нажми переключатель ещё раз или выполни vpn experimental off. " + str(exc))
+        error=RuntimeError("Подключение StarFive не удалось. " +
+                           ("Kill switch оставлен включённым. Выполни vpn experimental off. " if guarded else
+                            "Kill switch не активирован: сбой произошёл до включения туннеля. ") + str(exc))
         error.diagnostic_queued=True
         raise error from exc
 
