@@ -1117,7 +1117,20 @@ C.ApplicationWindow {
                                     }
                                     C.Label {
                                         Layout.fillWidth: true
-                                        text: "Каждую минуту проверяются Яндекс, Mail и Ростелеком. На StarFive отправляются домены, результаты DNS/TCP/TLS/HTTP-проверок и задержки. Полные URL, содержимое трафика, пароли и ключи не отправляются. Хранение: 7 дней. Домены и время событий не являются полностью анонимными данными."
+                                        text: "Каждую минуту проверяются Яндекс, Mail и Ростелеком. Ошибки подключения и результаты теста отправляются напрямую на StarFive по HTTPS с персональным сертификатом, даже при неработающем VPN. Только служебный канал обходит блокировку интернета. Неотправленные отчёты сохраняются на устройстве; попытки повторяются с паузами. Пароли, ключи и содержимое трафика не отправляются. Хранение на сервере: 7 дней. Сервер видит IP соединения; это псевдонимная диагностика, а не полная анонимность."
+                                        color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
+                                    }
+                                    FlatButton {
+                                        label: "Отправить диагностику напрямую"
+                                        enabledButton: !root.busy && Boolean(root.experiment.configured) && Boolean(root.experiment.telemetry)
+                                        onClicked: root.action({action: "experimental_send-diagnostics"})
+                                    }
+                                    C.Label {
+                                        Layout.fillWidth: true
+                                        text: "Доставка отчётов: " + ({idle:"ещё не запускалась",queued:"отчёт в очереди",sending:"отправляется",sent:"доставлен на StarFive",retry:"не доставлен; повторяем с паузами"}[String((root.experiment.delivery || {}).status || "idle")])
+                                            + ". В очереди: " + Number((root.experiment.delivery || {}).pending || 0)
+                                            + (root.experiment.telemetry ? "" : ". Отправка выключена")
+                                            + ((root.experiment.delivery || {}).error ? ". Причина: " + String(root.experiment.delivery.error) : "")
                                         color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
                                     }
                                     RowLayout {
@@ -1133,7 +1146,7 @@ C.ApplicationWindow {
                                     C.Label { text: "Стабильность российского моста"; color: root.textMain; font.weight: Font.DemiBold }
                                     C.Label {
                                         Layout.fillWidth: true
-                                        text: "Глобальный тест займёт примерно 4–8 минут и до 200 МиБ трафика. Интернет несколько раз прервётся: проверяются переподключения, файлы и докачка, потери, простой и параллельная нагрузка. Kill switch остаётся включённым. Проверки: StarFive, Яндекс, Mail, Ростелеком. Итог отправится на StarFive; при обрыве сохранится до восстановления VPN."
+                                        text: "Глобальный тест займёт примерно 4–8 минут и до 200 МиБ трафика. Интернет несколько раз прервётся: проверяются переподключения, файлы и докачка, потери, простой и параллельная нагрузка. Kill switch остаётся включённым. Проверки: StarFive, Яндекс, Mail, Ростелеком. Итог отправится напрямую по HTTPS; если сервер недоступен, отчёт останется в очереди."
                                         color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
                                     }
                                     RowLayout {

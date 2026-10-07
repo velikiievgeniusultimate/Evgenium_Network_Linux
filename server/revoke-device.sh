@@ -12,4 +12,7 @@ swanctl --load-creds --noprompt >/dev/null
 # End existing sessions too: certificate checks happen during authentication.
 swanctl --terminate --ike evgenium >/dev/null || true
 systemctl restart evgenium-diagnostic-collector
+if systemctl cat evgenium-diagnostic-direct.service >/dev/null 2>&1; then
+    systemctl restart evgenium-diagnostic-direct.service
+fi
 echo 'Certificate revoked. Existing test VPN sessions were disconnected; unrevoked devices may reconnect.'

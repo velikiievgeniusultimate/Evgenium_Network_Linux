@@ -95,11 +95,11 @@ PY
     sudo /usr/local/sbin/vpnctl internal-sync
 
     printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/vpnctl\n' "$OWNER_USER" | \
-        sudo tee /etc/sudoers.d/vpn-manager >/dev/null
-    sudo chmod 0440 /etc/sudoers.d/vpn-manager
+        sudo tee /etc/sudoers.d/zz-evgenium-vpn >/dev/null
+    sudo chmod 0440 /etc/sudoers.d/zz-evgenium-vpn
     if command -v visudo >/dev/null 2>&1; then
-        sudo visudo -cf /etc/sudoers.d/vpn-manager >/dev/null || {
-            sudo rm -f /etc/sudoers.d/vpn-manager
+        sudo visudo -cf /etc/sudoers.d/zz-evgenium-vpn >/dev/null || {
+            sudo rm -f /etc/sudoers.d/zz-evgenium-vpn
             die "Проверка sudoers не прошла."
         }
     fi
@@ -319,10 +319,10 @@ PY
 sudo install -m 0600 "${tmp}/settings.json" /etc/vpn-manager/settings.json
 
 printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/vpnctl\n' "$OWNER_USER" > "${tmp}/sudoers"
-sudo install -o root -g root -m 0440 "${tmp}/sudoers" /etc/sudoers.d/vpn-manager
+sudo install -o root -g root -m 0440 "${tmp}/sudoers" /etc/sudoers.d/zz-evgenium-vpn
 if command -v visudo >/dev/null 2>&1; then
-    sudo visudo -cf /etc/sudoers.d/vpn-manager >/dev/null || {
-        sudo rm -f /etc/sudoers.d/vpn-manager
+    sudo visudo -cf /etc/sudoers.d/zz-evgenium-vpn >/dev/null || {
+        sudo rm -f /etc/sudoers.d/zz-evgenium-vpn
         die "Проверка sudoers не прошла."
     }
 else
