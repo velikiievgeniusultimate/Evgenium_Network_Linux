@@ -1090,6 +1090,20 @@ C.ApplicationWindow {
                                         color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
                                     }
                                     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.border }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        C.Label { Layout.fillWidth: true; text: "Совместимость SteamOS: IPsec через TUN"; color: root.textMain; wrapMode: Text.WordWrap }
+                                        C.Switch {
+                                            checked: String(root.experiment.ipsec_backend || "kernel") === "userspace"
+                                            enabled: !root.busy && !Boolean(root.experiment.guard) && !Boolean(root.experiment.active)
+                                            onClicked: root.action({action: checked ? "experimental_backend-userspace" : "experimental_backend-kernel"})
+                                        }
+                                    }
+                                    C.Label {
+                                        Layout.fillWidth: true
+                                        text: "На SteamOS выбирается автоматически. Отдельный движок обрабатывает IPsec через TUN, сохраняя системный запрет esp4. Перед первым подключением нажми «Подготовить IKEv2». Системные библиотеки не заменяются. Режим может работать медленнее реализации в ядре."
+                                        color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
+                                    }
                                     FlatButton {
                                         label: root.experiment.available ? "IKEv2 готов" : "Подготовить IKEv2"
                                         enabledButton: !root.busy && !Boolean(root.experiment.available) && !Boolean(root.state.active)

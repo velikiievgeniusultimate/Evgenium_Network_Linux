@@ -21,6 +21,36 @@ exp = load('experiment', ROOT / 'src/starfive_experimental.py')
 collector = load('collector', ROOT / 'server/diagnostic_collector.py')
 
 class ExperimentalTests(unittest.TestCase):
+    def test_userspace_runtime_installs_only_pinned_safe_members(self):
+        import hashlib, io, tarfile
+        archive=ROOT/'dist'/('starfive-userspace-x86_64-'+exp.USERSPACE_VERSION+'.tar.gz')
+        blob=archive.read_bytes()
+        self.assertEqual(hashlib.sha256(blob).hexdigest(),exp.USERSPACE_SHA256)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(exp,'USERSPACE',Path(tmp)/'runtime'):
+            exp.install_userspace_archive(blob)
+            self.assertTrue(exp.userspace_ready())
+            self.assertEqual((exp.USERSPACE/'charon').stat().st_mode&0o777,0o755)
+            fake=io.BytesIO()
+            with tarfile.open(fileobj=fake,mode='w:gz') as f:
+                info=tarfile.TarInfo('../escape');info.size=1;f.addfile(info,io.BytesIO(b'x'))
+            with self.assertRaises(RuntimeError):exp.install_userspace_archive(fake.getvalue())
+            self.assertFalse((Path(tmp)/'escape').exists())
+
+    def test_userspace_guard_and_backend_change_are_fail_closed(self):
+        with patch.object(exp,'backend',return_value='userspace'):
+            rules=exp.render_guard()
+            self.assertIn('meta nfproto ipv4 oifname "ipsec0" accept',rules)
+            self.assertNotIn('ipsec out reqid',rules)
+            self.assertIn('policy drop',rules)
+        with patch.object(exp,'active_guard',return_value=True),patch.object(exp,'patch_state') as save:
+            with self.assertRaises(RuntimeError):exp.select_backend('kernel')
+            save.assert_not_called()
+
+    def test_kernel_failure_is_not_misclassified_as_authentication(self):
+        self.assertEqual(exp.failure_code(RuntimeError('authentication successful\nunable to install inbound and outbound IPsec SA (SAD) in kernel')),'kernel_ipsec_unavailable')
+        self.assertEqual(exp.failure_code(RuntimeError('authentication successful\nhealth failed')),'other')
+        self.assertEqual(exp.failure_code(RuntimeError('authentication failed')),'authentication')
+
     def test_connection_report_strips_raw_logs_and_rejects_unbounded_fields(self):
         body={'schema':1,'event':'connection_diagnostic','manager':'0.2.22',
               'report_id':'a'*32,'stage':'handshake','error':'timeout','elapsed_ms':55000,
