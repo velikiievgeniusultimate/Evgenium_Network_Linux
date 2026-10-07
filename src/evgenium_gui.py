@@ -33,7 +33,7 @@ def find_qml_runtime() -> str | None:
     return shutil.which("qml6") or shutil.which("qml-qt6") or shutil.which("qml")
 
 
-def run_vpn(args: list[str], timeout: int = 120) -> str:
+def run_vpn(args: list[str], timeout: int = 360) -> str:
     cp = subprocess.run(
         [VPN, *args],
         text=True,

@@ -38,6 +38,9 @@ jobs:
           python -m py_compile src/vpnctl.py src/vpnadmin.py src/evgenium_gui.py scripts/build_release.py
           python src/vpnctl.py --self-test
           python src/evgenium_gui.py --self-test
+          python -m unittest discover -s tests -v
+          python -m py_compile src/starfive_experimental.py server/diagnostic_collector.py
+          bash -n server/setup-starfive.sh server/issue-device.sh server/revoke-device.sh server/selftest-isolated.sh
           grep -F '"process": apps' src/vpnctl.py
           grep -F 'DIRECT_SOCKS_PORT = 18443' src/vpnctl.py
           grep -F 'Применяю новые DIRECT-правила к активному VPN' src/vpnctl.py
@@ -161,9 +164,11 @@ jobs:
           spec.loader.exec_module(mod)
           Path('/tmp/vpn-guard.nft').write_text(mod.render_guard_rules(943, {25565}, {19132}))
           Path('/tmp/vpn-guard-waydroid.nft').write_text(mod.render_guard_rules(943, set(), set(), waydroid_direct=True))
+          Path('/tmp/starfive-guard.nft').write_text(mod.starfive.render_guard())
           PY
           sudo nft -c -f /tmp/vpn-guard.nft
           sudo nft -c -f /tmp/vpn-guard-waydroid.nft
+          sudo nft -c -f /tmp/starfive-guard.nft
           ip rule help 2>&1 | grep -F 'fwmark'
       - name: Validate dedicated server bypass table
         run: |

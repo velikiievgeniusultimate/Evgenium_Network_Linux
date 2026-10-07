@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.20
+
+- add an opt-in Experimental page and a StarFive IKEv2/EAP-TLS backend
+- import personal device certificates, keep Xray and IKEv2 mutually exclusive,
+  and preserve a fail-closed IPv4/IPv6 guard after tunnel failure or reboot
+- add temporary domain-only diagnostics sent through the VPN over mutual TLS;
+  collection can be disabled on the client and centrally on the gateway
+- provide gateway setup, certificate issuance/revocation and isolated integration tests
+- first test stage exits through Russia; Estonia forwarding is not configured
+- retain the portable update archive format for existing `vpn update` installations
+
+
 ## 0.2.19
 
 - publish the common manager archive through both stable and testing update channels

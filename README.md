@@ -243,3 +243,9 @@ Persistent SERVER-port entries are stored in:
 ```text
 ~/Vpn/SERVER ports.txt
 ```
+
+## Экспериментальный StarFive IKEv2
+
+Начиная с 0.2.20 в левом меню есть «Экспериментальное». Режим требует
+персональный сертификат, включается вручную и пока использует выход в России.
+Инструкция и ограничения: [docs/STARFIVE-IKEV2.md](docs/STARFIVE-IKEV2.md).

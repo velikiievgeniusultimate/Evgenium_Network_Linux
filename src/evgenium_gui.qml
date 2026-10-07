@@ -30,6 +30,7 @@ C.ApplicationWindow {
     property string errorText: ""
     property var state: ({})
     property var runningApps: []
+    readonly property var experiment: root.state.experimental || ({})
 
     readonly property var args: Qt.application.arguments
     readonly property string apiToken: args.length >= 2 ? String(args[args.length - 1]) : ""
@@ -272,6 +273,7 @@ C.ApplicationWindow {
                 NavButton { label: "Сайты и IP"; shortLabel: "NET"; index: 3 }
                 NavButton { label: "Порты"; shortLabel: "PRT"; index: 4 }
                 NavButton { label: "Диагностика"; shortLabel: "SYS"; index: 5 }
+                NavButton { label: "Экспериментальное"; shortLabel: "EXP"; index: 6 }
 
                 Item { Layout.fillHeight: true }
 
@@ -324,7 +326,7 @@ C.ApplicationWindow {
                     Layout.fillWidth: true
                     C.Label {
                         Layout.fillWidth: true
-                        text: ["VPN", "Профили VPN", "Приложения без VPN", "Сайты и IP без VPN", "Входящие порты", "Диагностика"][root.pageIndex]
+                        text: ["VPN", "Профили VPN", "Приложения без VPN", "Сайты и IP без VPN", "Входящие порты", "Диагностика", "Экспериментальное"][root.pageIndex]
                         color: root.textMain
                         font.pixelSize: 25
                         font.weight: Font.Bold
@@ -407,7 +409,7 @@ C.ApplicationWindow {
                                         C.Label {
                                             Layout.fillWidth: true
                                             text: Boolean(root.state.active)
-                                                ? "Весь обычный трафик идёт через VPN, кроме настроенных исключений."
+                                                ? (root.state.backend === "ikev2" ? "Весь IPv4-трафик идёт через StarFive в России. IPv6 и DIRECT-исключения отключены." : "Весь обычный трафик идёт через VPN, кроме настроенных исключений.")
                                                 : "Включи VPN одним нажатием. Будет использован последний выбранный профиль."
                                             color: root.textMuted
                                             wrapMode: Text.WordWrap
@@ -423,7 +425,7 @@ C.ApplicationWindow {
                                     }
                                 }
 
-                                Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
+                                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.border }
 
                                 GridLayout {
                                     Layout.fillWidth: true
@@ -1041,6 +1043,94 @@ C.ApplicationWindow {
                                     color: root.textMuted
                                     wrapMode: Text.WordWrap
                                     font.pixelSize: 12
+                                }
+                            }
+                        }
+                    }
+
+                    // Experimental IKEv2 is deliberately opt-in; no automatic activation.
+                    Item {
+                        Card {
+                            anchors.fill: parent
+                            C.ScrollView {
+                                id: starfiveScroll
+                                anchors.fill: parent
+                                anchors.margins: 24
+                                contentWidth: availableWidth
+                                ColumnLayout {
+                                    width: starfiveScroll.availableWidth
+                                    spacing: 18
+                                    C.Label { text: "StarFive · IKEv2/IPsec"; color: root.textMain; font.pixelSize: 20; font.weight: Font.Bold }
+                                    C.Label {
+                                        Layout.fillWidth: true
+                                        text: "Тестовый выход в интернет через домашний StarFive в России. Эстонский выход пока не подключён."
+                                        wrapMode: Text.WordWrap; color: root.textMuted
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            C.Label { text: "Подключение к StarFive"; color: root.textMain; font.weight: Font.DemiBold }
+                                            C.Label {
+                                                Layout.fillWidth: true
+                                                text: root.experiment.active ? "Подключено · выход Россия" : (root.experiment.guard ? "Соединение потеряно · интернет заблокирован" : "Выключено")
+                                                color: root.experiment.active ? root.good : (root.experiment.guard ? root.bad : root.textMuted)
+                                                wrapMode: Text.WordWrap
+                                            }
+                                        }
+                                        C.Switch {
+                                            checked: Boolean(root.experiment.guard)
+                                            enabled: !root.busy && (Boolean(root.experiment.guard) || (Boolean(root.experiment.configured) && Boolean(root.experiment.available) && !Boolean(root.state.active)))
+                                            onClicked: root.action({action: checked ? "experimental_on" : "experimental_off"})
+                                        }
+                                    }
+                                    C.Label {
+                                        Layout.fillWidth: true
+                                        text: "Сначала выключи обычный VPN. В этом режиме IPv6, DIRECT-исключения и доступ к локальной сети блокируются. При обрыве интернет остаётся закрытым, пока ты не выключишь режим."
+                                        color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
+                                    }
+                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.border }
+                                    FlatButton {
+                                        label: root.experiment.available ? "IKEv2 готов" : "Подготовить IKEv2"
+                                        enabledButton: !root.busy && !Boolean(root.experiment.available) && !Boolean(root.state.active)
+                                        onClicked: root.action({action: "experimental_prepare"})
+                                    }
+                                    C.Label { Layout.fillWidth: true; text: root.experiment.configured ? "Персональный профиль установлен" : "Нужен персональный профиль устройства"; color: root.experiment.configured ? root.good : root.textMuted; wrapMode: Text.WordWrap }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        C.TextField { id: starfiveProfile; Layout.fillWidth: true; placeholderText: "~/Vpn/StarFive/profile.json"; selectByMouse: true }
+                                        FlatButton {
+                                            label: "Импортировать"
+                                            enabledButton: !root.busy && !Boolean(root.experiment.guard)
+                                            onClicked: root.action({action: "experimental_import", target: starfiveProfile.text.trim() || "~/Vpn/StarFive/profile.json"})
+                                        }
+                                    }
+                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.border }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        C.Label { Layout.fillWidth: true; text: "Временная диагностика"; color: root.textMain; font.weight: Font.DemiBold }
+                                        C.Switch {
+                                            checked: Boolean(root.experiment.telemetry)
+                                            enabled: !root.busy && Boolean(root.experiment.configured)
+                                            onClicked: root.action({action: checked ? "experimental_telemetry-on" : "experimental_telemetry-off"})
+                                        }
+                                    }
+                                    C.Label {
+                                        Layout.fillWidth: true
+                                        text: "Каждую минуту проверяются example.com, Wikipedia и YouTube. На StarFive отправляются домены, результаты DNS/TCP/TLS/HTTP-проверок и задержки. Полные URL, содержимое трафика, пароли и ключи не отправляются. Хранение: 7 дней. Домены и время событий не являются полностью анонимными данными."
+                                        color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        C.TextField { id: starfiveDomain; Layout.fillWidth: true; placeholderText: "Домен неработающего сайта, например discord.com"; selectByMouse: true }
+                                        FlatButton {
+                                            label: "Проверить и отправить"
+                                            enabledButton: !root.busy && Boolean(root.experiment.active) && Boolean(root.experiment.telemetry) && starfiveDomain.text.trim().length > 0
+                                            onClicked: root.action({action: "experimental_report", target: starfiveDomain.text.trim()})
+                                        }
+                                    }
+                                    C.Label { Layout.fillWidth: true; text: "Последний отчёт: " + String(root.experiment.last_report || "ещё не отправлен"); color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12 }
+                                    C.Label { Layout.fillWidth: true; text: String(root.experiment.last_error || ""); color: root.bad; wrapMode: Text.WordWrap }
                                 }
                             }
                         }
