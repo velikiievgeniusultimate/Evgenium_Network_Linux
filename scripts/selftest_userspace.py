@@ -187,5 +187,5 @@ print('PASS 1.3MB mTLS transfer integrity')
 
 if __name__=='__main__':
     if len(sys.argv)==1:
-        raise SystemExit(subprocess.call(['unshare','-Urnm',sys.executable,__file__,os.readlink('/proc/self/ns/net')]))
+        raise SystemExit(subprocess.call(['unshare','-nm' if os.geteuid()==0 else '-Urnm',sys.executable,__file__,os.readlink('/proc/self/ns/net')]))
     main()
