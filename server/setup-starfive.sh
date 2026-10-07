@@ -81,7 +81,7 @@ connections {
 pools {
  evgenium {
   addrs = 10.77.0.16-10.77.0.254
-  dns = 1.1.1.1,9.9.9.9
+  dns = 77.88.8.8,77.88.8.1
  }
 }
 EOF

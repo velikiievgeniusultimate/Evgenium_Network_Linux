@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.21
+
+- add a background Global Test button with progress, cancellation and durable report delivery
+- test Russian bridge stability: losses/MTU, checksummed transfers and resume, parallel load, idle and reconnects
+- retain the kill switch during daemon restart and compare with gateway-side Russian service probes/resource counters
+- replace default foreign service probes and DNS with Russian services and Yandex DNS
+- keep synthetic test data and bounded typed reports; no personal files or raw connection logs
+
+
 ## 0.2.20
 
 - add an opt-in Experimental page and a StarFive IKEv2/EAP-TLS backend
