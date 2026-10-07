@@ -79,7 +79,7 @@ def clean_report(body):
         return clean_global_report(body)
     if body.get('event') == 'connection_diagnostic':
         stages={'prepare','daemon','credentials','guard','handshake','dns','health','connected','disconnected','manual'}
-        errors={'none','certificate','tls','authentication','proposal','permission','timeout','network','other'}
+        errors={'none','certificate','tls','authentication','proposal','permission','timeout','network','other','kernel_ipsec_unavailable'}
         if body.get('stage') not in stages or body.get('error') not in errors: raise ValueError('category')
         if not re.fullmatch('[a-f0-9]{32}',str(body.get('report_id',''))): raise ValueError('report_id')
         elapsed=body.get('elapsed_ms')
@@ -96,6 +96,9 @@ def clean_report(body):
         platform=body.get('platform','other')
         if platform not in {'steamos','arch','fedora','other'}: raise ValueError('platform')
         result['platform']=platform
+        backend=body.get('ipsec_backend','kernel')
+        if backend not in ('kernel','userspace'): raise ValueError('backend')
+        result['ipsec_backend']=backend
         stamp=body.get('time',0)
         if type(stamp) is not int or not 0 <= stamp <= 4102444800: raise ValueError('time')
         result['time']=stamp

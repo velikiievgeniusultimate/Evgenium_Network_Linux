@@ -15,6 +15,9 @@ import urllib.error
 import http.client
 import uuid
 import fcntl
+import platform
+import io
+import tarfile
 
 ROOT = pathlib.Path("/etc/vpn-manager/starfive")
 STATE = pathlib.Path("/var/lib/vpn-manager/starfive.json")
@@ -30,6 +33,78 @@ REQID = 77
 DIRECT_PORT = 8443
 DIRECT_MARK = 0xE771
 DELIVERY = "evgenium-ikev2-delivery.service"
+USERSPACE = pathlib.Path('/opt/vpn-manager/ikev2-userspace')
+USERSPACE_VERSION = '6.1.0-openssl3.5.9-musl1.2.6-1'
+USERSPACE_SHA256 = 'ee67ef60ed17d6645bd2f811ce6feb61eae0f9c690829a110dad49a1001ad43c'
+USERSPACE_URL = 'https://raw.githubusercontent.com/velikiievgeniusultimate/Evgenium_Network_Linux/main/dist/starfive-userspace-x86_64-' + USERSPACE_VERSION + '.tar.gz'
+TUN = 'ipsec0'
+IKE_MARK = 0xE772
+
+
+def backend():
+    choice=stored().get('ipsec_backend')
+    if choice in ('kernel','userspace'): return choice
+    try: steamos='steamos' in pathlib.Path('/etc/os-release').read_text().lower()
+    except OSError: steamos=False
+    return 'userspace' if steamos else 'kernel'
+
+
+def userspace_ready():
+    try:
+        manifest=json.loads((USERSPACE/'BUILD.json').read_text())
+        return manifest.get('version')==USERSPACE_VERSION and all(
+            (USERSPACE/name).is_file() and os.access(USERSPACE/name,os.X_OK)
+            for name in ('charon','swanctl'))
+    except (OSError,ValueError): return False
+
+
+def available():
+    return userspace_ready() if backend()=='userspace' else bool(shutil.which('swanctl'))
+
+
+def valid_tun():
+    try: return bool(int(pathlib.Path('/sys/class/net',TUN,'tun_flags').read_text().strip(),16)&1)
+    except (OSError,ValueError): return False
+
+
+def select_backend(value):
+    if active_guard() or connected():
+        raise RuntimeError('Сначала выключи экспериментальное подключение.')
+    patch_state({'ipsec_backend':value})
+    print('Выбран режим: '+('IPsec через TUN' if value=='userspace' else 'IPsec в ядре'))
+
+
+def install_userspace():
+    if userspace_ready(): return
+    if active_guard(): raise RuntimeError('Сначала выключи экспериментальный режим, затем подготовь движок.')
+    if platform.machine().lower() not in ('x86_64','amd64'):
+        raise RuntimeError('Автономный движок пока собран только для x86_64 (Steam Deck).')
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(USERSPACE_URL,timeout=45) as response: blob=response.read(32*1024*1024+1)
+    if len(blob)>32*1024*1024 or hashlib.sha256(blob).hexdigest()!=USERSPACE_SHA256:
+        raise RuntimeError('Контрольная сумма автономного движка не совпала.')
+    install_userspace_archive(blob)
+
+
+def install_userspace_archive(blob):
+    expected={'charon','swanctl','BUILD.json','LICENSE.strongswan','LICENSE.openssl','LICENSE.musl'}
+    with tarfile.open(fileobj=io.BytesIO(blob),mode='r:gz') as archive:
+        members=archive.getmembers()
+        if len(members)!=len(expected) or {x.name for x in members}!=expected:
+            raise RuntimeError('Некорректный состав автономного движка.')
+        if sum(x.size for x in members)>48*1024*1024 or any(not x.isfile() or x.size>32*1024*1024 for x in members):
+            raise RuntimeError('Небезопасный архив автономного движка.')
+        metadata=json.load(archive.extractfile('BUILD.json'))
+        if metadata.get('version')!=USERSPACE_VERSION: raise RuntimeError('Некорректная версия движка.')
+        USERSPACE.mkdir(parents=True,mode=0o755,exist_ok=True)
+        for member in members:
+            target=USERSPACE/member.name
+            if target.is_symlink(): raise RuntimeError('Недопустимая ссылка в каталоге движка.')
+            temp=target.with_suffix(target.suffix+'.new')
+            fd=os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|os.O_NOFOLLOW,0o600)
+            with os.fdopen(fd,'wb') as f: f.write(archive.extractfile(member).read())
+            temp.chmod(0o755 if member.name in ('charon','swanctl') else 0o644)
+            temp.replace(target)
 
 
 def failure_code(exc):
@@ -37,7 +112,8 @@ def failure_code(exc):
     if isinstance(exc, ssl.SSLCertVerificationError): return 'certificate'
     if isinstance(exc, ssl.SSLError): return 'tls'
     if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)): return 'timeout'
-    if 'certificate' in text or 'authentication' in text: return 'authentication'
+    if 'unable to install' in text and 'ipsec sa' in text: return 'kernel_ipsec_unavailable'
+    if re.search(r"authentication[^\n]*(failed|failure)",text): return 'authentication'
     if 'proposal' in text: return 'proposal'
     if 'retransmit' in text or 'timed out' in text: return 'timeout'
     if 'permission' in text or 'operation not permitted' in text: return 'permission'
@@ -52,19 +128,20 @@ def queue_connection(stage, error, elapsed=0):
     files = sorted(directory.glob('*.json'), key=lambda p: p.stat().st_mtime)
     for old in files[:-9]: old.unlink(missing_ok=True)
     report_id = uuid.uuid4().hex
-    body = {'schema':1, 'event':'connection_diagnostic', 'manager':'0.2.22',
+    body = {'schema':1, 'event':'connection_diagnostic', 'manager':'0.2.23',
             'time':int(time.time()),
             'report_id':report_id, 'stage':stage, 'error':error,
             'elapsed_ms':min(1800000, max(0, int(elapsed))),
-            'guard':active_guard(), 'ipsec':connected()}
+            'guard':active_guard(), 'ipsec':connected(), 'ipsec_backend':backend()}
     try:
         # Send counts and fixed categories, never raw journal lines or addresses.
         journal=cmd(['journalctl','-u',UNIT,'--since','2 minutes ago','-n','80','--no-pager'],check=False,timeout=3).stdout.lower()
         body.update(ike_received=journal.count('received packet:'),
                     ike_sent=journal.count('sending packet:'),
                     retransmits=journal.count('retransmit'))
-        if error == 'other':
-            if 'authentication' in journal and 'failed' in journal: body['error']='authentication'
+        if error != 'none':
+            if 'unable to install inbound and outbound ipsec sa' in journal: body['error']='kernel_ipsec_unavailable'
+            elif re.search(r'authentication[^\n]*(failed|failure)',journal): body['error']='authentication'
             elif 'no proposal' in journal: body['error']='proposal'
         os_release=pathlib.Path('/etc/os-release').read_text().lower()
         body['platform']='steamos' if 'steamos' in os_release else ('fedora' if 'fedora' in os_release else ('arch' if 'arch' in os_release else 'other'))
@@ -206,7 +283,7 @@ def active_guard():
 
 
 def swan(*args, check=True, timeout=20):
-    binary = shutil.which("swanctl") or "/usr/sbin/swanctl"
+    binary = str(USERSPACE/"swanctl") if backend()=="userspace" else (shutil.which("swanctl") or "/usr/sbin/swanctl")
     return cmd([binary, *args, "--uri", URI], check=check, timeout=timeout)
 
 
@@ -215,9 +292,21 @@ def connected():
         return False
     try:
         cp = swan("--list-sas", "--raw", check=False, timeout=3)
-        return cp.returncode == 0 and "state=INSTALLED" in cp.stdout and "state=ESTABLISHED" in cp.stdout
+        return (cp.returncode == 0 and "state=INSTALLED" in cp.stdout and "state=ESTABLISHED" in cp.stdout
+                and (backend()!='userspace' or valid_tun()))
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def wait_userspace():
+    if backend()!='userspace': return
+    for _ in range(50):
+        if valid_tun():
+            try:
+                if swan('--stats',check=False,timeout=1).returncode==0: return
+            except (OSError,subprocess.TimeoutExpired): pass
+        time.sleep(.1)
+    raise RuntimeError('TUN-движок не создал собственный интерфейс и VICI-сокет.')
 
 
 def status():
@@ -225,7 +314,7 @@ def status():
     guard = active_guard()
     live = connected()
     return {"configured": ROOT.joinpath("profile.json").exists(),
-            "available": bool(shutil.which("swanctl")),
+            "available": available(), "ipsec_backend":backend(), "userspace_version":USERSPACE_VERSION,
             "active": live, "guard": guard,
             "telemetry": bool(state.get("telemetry", False)),
             "phase": "connected" if live else ("blocked" if guard else "off"),
@@ -293,6 +382,10 @@ def import_profile(settings, name):
 
 
 def prepare():
+    if backend()=="userspace":
+        install_userspace()
+        print("Автономный IPsec/TUN движок готов. Системный запрет esp4 сохранён.")
+        return
     if shutil.which("swanctl"):
         return
     if shutil.which("pacman"):
@@ -305,6 +398,8 @@ def prepare():
 
 
 def render_guard():
+    transport=(f'  meta nfproto ipv4 oifname "{TUN}" accept' if backend()=='userspace'
+               else f'  meta nfproto ipv4 ipsec out reqid {REQID} accept')
     return f"""table inet {TABLE} {{
  chain output {{
   type filter hook output priority -10; policy drop;
@@ -312,7 +407,7 @@ def render_guard():
   ip daddr {SERVER} udp dport {{ 500, 4500 }} accept
   meta skuid 0 meta mark {DIRECT_MARK} ip daddr {SERVER} tcp dport {DIRECT_PORT} accept
   meta nfproto ipv4 udp sport 68 udp dport 67 accept
-  meta nfproto ipv4 ipsec out reqid {REQID} accept
+{transport}
  }}
  chain forward {{
   type filter hook forward priority -10; policy drop;
@@ -358,17 +453,39 @@ def render_connection(p):
 """
 
 
-def service_files():
-    candidates = ["/usr/sbin/charon-systemd", "/usr/bin/charon-systemd", "/usr/lib/ipsec/charon-systemd", "/usr/libexec/ipsec/charon-systemd",
-                  "/usr/lib/strongswan/charon-systemd", "/usr/libexec/strongswan/charon-systemd"]
-    binary = next((x for x in candidates if pathlib.Path(x).is_file()), None)
-    if not binary:
-        raise RuntimeError("Не найден charon-systemd. Нужен пакет strongSwan с systemd backend.")
-    configs = [str(p) for pattern in ("/etc/strongswan.d/charon/*.conf", "/etc/strongswan/strongswan.d/charon/*.conf")
-               for p in pathlib.Path("/").glob(pattern.lstrip("/"))]
-    includes = "\n".join("include " + x for x in configs)
-    # DNS is managed transactionally by this backend, not by the resolve plugin.
-    write(ROOT / "strongswan.conf", """charon {
+def render_strongswan(includes=''):
+    if backend()=='userspace':
+        plugins='random nonce openssl pem pkcs1 pkcs8 x509 pubkey revocation constraints kernel-libipsec kernel-netlink socket-default eap-identity eap-tls vici'
+        return f"""charon {{
+ load_modular = no
+ load = {plugins}
+ install_routes = yes
+ routing_table = 51822
+ routing_table_prio = 100
+ plugins {{
+  kernel-libipsec {{
+   load = 20
+   raw_esp = no
+  }}
+  kernel-netlink {{
+   fwmark = !{hex(IKE_MARK)}
+  }}
+  socket-default {{
+   fwmark = {hex(IKE_MARK)}
+  }}
+  vici {{
+   socket = {URI}
+  }}
+ }}
+ filelog {{
+  stderr {{
+   default = 1
+   flush_line = yes
+  }}
+ }}
+}}
+"""
+    return  """charon {
  load_modular = yes
  install_routes = yes
  routing_table = 51822
@@ -381,6 +498,9 @@ def service_files():
   resolve {{
    load = no
   }}
+  kernel-libipsec {{
+   load = no
+  }}
  }}
 }}
 charon-systemd {{
@@ -388,16 +508,32 @@ charon-systemd {{
   default = 1
  }}
 }}
-""")
+"""
+
+
+def service_files():
+    candidates = ["/usr/sbin/charon-systemd", "/usr/bin/charon-systemd", "/usr/lib/ipsec/charon-systemd", "/usr/libexec/ipsec/charon-systemd",
+                  "/usr/lib/strongswan/charon-systemd", "/usr/libexec/strongswan/charon-systemd"]
+    binary = str(USERSPACE/"charon") if backend()=="userspace" and userspace_ready() else next((x for x in candidates if pathlib.Path(x).is_file()), None)
+    if backend()=="userspace" and not userspace_ready():
+        raise RuntimeError("Сначала нажми «Подготовить IKEv2» для загрузки TUN-движка.")
+    if not binary:
+        raise RuntimeError("Не найден charon-systemd. Нужен пакет strongSwan с systemd backend.")
+    configs = [str(p) for pattern in ("/etc/strongswan.d/charon/*.conf", "/etc/strongswan/strongswan.d/charon/*.conf")
+               for p in pathlib.Path("/").glob(pattern.lstrip("/"))]
+    includes = "\n".join("include " + x for x in configs)
+    # DNS is managed transactionally by this backend, not by the resolve plugin.
+    write(ROOT / "strongswan.conf",render_strongswan(includes))
     write(pathlib.Path("/etc/systemd/system") / UNIT, f"""[Unit]
 Description=Evgenium experimental StarFive IKEv2
 After=network.target
 [Service]
-Type=notify
+Type={"simple" if backend()=="userspace" else "notify"}
 Environment=STRONGSWAN_CONF={ROOT}/strongswan.conf
 ExecStart={binary}
 RuntimeDirectory=evgenium-ikev2
 RuntimeDirectoryMode=0700
+MemoryMax=384M
 Restart=no
 TimeoutStartSec=20
 """, 0o644)
@@ -506,17 +642,20 @@ def on(api, settings):
         raise RuntimeError("Режим уже включён или заблокирован после сбоя. Выключи его перед повтором.")
     if not ROOT.joinpath("profile.json").exists():
         raise RuntimeError("Сначала импортируй персональный профиль StarFive.")
-    if not shutil.which("swanctl"):
+    if not available():
         raise RuntimeError("Сначала нажми «Подготовить IKEv2».")
     # Existing unrelated IPsec state must never be replaced.
     if cmd(["ip", "xfrm", "state"], check=False).stdout.strip():
         raise RuntimeError("Обнаружен другой IPsec VPN. Сначала отключи его.")
     p = validate_profile(json.loads((ROOT / "profile.json").read_text()))
+    if backend()=="userspace" and pathlib.Path("/sys/class/net",TUN).exists():
+        raise RuntimeError("Интерфейс ipsec0 уже существует. Сначала выключи использующее его подключение.")
     service_files()
     write(ROOT / "connection.conf", render_connection(p))
     try:
         stage='daemon'
         cmd(["systemctl", "start", UNIT])
+        wait_userspace()
         stage='credentials'
         swan("--load-creds", "--file", ROOT / "connection.conf")
         swan("--load-conns", "--file", ROOT / "connection.conf")
@@ -551,11 +690,15 @@ def on(api, settings):
         cmd(["systemctl", "stop", MONITOR], check=False)
         cmd(["systemctl", "stop", UNIT], check=False)
         restore_dns()
-        patch_state({ "phase": "blocked", "last_error": "Подключение не установлено; интернет заблокирован до выключения режима."})
+        guarded=active_guard()
+        patch_state({ "phase": "blocked" if guarded else "off", "last_error":
+                     "Подключение не установлено; интернет заблокирован до выключения режима." if guarded else
+                     "Подготовка не завершена; подключение и защита не включились."})
         try: queue_connection(stage,failure_code(exc),(time.monotonic()-started)*1000)
         except Exception: pass
-        error=RuntimeError("Подключение StarFive не удалось. Kill switch оставлен включённым. "
-                           "Нажми переключатель ещё раз или выполни vpn experimental off. " + str(exc))
+        error=RuntimeError("Подключение StarFive не удалось. " +
+                           ("Kill switch оставлен включённым. Выполни vpn experimental off. " if guarded else
+                            "Kill switch не активирован: сбой произошёл до включения туннеля. ") + str(exc))
         error.diagnostic_queued=True
         raise error from exc
 
@@ -630,7 +773,7 @@ def report(domain=None):
     domains = [domain_only(domain)] if domain else list(RU_DOMAINS)
     probes = [probe_domain(x) for x in domains]
     body = {"schema": 1, "event": "site_report" if domain else "sample",
-            "time": int(time.time()), "manager": "0.2.22", "platform": "linux",
+            "time": int(time.time()), "manager": "0.2.23", "platform": "linux",
             "probes": probes, "ipsec": "installed"}
     endpoint("/report", body)
     patch_state({ "last_report": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()) + " UTC"})
@@ -654,6 +797,8 @@ def dispatch(api, settings, action, target=""):
     try:
         if action == "global-test": start_global_test()
         elif action == "cancel-test": cmd(["systemctl", "stop", TEST_UNIT],check=False)
+        elif action == "backend-userspace": select_backend("userspace")
+        elif action == "backend-kernel": select_backend("kernel")
         elif action == "prepare": prepare()
         elif action == "import": import_profile(settings, target)
         elif action == "on": on(api, settings)
@@ -774,7 +919,8 @@ def transport_counters():
                 if 'RetransSegs' in values:
                     result['retrans_segments']=int(values['RetransSegs'])
                     result['out_segments']=int(values['OutSegs'])
-        result['xfrm_errors']=sum(int(x.split()[1]) for x in pathlib.Path('/proc/net/xfrm_stat').read_text().splitlines())
+        if backend()=='kernel':
+            result['xfrm_errors']=sum(int(x.split()[1]) for x in pathlib.Path('/proc/net/xfrm_stat').read_text().splitlines())
     except (OSError,ValueError,RuntimeError): result['ok']=False
     return result
 
@@ -855,6 +1001,7 @@ def run_global_test():
             # Never remove the guard, even during a deliberate daemon failure.
             if not active_guard(): raise RuntimeError('Guard missing')
             cmd(['systemctl','start',UNIT])
+            wait_userspace()
             swan('--load-creds','--file',ROOT/'connection.conf')
             swan('--load-conns','--file',ROOT/'connection.conf')
         else:
@@ -922,7 +1069,7 @@ def run_global_test():
         if outcome!='cancelled' and not connected():
             try: measure('daemon_restart',lambda:reconnect(True))
             except Exception: pass
-        body={'schema':1,'event':'global_test','manager':'0.2.22','run':test_status().get('run',os.urandom(12).hex()),'outcome':outcome,'duration_ms':round((time.monotonic()-started)*1000),'records':records[:256]}
+        body={'schema':1,'event':'global_test','manager':'0.2.23','run':test_status().get('run',os.urandom(12).hex()),'outcome':outcome,'duration_ms':round((time.monotonic()-started)*1000),'records':records[:256]}
         write(PENDING_TEST,json.dumps(body))
         test_state(phase=outcome,progress=100,sent=False,duration_s=round(time.monotonic()-started),
                    passed=sum(bool(x.get('ok')) for x in records),failed=sum(not x.get('ok') for x in records),

@@ -230,3 +230,5 @@ jobs:
               assert tf.getnames()==['vpnctl.py','vpnadmin.py','VERSION']
           print('release + manifests OK', digest, 'Xray', core)
           PY
+      - name: Isolated userspace IPsec transfer, reconnect and kill switch
+        run: sudo python3 scripts/selftest_userspace.py
