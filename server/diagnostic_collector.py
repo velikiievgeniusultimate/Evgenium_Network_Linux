@@ -130,6 +130,9 @@ def clean_global_report(body):
                 value=item[key]
                 if type(value) is not int or not 0 <= value <= 10**18: raise ValueError('metric')
                 row[key]=value
+        if 'error' in item:
+            if item['error'] not in {'other','http','timeout','tls','network'}: raise ValueError('error')
+            row['error']=item['error']
         if 'integrity' in item: row['integrity']=item['integrity'] is True
         result.append(row)
     duration=body.get('duration_ms',0)

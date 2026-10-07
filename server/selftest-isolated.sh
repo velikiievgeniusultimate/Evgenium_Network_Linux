@@ -115,7 +115,7 @@ if __import__('os').environ.get('EVGENIUM_FULL_TEST') == '1':
  import os,subprocess,time,signal
  realcmd=m.cmd
  m.STATE=m.ROOT/'state.json';m.TEST_STATE=m.ROOT/'test-state.json';m.PENDING_TEST=m.ROOT/'pending-global.json'
- m.save({'telemetry':True});m.test_state(phase='running',run='1'*24)
+ m.save({'telemetry':True});m.test_state(phase='running',run='1'*24,sent=False,passed=0,failed=0,duration_s=0)
  m.set_dns=lambda:None
  def isolated_cmd(args,**kwargs):
   if args[0]=='systemctl':

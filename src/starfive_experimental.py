@@ -11,6 +11,7 @@ import ssl
 import subprocess
 import time
 import urllib.request
+import urllib.error
 
 ROOT = pathlib.Path("/etc/vpn-manager/starfive")
 STATE = pathlib.Path("/var/lib/vpn-manager/starfive.json")
@@ -607,7 +608,7 @@ Restart=no
 '''
     write(pathlib.Path('/etc/systemd/system')/TEST_UNIT,unit,0o644)
     cmd(['systemctl','daemon-reload'])
-    test_state(phase='running',progress=0,sent=False,message='Запуск теста',run=os.urandom(12).hex(),started=int(time.time()))
+    test_state(phase='running',progress=0,sent=False,passed=0,failed=0,duration_s=0,message='Запуск теста',run=os.urandom(12).hex(),started=int(time.time()))
     try: cmd(['systemctl','start',TEST_UNIT])
     except Exception:
         test_state(phase='failed',message='Не удалось запустить тест.'); raise
@@ -628,7 +629,14 @@ def run_global_test():
         before=time.monotonic()
         try: row=operation()
         except TestCancelled: raise
-        except Exception: row={'kind':kind,'ok':False}
+        except Exception as exc:
+            error='other'
+            if isinstance(exc,urllib.error.HTTPError): error='http'
+            elif isinstance(exc,(TimeoutError,subprocess.TimeoutExpired)): error='timeout'
+            elif isinstance(exc,ssl.SSLError): error='tls'
+            elif isinstance(exc,OSError): error='network'
+            row={'kind':kind,'ok':False,'error':error}
+            if isinstance(exc,urllib.error.HTTPError): row['http_status']=exc.code
         row.setdefault('elapsed_ms',round((time.monotonic()-before)*1000))
         row['at_ms']=round((time.monotonic()-started)*1000)
         row.update(fields); records.append(row); return row
