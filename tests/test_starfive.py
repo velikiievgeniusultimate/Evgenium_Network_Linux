@@ -89,7 +89,7 @@ class ExperimentalTests(unittest.TestCase):
             def path(value):
                 return original if str(value)=='/etc/resolv.conf' else realpath(value)
             with patch.object(exp,'ROOT',r/'state'), patch.object(exp.pathlib,'Path',side_effect=path), patch.object(exp.shutil,'which',return_value=None):
-                exp.set_dns(); self.assertIn('1.1.1.1',original.read_text())
+                exp.set_dns(); self.assertIn('77.88.8.8',original.read_text())
                 exp.restore_dns(); self.assertEqual(original.read_text(),'nameserver 192.168.0.1\n')
 
     def test_embedded_backend_is_identical(self):
@@ -127,5 +127,90 @@ class CollectorTests(unittest.TestCase):
             record=json.loads(log.read_text())
             self.assertEqual(len(record['device']),24)
             self.assertNotIn('SECRET',log.read_text())
+
+class GlobalTestTests(unittest.TestCase):
+    def test_resumed_chunks_have_expected_content_at_unaligned_offset(self):
+        size=170000; cut=67001
+        all_data=b''.join(collector.blob_chunks(size))
+        resumed=b''.join(collector.blob_chunks(size-cut,cut))
+        self.assertEqual(resumed,all_data[cut:])
+        self.assertEqual(exp.expected_hash(size-cut,cut),collector.blob_hash(size-cut,cut))
+        self.assertEqual(len(all_data),size)
+
+    def test_global_report_drops_unknown_fields(self):
+        body={'schema':1,'event':'global_test','manager':'0.2.21','run':'a'*24,
+              'outcome':'completed','records':[{'kind':'download','ok':True,'bytes':123,'integrity':True,'secret':'DO_NOT_STORE'}],
+              'ip':'DO_NOT_STORE'}
+        result=collector.clean_report(body)
+        self.assertNotIn('DO_NOT_STORE',json.dumps(result))
+        self.assertEqual(result['records'][0]['bytes'],123)
+
+    def test_global_report_rejects_foreign_domains_and_unbounded_metrics(self):
+        body={'schema':1,'event':'global_test','manager':'0.2.21','run':'a'*24,'outcome':'completed',
+              'records':[{'kind':'ru_probe','ok':True,'domain':'example.com'}]}
+        with self.assertRaises(ValueError): collector.clean_report(body)
+        body['records']=[{'kind':'download','bytes':float('inf')}]
+        with self.assertRaises(ValueError): collector.clean_report(body)
+        body['records']=[{'kind':'health'}]*257
+        with self.assertRaises(ValueError): collector.clean_report(body)
+
+    def test_pending_report_kept_until_success_and_not_sent_when_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'pending.json';path.write_text('{}')
+            with patch.object(exp,'PENDING_TEST',path),patch.object(exp,'stored',return_value={'telemetry':True}), \
+                 patch.object(exp,'connected',return_value=True),patch.object(exp,'endpoint',side_effect=OSError('offline')):
+                with self.assertRaises(OSError): exp.flush_test_report()
+                self.assertTrue(path.exists())
+            with patch.object(exp,'PENDING_TEST',path),patch.object(exp,'stored',return_value={'telemetry':False}), \
+                 patch.object(exp,'endpoint') as send:
+                self.assertFalse(exp.flush_test_report());send.assert_not_called()
+            with patch.object(exp,'PENDING_TEST',path),patch.object(exp,'stored',return_value={'telemetry':True}), \
+                 patch.object(exp,'connected',return_value=True),patch.object(exp,'endpoint',return_value={'accepted':True}),patch.object(exp,'test_state'):
+                self.assertTrue(exp.flush_test_report());self.assertFalse(path.exists())
+
+    def test_full_worker_retains_guard_and_emits_only_typed_ru_report(self):
+        import contextlib,io
+        with tempfile.TemporaryDirectory() as tmp, contextlib.ExitStack() as stack:
+            root=Path(tmp)
+            for name,value in [('ROOT',root),('STATE',root/'state.json'),('TEST_STATE',root/'test.json'),('PENDING_TEST',root/'pending.json')]:
+                stack.enter_context(patch.object(exp,name,value))
+            exp.save({'telemetry':True});exp.test_state(phase='running',run='a'*24)
+            calls=[]
+            def command(args,**kwargs):
+                calls.append([str(x) for x in args]);return subprocess.CompletedProcess(args,0,'','')
+            stack.enter_context(patch.object(exp,'cmd',side_effect=command))
+            stack.enter_context(patch.object(exp,'swan',return_value=subprocess.CompletedProcess([],0,'','')))
+            stack.enter_context(patch.object(exp,'connected',return_value=True))
+            stack.enter_context(patch.object(exp,'active_guard',return_value=True))
+            stack.enter_context(patch.object(exp,'set_dns'))
+            stack.enter_context(patch.object(exp.time,'sleep'))
+            stack.enter_context(patch.object(exp,'probe_domain',side_effect=lambda d:{'domain':d,'ok':True,'http_status':200}))
+            stack.enter_context(patch.object(exp,'ping_test',return_value={'kind':'ping','ok':True}))
+            stack.enter_context(patch.object(exp,'transport_counters',return_value={'kind':'counters','ok':True}))
+            stack.enter_context(patch.object(exp,'transfer_download',side_effect=lambda *a,**k:{'kind':'download','ok':True,'integrity':True}))
+            stack.enter_context(patch.object(exp,'transfer_upload',side_effect=lambda *a,**k:{'kind':'upload','ok':True,'integrity':True}))
+            stack.enter_context(patch.object(exp.socket,'getaddrinfo',return_value=[(socket.AF_INET,socket.SOCK_STREAM,6,'',('77.88.55.242',443))]))
+            stack.enter_context(patch.object(exp.socket,'create_connection',side_effect=OSError('blocked')))
+            data=json.dumps({'probes':[{'domain':d,'ok':True,'latency_ms':1,'http_status':200} for d in exp.RU_DOMAINS],'metrics':{'load1':1}}).encode()
+            stack.enter_context(patch.object(exp,'test_request',side_effect=lambda *a,**k:io.BytesIO(data)))
+            sent=[]
+            def endpoint(path,payload=None):
+                if payload is not None: sent.append(payload)
+                return {'service':'evgenium-starfive','accepted':True}
+            stack.enter_context(patch.object(exp,'endpoint',side_effect=endpoint))
+            exp.run_global_test()
+            self.assertEqual(exp.test_status()['failed'],0)
+            self.assertTrue(exp.test_status()['sent'])
+            report=collector.clean_report(sent[0])
+            self.assertEqual(report['outcome'],'completed')
+            self.assertEqual(sum(x['kind']=='reconnect' for x in report['records']),6)
+            self.assertIn(['systemctl','stop',exp.UNIT],calls)
+            self.assertFalse(any(c[:2]==['nft','delete'] or exp.GUARD in c for c in calls))
+
+    def test_background_test_refuses_inactive_vpn_without_mutation(self):
+        with patch.object(exp,'cmd',return_value=subprocess.CompletedProcess([],3,'','')) as command, \
+             patch.object(exp,'stored',return_value={'telemetry':True}),patch.object(exp,'connected',return_value=False):
+            with self.assertRaises(RuntimeError): exp.start_global_test()
+            self.assertEqual(command.call_count,1)
 
 if __name__=='__main__': unittest.main()

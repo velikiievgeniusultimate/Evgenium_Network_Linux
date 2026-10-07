@@ -1117,17 +1117,47 @@ C.ApplicationWindow {
                                     }
                                     C.Label {
                                         Layout.fillWidth: true
-                                        text: "Каждую минуту проверяются example.com, Wikipedia и YouTube. На StarFive отправляются домены, результаты DNS/TCP/TLS/HTTP-проверок и задержки. Полные URL, содержимое трафика, пароли и ключи не отправляются. Хранение: 7 дней. Домены и время событий не являются полностью анонимными данными."
+                                        text: "Каждую минуту проверяются Яндекс, Mail и Ростелеком. На StarFive отправляются домены, результаты DNS/TCP/TLS/HTTP-проверок и задержки. Полные URL, содержимое трафика, пароли и ключи не отправляются. Хранение: 7 дней. Домены и время событий не являются полностью анонимными данными."
                                         color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
                                     }
                                     RowLayout {
                                         Layout.fillWidth: true
-                                        C.TextField { id: starfiveDomain; Layout.fillWidth: true; placeholderText: "Домен неработающего сайта, например discord.com"; selectByMouse: true }
+                                        C.TextField { id: starfiveDomain; Layout.fillWidth: true; placeholderText: "Домен неработающего сайта, например yandex.ru"; selectByMouse: true }
                                         FlatButton {
                                             label: "Проверить и отправить"
                                             enabledButton: !root.busy && Boolean(root.experiment.active) && Boolean(root.experiment.telemetry) && starfiveDomain.text.trim().length > 0
                                             onClicked: root.action({action: "experimental_report", target: starfiveDomain.text.trim()})
                                         }
+                                    }
+                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.border }
+                                    C.Label { text: "Стабильность российского моста"; color: root.textMain; font.weight: Font.DemiBold }
+                                    C.Label {
+                                        Layout.fillWidth: true
+                                        text: "Глобальный тест займёт примерно 4–8 минут и до 200 МиБ трафика. Интернет несколько раз прервётся: проверяются переподключения, файлы и докачка, потери, простой и параллельная нагрузка. Kill switch остаётся включённым. Проверки: StarFive, Яндекс, Mail, Ростелеком. Итог отправится на StarFive; при обрыве сохранится до восстановления VPN."
+                                        color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
+                                    }
+                                    RowLayout {
+                                        FlatButton {
+                                            label: "Глобальный тест"
+                                            enabledButton: !root.busy && Boolean(root.experiment.active) && Boolean(root.experiment.telemetry) && String((root.experiment.test || {}).phase) !== "running"
+                                            onClicked: root.action({action: "experimental_global-test"})
+                                        }
+                                        FlatButton {
+                                            label: "Остановить тест"
+                                            enabledButton: !root.busy && String((root.experiment.test || {}).phase) === "running"
+                                            onClicked: root.action({action: "experimental_cancel-test"})
+                                        }
+                                    }
+                                    C.ProgressBar {
+                                        Layout.fillWidth: true
+                                        from: 0; to: 100; value: Number((root.experiment.test || {}).progress || 0)
+                                        visible: String((root.experiment.test || {}).phase) === "running"
+                                    }
+                                    C.Label {
+                                        Layout.fillWidth: true
+                                        text: String((root.experiment.test || {}).message || "Тест ещё не запускался")
+                                            + ((root.experiment.test || {}).passed !== undefined ? " Проверок успешно: " + (root.experiment.test || {}).passed + "; со сбоями: " + (root.experiment.test || {}).failed + "." : "")
+                                        color: root.textMuted; wrapMode: Text.WordWrap
                                     }
                                     C.Label { Layout.fillWidth: true; text: "Последний отчёт: " + String(root.experiment.last_report || "ещё не отправлен"); color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12 }
                                     C.Label { Layout.fillWidth: true; text: String(root.experiment.last_error || ""); color: root.bad; wrapMode: Text.WordWrap }

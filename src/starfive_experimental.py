@@ -1,4 +1,5 @@
 """Opt-in IKEv2 backend. Embedded in vpnctl releases; no import-time side effects."""
+import hashlib
 import ipaddress
 import json
 import os
@@ -87,6 +88,7 @@ def status():
             "server": SERVER, "egress": "Россия — тестовый выход",
             "last_report": state.get("last_report", ""),
             "last_error": state.get("last_error", ""),
+            "test": test_status(),
             "profile_path": "~/Vpn/StarFive/profile.json"}
 
 
@@ -289,13 +291,13 @@ def set_dns():
             text = cmd(["resolvectl", kind, iface]).stdout
             return text.split("):", 1)[1].strip().split() if "):" in text else []
         write(resolved, json.dumps({"iface": iface, "dns": previous("dns"), "domain": previous("domain")}))
-        cmd(["resolvectl", "dns", iface, "1.1.1.1", "9.9.9.9"])
+        cmd(["resolvectl", "dns", iface, "77.88.8.8", "77.88.8.1"])
         cmd(["resolvectl", "domain", iface, "~."])
         cmd(["resolvectl", "flush-caches"], check=False)
         return
     write(backup, pathlib.Path("/etc/resolv.conf").read_text())
     # Keep the symlink itself intact (NetworkManager/systemd-resolved setups).
-    pathlib.Path("/etc/resolv.conf").write_text("# Evgenium experimental VPN\nnameserver 1.1.1.1\nnameserver 9.9.9.9\noptions timeout:2 attempts:2\n")
+    pathlib.Path("/etc/resolv.conf").write_text("# Evgenium experimental VPN\nnameserver 77.88.8.8\nnameserver 77.88.8.1\noptions timeout:2 attempts:2\n")
 
 
 def restore_dns():
@@ -373,6 +375,7 @@ def on(api, settings):
 
 
 def off():
+    cmd(["systemctl", "stop", TEST_UNIT], check=False)
     cmd(["systemctl", "stop", MONITOR], check=False)
     cmd(["systemctl", "stop", UNIT], check=False)
     restore_dns()
@@ -383,6 +386,7 @@ def off():
 
 
 def telemetry(enabled):
+    if not enabled: cmd(["systemctl", "stop", TEST_UNIT], check=False)
     save({**stored(), "telemetry": bool(enabled)})
     cmd(["systemctl", "start" if enabled and connected() else "stop", MONITOR], check=False)
     print("Временная диагностика " + ("включена" if enabled else "выключена"))
@@ -434,10 +438,10 @@ def report(domain=None):
         raise RuntimeError("Диагностика выключена. Включи её явно перед отправкой.")
     if not connected():
         raise RuntimeError("Отчёт отправляется только внутри установленного StarFive VPN.")
-    domains = [domain_only(domain)] if domain else ["example.com", "www.wikipedia.org", "www.youtube.com"]
+    domains = [domain_only(domain)] if domain else list(RU_DOMAINS)
     probes = [probe_domain(x) for x in domains]
     body = {"schema": 1, "event": "site_report" if domain else "sample",
-            "time": int(time.time()), "manager": "0.2.20", "platform": "linux",
+            "time": int(time.time()), "manager": "0.2.21", "platform": "linux",
             "probes": probes, "ipsec": "installed"}
     endpoint("/report", body)
     save({**stored(), "last_report": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()) + " UTC"})
@@ -447,6 +451,7 @@ def report(domain=None):
 def monitor():
     while stored().get("telemetry") and connected():
         try:
+            flush_test_report()
             report()
         except Exception:
             pass
@@ -455,7 +460,9 @@ def monitor():
 
 def dispatch(api, settings, action, target=""):
     try:
-        if action == "prepare": prepare()
+        if action == "global-test": start_global_test()
+        elif action == "cancel-test": cmd(["systemctl", "stop", TEST_UNIT],check=False)
+        elif action == "prepare": prepare()
         elif action == "import": import_profile(settings, target)
         elif action == "on": on(api, settings)
         elif action == "off": off()
@@ -466,3 +473,253 @@ def dispatch(api, settings, action, target=""):
         else: raise ValueError("Неизвестная экспериментальная операция.")
     except (ValueError, RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
         raise api.VPNError(str(exc)) from exc
+
+
+TEST_UNIT = 'evgenium-ikev2-global-test.service'
+TEST_STATE = pathlib.Path('/var/lib/vpn-manager/starfive-test.json')
+PENDING_TEST = ROOT / 'pending-global-test.json'
+RU_DOMAINS = ('yandex.ru', 'mail.ru', 'www.rt.ru')
+TEST_BLOCK = hashlib.shake_256(b'evgenium-starfive-integrity-v1').digest(65536)
+
+
+def test_status():
+    try:
+        state=json.loads(TEST_STATE.read_text())
+    except (OSError,ValueError):
+        return {'phase':'idle','progress':0}
+    if state.get('phase')=='running' and cmd(['systemctl','is-active',TEST_UNIT],check=False).returncode:
+        state.update(phase='interrupted',message='Тест прерван. Защита VPN сохраняется.')
+    return state
+
+
+def test_state(**fields):
+    try: state=json.loads(TEST_STATE.read_text())
+    except (OSError,ValueError): state={}
+    write(TEST_STATE,json.dumps({**state,**fields},ensure_ascii=False))
+
+
+def test_request(path, data=None, headers=None, timeout=30):
+    context=ssl.create_default_context(cafile=str(ROOT/'ca.pem'))
+    context.load_cert_chain(str(ROOT/'client.pem'),str(ROOT/'client-key.pem'))
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),urllib.request.HTTPSHandler(context=context))
+    request=urllib.request.Request(HEALTH+path,data=data,headers=headers or {})
+    return opener.open(request,timeout=timeout)
+
+
+def expected_hash(size, offset=0):
+    digest=hashlib.sha256()
+    while size:
+        part=TEST_BLOCK[offset % len(TEST_BLOCK):][:min(size,len(TEST_BLOCK)-offset % len(TEST_BLOCK))]
+        digest.update(part); size-=len(part); offset+=len(part)
+    return digest.hexdigest()
+
+
+def transfer_download(size, offset=0, limit=None):
+    start=time.monotonic(); received=0; digest=hashlib.sha256()
+    headers={'Range':f'bytes={offset}-'} if offset else {}
+    with test_request('/blob?size='+str(size),headers=headers) as response:
+        if response.status != (206 if offset else 200): raise RuntimeError('Unexpected file response')
+        if offset and response.headers.get('Content-Range')!=f'bytes {offset}-{size-1}/{size}':
+            raise RuntimeError('Invalid resume range')
+        total=size-offset if limit is None else min(limit,size-offset)
+        while received<total:
+            block=response.read(min(65536,total-received))
+            if not block: break
+            digest.update(block); received+=len(block)
+        integrity=received==total and digest.hexdigest()==expected_hash(total,offset)
+        if limit is None:
+            integrity=integrity and response.headers.get('X-Content-SHA256')==digest.hexdigest()
+    elapsed=max(time.monotonic()-start,0.001)
+    return {'kind':'download','ok':integrity,'integrity':integrity,'bytes':received,
+            'size':size,'offset':offset,'elapsed_ms':round(elapsed*1000),
+            'mbps_milli':round(received*8/elapsed/1000)}
+
+
+def transfer_upload(size):
+    data=(TEST_BLOCK*((size+len(TEST_BLOCK)-1)//len(TEST_BLOCK)))[:size]
+    start=time.monotonic()
+    with test_request('/upload',data=data,headers={'Content-Type':'application/octet-stream'}) as response:
+        reply=json.loads(response.read(4096))
+    elapsed=max(time.monotonic()-start,0.001)
+    integrity=reply.get('received_bytes')==size and reply.get('sha256')==hashlib.sha256(data).hexdigest()
+    return {'kind':'upload','ok':integrity,'integrity':integrity,'bytes':size,
+            'elapsed_ms':round(elapsed*1000),'mbps_milli':round(size*8/elapsed/1000)}
+
+
+def ping_test(size=56, count=20):
+    cp=cmd(['ping','-n','-M','do','-s',str(size),'-c',str(count),'-i','0.2','-W','2','10.77.0.1'],check=False,timeout=45)
+    packets=re.search(r'(\d+) packets transmitted, (\d+) received',cp.stdout)
+    sent,received=(int(x) for x in packets.groups()) if packets else (count,0)
+    row={'kind':'ping','ok':received==sent,'sent':sent,'received':received,
+         'loss_milli':round((sent-received)*100000/max(sent,1)),'size':size}
+    rtt=re.search(r'= ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+) ms',cp.stdout)
+    if rtt:
+        row.update({key:round(float(value)*1000) for key,value in zip(
+            ('rtt_min_us','rtt_avg_us','rtt_max_us','rtt_mdev_us'),rtt.groups())})
+    return row
+
+
+def transport_counters():
+    result={'kind':'counters','ok':True}
+    try:
+        raw=swan('--list-sas','--raw').stdout
+        for source,target in (('bytes-in','bytes_in'),('bytes-out','bytes_out'),('packets-in','packets_in'),('packets-out','packets_out')):
+            result[target]=sum(int(x) for x in re.findall(r'\b'+source+r'=(\d+)',raw))
+        lines=pathlib.Path('/proc/net/snmp').read_text().splitlines()
+        for first,second in zip(lines,lines[1:]):
+            if first.startswith('Tcp:') and second.startswith('Tcp:'):
+                values=dict(zip(first.split()[1:],second.split()[1:]))
+                if 'RetransSegs' in values:
+                    result['retrans_segments']=int(values['RetransSegs'])
+                    result['out_segments']=int(values['OutSegs'])
+        result['xfrm_errors']=sum(int(x.split()[1]) for x in pathlib.Path('/proc/net/xfrm_stat').read_text().splitlines())
+    except (OSError,ValueError,RuntimeError): result['ok']=False
+    return result
+
+
+def flush_test_report():
+    if not stored().get('telemetry') or not PENDING_TEST.exists() or not connected(): return False
+    body=json.loads(PENDING_TEST.read_text())
+    endpoint('/report',body)
+    PENDING_TEST.unlink()
+    test_state(sent=True,message='Тест завершён. Отчёт доставлен на StarFive.')
+    return True
+
+
+def start_global_test():
+    if cmd(['systemctl','is-active',TEST_UNIT],check=False).returncode==0:
+        raise RuntimeError('Глобальный тест уже выполняется.')
+    if not stored().get('telemetry'): raise RuntimeError('Включи временную диагностику для отправки результатов.')
+    if not connected() or not active_guard(): raise RuntimeError('Сначала подключись к StarFive.')
+    if endpoint('/health').get('test_api')!=1: raise RuntimeError('Сначала обновить тестовый сервис StarFive.')
+    if PENDING_TEST.exists() and not flush_test_report(): raise RuntimeError('Ожидает отправки предыдущий отчёт.')
+    unit='''[Unit]
+Description=Evgenium global VPN stability test
+After=evgenium-ikev2.service
+[Service]
+Type=exec
+ExecStart=/usr/local/sbin/vpnctl internal-starfive-global-test
+StandardOutput=null
+StandardError=null
+TimeoutStopSec=12
+RuntimeMaxSec=900
+Restart=no
+'''
+    write(pathlib.Path('/etc/systemd/system')/TEST_UNIT,unit,0o644)
+    cmd(['systemctl','daemon-reload'])
+    test_state(phase='running',progress=0,sent=False,message='Запуск теста',run=os.urandom(12).hex(),started=int(time.time()))
+    try: cmd(['systemctl','start',TEST_UNIT])
+    except Exception:
+        test_state(phase='failed',message='Не удалось запустить тест.'); raise
+    print('Глобальный тест запущен в фоне. Интернет несколько раз прервётся; kill switch остаётся включённым.')
+
+
+class TestCancelled(Exception): pass
+
+
+def run_global_test():
+    import signal
+    from concurrent.futures import ThreadPoolExecutor
+    def cancel(*_): raise TestCancelled()
+    old=signal.signal(signal.SIGTERM,cancel)
+    records=[]; outcome='completed'; started=time.monotonic()
+    def stage(progress,message): test_state(phase='running',progress=progress,message=message)
+    def measure(kind,operation,**fields):
+        before=time.monotonic()
+        try: row=operation()
+        except TestCancelled: raise
+        except Exception: row={'kind':kind,'ok':False}
+        row.setdefault('elapsed_ms',round((time.monotonic()-before)*1000))
+        row['at_ms']=round((time.monotonic()-started)*1000)
+        row.update(fields); records.append(row); return row
+    def reconnect(restart=False):
+        before=time.monotonic()
+        if restart:
+            candidates=socket.getaddrinfo('yandex.ru',443,socket.AF_INET,socket.SOCK_STREAM)
+            address=next(x[4][0] for x in candidates if ipaddress.ip_address(x[4][0]).is_global)
+            cmd(['systemctl','stop',UNIT])
+            leaked=False
+            try:
+                with socket.create_connection((address,443),timeout=2): leaked=True
+            except OSError: pass
+            records.append({'kind':'guard','ok':active_guard() and not leaked})
+            # Never remove the guard, even during a deliberate daemon failure.
+            if not active_guard(): raise RuntimeError('Guard missing')
+            cmd(['systemctl','start',UNIT])
+            swan('--load-creds','--file',ROOT/'connection.conf')
+            swan('--load-conns','--file',ROOT/'connection.conf')
+        else:
+            swan('--terminate','--ike','starfive',check=False)
+        swan('--initiate','--child','starfive-net',timeout=55)
+        good=connected() and endpoint('/health').get('service')=='evgenium-starfive'
+        return {'kind':'daemon_restart' if restart else 'reconnect','ok':good,'elapsed_ms':round((time.monotonic()-before)*1000)}
+    def control():
+        with test_request('/control',timeout=45) as response: data=json.loads(response.read(16384))
+        records.append({'kind':'server_control','ok':True,**data['metrics']})
+        for probe in data['probes']: records.append({'kind':'server_control',**probe})
+        return {'kind':'health','ok':True}
+    try:
+        cmd(['systemctl','stop',MONITOR],check=False)
+        # Use Russian DNS for this test even on a session created by an older client.
+        if not (ROOT/'resolv-backup').exists() and not (ROOT/'resolved-backup.json').exists(): set_dns()
+        elif (ROOT/'resolved-backup.json').exists():
+            interface=json.loads((ROOT/'resolved-backup.json').read_text())['iface']
+            cmd(['resolvectl','dns',interface,'77.88.8.8','77.88.8.1'])
+        else:
+            pathlib.Path('/etc/resolv.conf').write_text('nameserver 77.88.8.8\nnameserver 77.88.8.1\noptions timeout:2 attempts:2\n')
+        stage(3,'Контрольные замеры StarFive и российских сервисов')
+        measure('health',control); records.append(transport_counters())
+        for domain in RU_DOMAINS: measure('ru_probe',lambda d=domain:{'kind':'ru_probe',**probe_domain(d)})
+        stage(12,'Задержки, потери и размеры пакетов')
+        for size in (56,1200,1360): measure('ping',lambda s=size:ping_test(s))
+        for attempt in range(12):
+            before=time.monotonic()
+            measure('health',lambda:{'kind':'health','ok':endpoint('/health').get('service')=='evgenium-starfive'})
+            time.sleep(0.25)
+        stage(25,'Скачивание и отправка файлов: проверка SHA-256')
+        for size in (65536,1048576,8388608,33554432): measure('download',lambda s=size:transfer_download(s))
+        for size in (524288,4194304): measure('upload',lambda s=size:transfer_upload(s))
+        stage(40,'Докачка файла после разрыва и переподключения')
+        measure('resume',lambda:{**transfer_download(8388608,limit=3145728),'kind':'resume'})
+        measure('reconnect',reconnect)
+        measure('resume',lambda:{**transfer_download(8388608,offset=3145728),'kind':'resume'})
+        stage(50,'Параллельная передача в обе стороны')
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures=[pool.submit(transfer_download,8388608),pool.submit(transfer_download,8388608),pool.submit(transfer_upload,4194304)]
+            for future in futures: measure('parallel',lambda f=future:{**f.result(),'kind':'parallel'})
+        stage(62,'Длительная передача: до 60 секунд / 64 МиБ')
+        load_started=time.monotonic(); until=load_started+60; count=0
+        while time.monotonic()<until and count<16:
+            measure('download',lambda:transfer_download(4194304)); count+=1
+            measure('health',lambda:{'kind':'health','ok':endpoint('/health').get('service')=='evgenium-starfive'})
+            time.sleep(max(0,load_started+count*4-time.monotonic()))
+        stage(75,'Простой 45 секунд и восстановление активности')
+        time.sleep(45)
+        measure('idle',lambda:{'kind':'idle','ok':endpoint('/health').get('service')=='evgenium-starfive','elapsed_ms':45000})
+        stage(82,'Пять повторных подключений')
+        for attempt in range(5):
+            measure('reconnect',reconnect,attempt=attempt+1); time.sleep(1)
+        stage(92,'Перезапуск VPN-демона с сохранением kill switch')
+        measure('daemon_restart',lambda:reconnect(True))
+        records.append({'kind':'guard','ok':active_guard()})
+        stage(96,'Заключительные замеры и отправка отчёта')
+        for domain in RU_DOMAINS: measure('ru_probe',lambda d=domain:{'kind':'ru_probe',**probe_domain(d)})
+        measure('health',control); records.append(transport_counters())
+        if any(not x.get('ok') for x in records): outcome='failed'
+    except TestCancelled: outcome='cancelled'
+    except Exception: outcome='failed'
+    finally:
+        # Recover only our daemon/session. Never disable the guard or restore direct traffic.
+        if outcome!='cancelled' and not connected():
+            try: measure('daemon_restart',lambda:reconnect(True))
+            except Exception: pass
+        body={'schema':1,'event':'global_test','manager':'0.2.21','run':test_status().get('run',os.urandom(12).hex()),'outcome':outcome,'duration_ms':round((time.monotonic()-started)*1000),'records':records[:256]}
+        write(PENDING_TEST,json.dumps(body))
+        test_state(phase=outcome,progress=100,sent=False,duration_s=round(time.monotonic()-started),
+                   passed=sum(bool(x.get('ok')) for x in records),failed=sum(not x.get('ok') for x in records),
+                   message='Отчёт сохранён. Ожидает отправки через StarFive.')
+        try: flush_test_report()
+        except Exception: pass
+        if connected() and stored().get('telemetry'):
+            cmd(['systemctl','start',MONITOR],check=False)
+        signal.signal(signal.SIGTERM,old)
