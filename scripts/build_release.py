@@ -68,10 +68,24 @@ def manifest(v: str, digest: str, channel: str) -> dict:
     }
 
 
+def sync_embedded_sources() -> None:
+    import base64
+    p = SRC / "vpnctl.py"
+    text = p.read_text()
+    for constant, filename in (("STANDALONE_GUI_PY_B64", "evgenium_gui.py"), ("STANDALONE_GUI_QML_B64", "evgenium_gui.qml"), ("STARFIVE_EXPERIMENTAL_PY_B64", "starfive_experimental.py")):
+        value = base64.b64encode((SRC / filename).read_bytes()).decode()
+        replacement = constant + " = (\n" + "".join("    " + repr(value[i:i+96]) + "\n" for i in range(0, len(value), 96)) + ")\n"
+        text, count = re.subn(r"^" + constant + r" = (?:\(.*?\)|[^\n]+)\n", lambda _: replacement, text, count=1, flags=re.M | re.S)
+        if count != 1:
+            raise SystemExit("missing embedded asset " + constant)
+    p.write_text(text)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--channels", nargs="+", default=["stable"], choices=["stable", "testing"])
     args = ap.parse_args()
+    sync_embedded_sources()
     v = version()
     archive, digest = build_archive(v)
     UPDATE.mkdir(parents=True, exist_ok=True)
