@@ -30,7 +30,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.23"
+MANAGER_VERSION = "0.2.24"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -1530,15 +1530,21 @@ def run(args, *, check=True, capture=False, input_text=None, timeout=None, user=
     cmd = [str(x) for x in args]
     if user:
         cmd = ["/usr/bin/runuser", "-u", user, "--"] + cmd
-    return subprocess.run(
-        cmd,
-        check=check,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
-        input=input_text,
-        timeout=timeout,
-    )
+    default_timeout = timeout is None
+    if default_timeout:
+        timeout = 60
+    try:
+        return subprocess.run(
+            cmd, check=check, text=True,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE if capture else None,
+            input=input_text, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        if not default_timeout:
+            raise
+        fail(f"Команда {pathlib.Path(str(args[0])).name} не завершилась за {timeout} с. "
+             "Операция прервана; повтори команду или проверь vpn status.")
 
 def ensure_root() -> None:
     if os.geteuid() != 0:
@@ -5104,9 +5110,54 @@ def self_test() -> None:
         globals()["_diagnostic_cmd"] = old_diagnostic_cmd
     print("self-test OK")
 
+@contextlib.contextmanager
+def operation_guard(args, settings, *, wait_seconds=15, deadline_seconds=600):
+    if not operation_requires_lock(args):
+        yield
+        return
+    ensure_runtime(settings)
+    # Never unlink a flock file: that would let two operations lock different inodes.
+    with open(RUNTIME_DIR / "operation.lock", "a+") as lock:
+        until = time.monotonic() + wait_seconds
+        announced = False
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if not announced:
+                    info("Жду завершения другой операции VPN (до 15 с)...")
+                    announced = True
+                if time.monotonic() >= until:
+                    lock.seek(0)
+                    owner = lock.read(512).strip()
+                    fail("Другая операция VPN ещё выполняется. "
+                         f"Владелец: {owner or 'старая версия, PID неизвестен'}. "
+                         "Повтори позже. Если старая версия зависла, перезагрузи ноутбук "
+                         "и выполни vpn update. Блокировка не удалена.")
+                time.sleep(0.1)
+        lock.seek(0)
+        lock.truncate()
+        lock.write(json.dumps({"pid": os.getpid(), "command": args.cmd,
+                               "started": int(time.time())}))
+        lock.flush()
+        def expired(signum, frame):
+            fail("Операция VPN превысила лимит 10 минут и прервана. "
+                 "Проверь vpn status и повтори команду.")
+        old_handler = signal.signal(signal.SIGALRM, expired)
+        signal.alarm(deadline_seconds)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+            lock.seek(0)
+            lock.truncate()
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
 def operation_requires_lock(args) -> bool:
     return (args.cmd in {"on", "switch", "off", "toggle", "reload-rules",
-                         "core-update", "update", "manager-rollback", "direct",
+                         "core-update", "update", "internal-after-update", "internal-sync", "manager-rollback", "direct",
                          "app", "port", "diagnostic", "experimental"}
             or (args.cmd == "ui" and getattr(args, "ui_cmd", None) == "action"))
 
@@ -5925,16 +5976,11 @@ def main(argv=None) -> int:
 
     ensure_root()
     settings = load_settings()
-    # CLI, GUI and autostart must not stop/reconfigure each other's core midway
-    # through a transaction. Status/read-only commands remain lock-free.
-    operation_lock = None
-    if operation_requires_lock(args):
-        ensure_runtime(settings)
-        operation_lock = open(RUNTIME_DIR / "operation.lock", "a")
-        try:
-            fcntl.flock(operation_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            fail("Другая операция VPN ещё выполняется. Дождись её завершения; Xray не изменён.")
+    with operation_guard(args, settings):
+        return dispatch_command(args, settings)
+
+
+def dispatch_command(args, settings) -> int:
     ensure_direct_apps_file(settings)
 
     if args.cmd == "experimental":

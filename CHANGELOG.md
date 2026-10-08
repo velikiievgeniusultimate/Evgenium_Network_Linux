@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.24
+
+- Bound external manager commands to 60 seconds and mutating operations to 10 minutes so stalled calls release the operation lock.
+- Wait up to 15 seconds for concurrent operations and report the owning PID/command instead of an unexplained immediate rejection.
+- Explicitly release locks on success and exceptions, and serialize post-update migration and internal sync. Never remove an occupied lock file.
+- Publish portable archives to stable and testing for `vpn update`. Already hung older versions may require one reboot before updating.
+
 ## 0.2.22
 
 - Экспериментальная диагностика доставляет ошибки подключения и глобальные тесты напрямую по HTTPS/mTLS, включая режим с активным kill switch и неработающим IKEv2.
