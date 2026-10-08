@@ -2,7 +2,7 @@
 
 A small Linux VPN manager built around **Xray-core**.
 
-Current stable release: **0.2.19** (completed startup transaction release).
+Current stable release: **0.2.25** (Estonian DNS through the VPN).
 
 Existing supported Arch/Fedora installations on x86_64 and aarch64 receive the
 same architecture-independent manager archive through `vpn update`. Xray-core
@@ -274,3 +274,28 @@ VPN подключён: проверь `vpn status` и повтори нужну
 ноутбук, затем сразу выполни `vpn update` и проверь `vpn version` (0.2.24).
 Не удаляй `/run/vpn-manager/operation.lock`: это может запустить две операции
 одновременно.
+
+### DNS protection (0.2.25)
+
+While Xray VPN is active, host TCP/UDP DNS on port 53 is redirected to
+loopback-only Xray listeners and forwarded through the selected VLESS node to
+CERT-EE (`dns.cert.ee`, pinned IPv4 `195.80.119.99`). With the Estonia profile,
+DNS leaves through the Estonian VPN exit. CERT-EE is an Estonian public resolver
+with malicious-domain filtering: https://www.ria.ee/kuberturvalisus/kuberintsidentide-kasitlemine-cert-ee/cert-ee-tooriistad-ja-teenused
+
+The capture covers router DNS, IPv6 link-local DNS and local resolver stubs,
+regardless of application/LAN DIRECT exceptions. The dedicated Xray UID is
+excluded to avoid transport recursion. Existing unredirected DNS connections
+are blocked on physical interfaces. DNS is encrypted inside VLESS up to the
+exit; the exit-to-CERT-EE hop uses normal DNS. Browser-configured DoH/DoT and
+forwarded container traffic are outside this port-53 host capture.
+
+`vpn update` installs the new archive and rebuilds an active Xray configuration.
+Capture is enabled only after the DNS listeners start. `vpn off` removes it;
+rollback to an older config removes capture if that config has no listeners.
+No changes to `/etc/resolv.conf` are made. The systemd resolver cache is flushed
+on activation and shutdown. Restart a browser if it retains its own old DNS cache.
+
+The kernel must provide nftables NAT (`nft_chain_nat`, `nft_redir`). A preflight
+checks this before switching an active VPN. Reboot first if a rolling distro
+has replaced the running kernel modules during an upgrade.

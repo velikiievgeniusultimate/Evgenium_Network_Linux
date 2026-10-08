@@ -1,3 +1,11 @@
+## 0.2.25 — 2026-10-09
+
+- Fix ISP/router DNS escaping an active Xray tunnel through LAN exceptions.
+- Redirect host IPv4/IPv6 TCP/UDP port-53 queries to loopback-only DNS listeners; forward only through VLESS to Estonian CERT-EE.
+- Block stale physical DNS connections, flush systemd DNS cache, and enable interception only after the listeners start.
+- Preserve shutdown and legacy rollback behavior without editing resolv.conf.
+- Publish stable/testing archives for `vpn update`; add DNS routing and startup regression tests.
+
 # Changelog
 
 ## 0.2.24
