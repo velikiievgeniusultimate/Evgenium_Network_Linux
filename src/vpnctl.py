@@ -30,7 +30,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.24"
+MANAGER_VERSION = "0.2.25"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -52,6 +52,9 @@ TUN_NAME = "xraytun"
 NFT_TABLE = "vpn_guard"
 DIRECT_SOCKS_HOST = "127.0.0.1"
 DIRECT_SOCKS_PORT = 18443
+DNS_PROXY_PORT = 18553
+# dns.cert.ee: CERT-EE public recursive resolver, reached only through VLESS.
+ESTONIA_DNS_IP = "195.80.119.99"
 
 PLASMOID_ID = "com.evgenium.network"
 APP_ICON_NAME = "evgenium-network"
@@ -2764,7 +2767,8 @@ def _nft_port_set(ports: set[int]) -> str:
 
 def render_guard_rules(uid: int, tcp_ports: set[int], udp_ports: set[int],
                        waydroid_direct: bool = False,
-                       waydroid_iface: str = WAYDROID_IFACE) -> str:
+                       waydroid_iface: str = WAYDROID_IFACE,
+                       dns_redirect: bool = False) -> str:
     server_mark = f"0x{SERVER_BYPASS_MARK:08x}"
     waydroid_mark = f"0x{WAYDROID_BYPASS_MARK:08x}"
     mark_lines = []
@@ -2791,6 +2795,15 @@ def render_guard_rules(uid: int, tcp_ports: set[int], udp_ports: set[int],
         "",
         f"table inet {NFT_TABLE} {{",
     ]
+    if dns_redirect:
+        # Intercept even loopback stubs and link-local IPv6 router DNS. This
+        # precedes LAN / DIRECT exceptions and does not modify resolv.conf.
+        lines.extend([
+            "  chain dns_output {",
+            "    type nat hook output priority dstnat; policy accept;",
+            f"    meta skuid != {uid} meta l4proto {{ tcp, udp }} th dport 53 redirect to :{DNS_PROXY_PORT}",
+            "  }",
+        ])
     if mark_lines:
         lines.extend([
             "",
@@ -2816,6 +2829,10 @@ def render_guard_rules(uid: int, tcp_ports: set[int], udp_ports: set[int],
         '    oifname "lo" accept',
         f"    meta skuid {uid} accept",
     ])
+    if dns_redirect:
+        lines.append(
+            f'    oifname != "{TUN_NAME}" meta l4proto {{ tcp, udp }} th dport 53 reject with icmpx type admin-prohibited'
+        )
     if allow_lines:
         lines.extend(["", *allow_lines])
     lines.extend([
@@ -3162,6 +3179,12 @@ def build_config(settings: dict, nodes: list[dict], selected: int = 0,
         "outboundTag": "direct",
         "ruleTag": "local-direct-socks",
     }]
+    rules.append({
+        "type": "field",
+        "inboundTag": ["dns-in-v4", "dns-in-v6"],
+        "outboundTag": "proxy",
+        "ruleTag": "estonia-dns-always-vpn",
+    })
     if apps:
         rules.append({
             "type": "field",
@@ -3231,6 +3254,19 @@ def build_config(settings: dict, nodes: list[dict], selected: int = 0,
                     "udp": True,
                 },
             },
+            *[{
+                "tag": tag,
+                "listen": address,
+                "port": DNS_PROXY_PORT,
+                "protocol": "dokodemo-door",
+                "settings": {
+                    "address": ESTONIA_DNS_IP,
+                    "port": 53,
+                    "network": "tcp,udp",
+                    "followRedirect": False,
+                },
+            } for tag, address in (("dns-in-v4", "127.0.0.1"),
+                                   ("dns-in-v6", "::1"))],
         ],
         "outbounds": [
             proxy,
@@ -3287,6 +3323,36 @@ def nft_exists() -> bool:
         check=False, capture=True
     ).returncode == 0
 
+def runtime_has_dns_proxy() -> bool:
+    try:
+        cfg = json.loads(RUNTIME_CONFIG.read_bytes())
+        tags = {entry.get("tag") for entry in cfg.get("inbounds", [])}
+        return {"dns-in-v4", "dns-in-v6"} <= tags
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def flush_dns_cache() -> None:
+    resolver = shutil.which("resolvectl")
+    if resolver:
+        run([resolver, "flush-caches"], check=False, capture=True)
+
+
+def validate_dns_guard(settings: dict) -> None:
+    # Check kernel NAT support before touching a working core/guard. In
+    # particular Arch can have a running kernel whose modules were replaced.
+    rules = render_guard_rules(int(settings["xray_uid"]), set(), set(),
+                               dns_redirect=True)
+    if nft_exists():
+        rules = f"delete table inet {NFT_TABLE}\n" + rules
+    cp = run(["/usr/bin/nft", "--check", "-f", "-"], check=False,
+             capture=True, input_text=rules)
+    if cp.returncode:
+        fail("Ядро не поддерживает перехват DNS (nftables NAT). "
+             "Если ядро недавно обновлялось, перезагрузи ПК и повтори vpn update / vpn on. "
+             "Действующее соединение не переключалось.\n" + (cp.stderr or ""))
+
+
 def install_guard(settings: dict) -> None:
     uid = int(settings["xray_uid"])
     tcp_ports, udp_ports = _server_port_sets(settings)
@@ -3295,6 +3361,7 @@ def install_guard(settings: dict) -> None:
         uid, tcp_ports, udp_ports,
         waydroid_direct=waydroid_direct,
         waydroid_iface=WAYDROID_IFACE,
+        dns_redirect=runtime_has_dns_proxy(),
     )
 
     script = rules
@@ -3318,6 +3385,7 @@ def remove_guard() -> None:
     )
     _delete_server_bypass_policy_rules()
     _delete_waydroid_bypass_policy_rules()
+    flush_dns_cache()
 
 def service_active() -> bool:
     return run(
@@ -3957,7 +4025,11 @@ def validate_candidate(settings: dict, cfg: dict) -> None:
 def start_config(settings: dict, cfg: dict) -> bool:
     write_runtime_config(settings, cfg)
     run(["/usr/bin/systemctl", "start", SERVICE], check=False, capture=True)
-    return wait_service()
+    ready = wait_service()
+    if ready:
+        install_guard(settings)
+        flush_dns_cache()
+    return ready
 
 def activate(settings: dict, path: pathlib.Path) -> None:
     if starfive.active_guard():
@@ -3977,6 +4049,7 @@ def activate(settings: dict, path: pathlib.Path) -> None:
     if reuse_v4:
         info("Использую проверенный IPv4-only режим этого конфига (IPv6 BLOCKED).")
     validate_candidate(settings, cfg_dual)
+    validate_dns_guard(settings)
 
     if was_active and old_config is not None:
         try:
@@ -4083,6 +4156,8 @@ def activate(settings: dict, path: pathlib.Path) -> None:
         os.chmod(RUNTIME_CONFIG, 0o640)
         run(["/usr/bin/systemctl", "start", SERVICE], check=False)
         if wait_service():
+            install_guard(settings)
+            flush_dns_cache()
             healthy, _ = health_check_v4()
             if healthy:
                 save_state(old_state)

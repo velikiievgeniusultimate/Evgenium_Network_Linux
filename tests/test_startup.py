@@ -47,7 +47,7 @@ class StartupTests(unittest.TestCase):
              patch.object(vpn,'service_active',return_value=True), \
              patch.object(vpn,'load_profile',return_value=[{'name':'node','server_ip':'192.0.2.1'}]), \
              patch.object(vpn,'build_config',return_value={'a':1}), \
-             patch.object(vpn,'validate_candidate'), \
+             patch.object(vpn,'validate_candidate'), patch.object(vpn,'validate_dns_guard'), \
              patch.object(vpn,'save_state'), \
              patch.object(vpn,'health_check_v4',return_value=(True,'1.1.1.1')), \
              patch.object(vpn,'stop_core') as stop, \
@@ -95,7 +95,7 @@ class StartupTests(unittest.TestCase):
              patch.object(vpn,'service_active',return_value=True), \
              patch.object(vpn,'load_profile',return_value=[{'name':'node','server_ip':'192.0.2.1'}]), \
              patch.object(vpn,'build_config',return_value={'a':1}), \
-             patch.object(vpn,'validate_candidate'), \
+             patch.object(vpn,'validate_candidate'), patch.object(vpn,'validate_dns_guard'), \
              patch.object(vpn,'save_state') as save, \
              patch.object(vpn,'health_check_v4',return_value=(True,'1.1.1.1')), \
              patch.object(vpn,'stop_core') as stop, \
@@ -118,7 +118,7 @@ class StartupTests(unittest.TestCase):
              patch.object(vpn,'service_active',return_value=False), \
              patch.object(vpn,'load_profile',return_value=[{}]), \
              patch.object(vpn,'build_config',return_value=cfg) as build, \
-             patch.object(vpn,'validate_candidate'), \
+             patch.object(vpn,'validate_candidate'), patch.object(vpn,'validate_dns_guard'), \
              patch.object(vpn,'health_check_v4',return_value=(True,'1.1.1.1')), \
              patch.object(vpn,'save_state'), \
              patch.object(vpn,'install_guard'), \

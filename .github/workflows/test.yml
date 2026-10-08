@@ -232,3 +232,8 @@ jobs:
           PY
       - name: Isolated userspace IPsec transfer, reconnect and kill switch
         run: sudo python3 scripts/selftest_userspace.py
+      - name: Isolated DNS interception (IPv4/IPv6 TCP/UDP)
+        run: |
+          sudo modprobe nft_chain_nat
+          sudo modprobe nft_redir
+          sudo unshare -n python3 scripts/selftest_dns.py
