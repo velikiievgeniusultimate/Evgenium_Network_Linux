@@ -1,3 +1,11 @@
+## 0.2.26 — 2026-10-09
+
+- Check the cold-start route and server TCP reachability before changing TUN, DNS or kill-switch rules. Leave another VPN untouched and report the transport failure directly.
+- Add `vpn diagnostic probe [CONFIG]`: authenticated, temporary localhost SOCKS checks of the actual VLESS profile through the current network, without changing routes, DNS, services or firewall rules.
+- Save `startup_failed` diagnostics when `vpn diagnostic on` cannot activate the tunnel; preserve the original activation error.
+- Bound probe lifetime, clean up the child process and temporary credentials on failure, and publish stable/testing archives for `vpn update`.
+- This release improves safe startup and diagnosis; it does not claim to remove ISP blocking or repair an unreachable remote endpoint.
+
 ## 0.2.25 — 2026-10-09
 
 - Fix ISP/router DNS escaping an active Xray tunnel through LAN exceptions.

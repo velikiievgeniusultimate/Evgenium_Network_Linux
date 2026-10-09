@@ -11,6 +11,11 @@ vpn = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(vpn)
 
 class StartupTests(unittest.TestCase):
+    def setUp(self):
+        preflight = patch.object(vpn, "startup_preflight")
+        preflight.start()
+        self.addCleanup(preflight.stop)
+
     def test_temporary_failure_does_not_restart_core(self):
         with patch.object(vpn, '_health_check_v4_once', side_effect=[(False,'timeout'), (True,'1.1.1.1'), (True,'1.1.1.1')]), patch.object(vpn, 'stop_core') as stop:
             self.assertTrue(vpn.health_check_v4()[0])

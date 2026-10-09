@@ -299,3 +299,29 @@ on activation and shutdown. Restart a browser if it retains its own old DNS cach
 The kernel must provide nftables NAT (`nft_chain_nat`, `nft_redir`). A preflight
 checks this before switching an active VPN. Reboot first if a rolling distro
 has replaced the running kernel modules during an upgrade.
+
+### Safe startup and isolated diagnostics (0.2.26)
+
+`vpn on` checks the cold-start route and TCP connection to the selected server
+before changing TUN routes, DNS interception or kill-switch rules. If another
+VPN carries the server route, startup refuses without switching that connection.
+An unreachable TCP endpoint is reported as a transport problem before DNS can
+be redirected into an unusable tunnel. Switching an already-active Evgenium
+profile retains the existing guarded transaction and rollback behavior.
+
+To inspect a profile while keeping the current VPN running:
+
+```bash
+vpn diagnostic probe Estonia
+```
+
+The probe starts a temporary authenticated SOCKS listener on a random localhost
+port, verifies HTTPS through VLESS against two providers, then stops the child
+and removes its temporary credentials. It never installs a TUN, edits routes,
+changes DNS, starts/stops the system VPN service, or modifies firewall rules.
+Success confirms the profile over the current network; it does not validate TUN,
+UDP DNS, or direct ISP reachability when another VPN is active.
+
+If `vpn diagnostic on Estonia` fails to activate, `vpn diagnostic report` now
+includes a `startup_failed` record instead of omitting the failed startup.
+This update does not bypass an unreachable or blocked server automatically.
