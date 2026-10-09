@@ -30,7 +30,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.25"
+MANAGER_VERSION = "0.2.26"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -3914,7 +3914,13 @@ def cmd_diagnostic_mark(note_parts: list[str]) -> None:
 def cmd_diagnostic_on(settings: dict, config: str | None) -> None:
     stop_diagnostic()
     profile_path = choose_config(settings, config)
-    activate(settings, profile_path)
+    try:
+        activate(settings, profile_path)
+    except VPNError as exc:
+        with contextlib.suppress(OSError, VPNError):
+            _diagnostic_write({"event": "startup_failed", "profile": profile_path.name,
+                               "error": str(exc)[:3000], "network": _diagnostic_network_fingerprint()})
+        raise
     node = load_profile(profile_path)[0]
     stream = node.get("outbound", {}).get("streamSettings", {})
     xhttp = stream.get("xhttpSettings", {})
@@ -4031,6 +4037,109 @@ def start_config(settings: dict, cfg: dict) -> bool:
         flush_dns_cache()
     return ready
 
+def startup_preflight(nodes: list[dict]) -> None:
+    """Cold-start transport check before changing routes, DNS or the guard."""
+    node = nodes[0]
+    server = node["outbound"]["settings"]
+    host, port = str(node["server_ip"]), int(server["port"])
+    iface = default_physical_iface()
+    if not iface:
+        fail("Нет физического default route. Сеть не переключалась.")
+    cp = run(["/usr/bin/ip", "-j", "-4", "route", "get", host],
+             check=False, capture=True)
+    try:
+        route_iface = json.loads(cp.stdout)[0]["dev"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        fail("Не удалось определить маршрут к VPN-серверу. Сеть не переключалась.")
+    if route_iface != iface or pathlib.Path(f"/sys/class/net/{iface}/tun_flags").exists():
+        fail(f"Маршрут к VPN-серверу идёт через {route_iface}, default interface: {iface}. "
+             "Возможно, включён другой VPN. Действующее соединение не переключалось. "
+             "Для проверки профиля без смены сети: vpn diagnostic probe.")
+    error = ""
+    for _ in range(2):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(3)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, iface.encode() + b"\0")
+            sock.connect((host, port))
+            return
+        except OSError as exc:
+            error = str(exc)
+        finally:
+            sock.close()
+    fail(f"TCP к VPN-серверу {host}:{port} через {iface} недоступен до запуска TUN: {error}. "
+         "Маршруты, DNS и kill switch не менялись. "
+         "Проверь сервер/порт/доступ провайдера; vpn diagnostic probe проверяет профиль через текущую сеть.")
+
+
+def _proxy_health_check(port: int, password: str) -> tuple[bool, str]:
+    results = []
+    for url in ("https://api.ipify.org", "https://checkip.amazonaws.com"):
+        try:
+            cp = run(["/usr/bin/curl", "-4", "--proxy", f"socks5h://127.0.0.1:{port}",
+                      "--proxy-user", f"probe:{password}", "--noproxy", "", "--fail",
+                      "--silent", "--show-error", "--connect-timeout", "5", "--max-time", "12", url],
+                     check=False, capture=True, timeout=13)
+            address = ipaddress.ip_address((cp.stdout or "").strip()) if cp.returncode == 0 else None
+            good = address is not None and address.version == 4
+            results.append((good, str(address) if good else f"curl exit {cp.returncode}"))
+        except (ValueError, subprocess.TimeoutExpired):
+            results.append((False, "timeout or invalid IPv4 response"))
+    return all(good for good, _ in results), "; ".join(detail for _, detail in results)
+
+
+def cmd_diagnostic_probe(settings: dict, config: str | None) -> None:
+    """An authenticated local SOCKS probe; never invokes TUN/guard/service operations."""
+    path = choose_config(settings, config)
+    node = load_profile(path)[0]
+    password = os.urandom(24).hex()
+    listener = socket.socket()
+    try:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    finally:
+        listener.close()
+    cfg = {"log": {"loglevel": "none"}, "inbounds": [{
+        "listen": "127.0.0.1", "port": port, "protocol": "socks",
+        "settings": {"auth": "password", "accounts": [{"user": "probe", "pass": password}], "udp": False},
+    }], "outbounds": [node["outbound"]]}
+    ensure_runtime(settings)
+    with tempfile.TemporaryDirectory(prefix="probe-", dir=RUNTIME_DIR) as td:
+        candidate = pathlib.Path(td) / "config.json"
+        candidate.write_text(json.dumps(cfg))
+        candidate.chmod(0o600)
+        test_config(candidate)
+        proc = subprocess.Popen([str(XRAY), "run", "-config", str(candidate)],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.monotonic() + 3
+            while True:
+                if proc.poll() is not None:
+                    fail("Изолированный Xray завершился; системный VPN не переключался.")
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                        break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        fail("Изолированный SOCKS не запустился; системный VPN не переключался.")
+                    time.sleep(0.05)
+            good, detail = _proxy_health_check(port, password)
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
+    with contextlib.suppress(OSError, VPNError):
+        _diagnostic_write({"event": "isolated_probe", "profile": path.name, "success": good, "detail": detail})
+    if not good:
+        fail("Профиль не прошёл изолированную HTTPS-проверку через текущую сеть: " + detail +
+             ". Маршруты, DNS и kill switch не менялись.")
+    ok(f"Профиль {path.name} работает через текущую сеть: {detail}")
+    info("Проверены VLESS и HTTPS через SOCKS; TUN и прямой доступ провайдера этим тестом не проверяются.")
+
+
 def activate(settings: dict, path: pathlib.Path) -> None:
     if starfive.active_guard():
         fail("Сначала выключи экспериментальный StarFive VPN.")
@@ -4050,6 +4159,8 @@ def activate(settings: dict, path: pathlib.Path) -> None:
         info("Использую проверенный IPv4-only режим этого конфига (IPv6 BLOCKED).")
     validate_candidate(settings, cfg_dual)
     validate_dns_guard(settings)
+    if not was_active:
+        startup_preflight(nodes)
 
     if was_active and old_config is not None:
         try:
@@ -5231,6 +5342,8 @@ def operation_guard(args, settings, *, wait_seconds=15, deadline_seconds=600):
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 def operation_requires_lock(args) -> bool:
+    if args.cmd == "diagnostic" and getattr(args, "diagnostic_cmd", None) == "probe":
+        return False
     return (args.cmd in {"on", "switch", "off", "toggle", "reload-rules",
                          "core-update", "update", "internal-after-update", "internal-sync", "manager-rollback", "direct",
                          "app", "port", "diagnostic", "experimental"}
@@ -5979,6 +6092,7 @@ def main(argv=None) -> int:
     pdiag = sub.add_parser("diagnostic")
     pdiagsub = pdiag.add_subparsers(dest="diagnostic_cmd")
     pdiagon = pdiagsub.add_parser("on"); pdiagon.add_argument("config", nargs="?")
+    pdprobe = pdiagsub.add_parser("probe"); pdprobe.add_argument("config", nargs="?")
     pdiagsub.add_parser("off")
     pdiagsub.add_parser("status")
     pdiagsub.add_parser("report")
@@ -6083,6 +6197,7 @@ def dispatch_command(args, settings) -> int:
   vpn toggle
   vpn status [--ip|--json]
   vpn test
+  vpn diagnostic probe [CONFIG]  # без переключения сети
   vpn diagnostic on [CONFIG]
   vpn diagnostic status|report|off
   vpn route DOMAIN|IP
@@ -6159,6 +6274,9 @@ Local DIRECT SOCKS (only localhost, only while VPN is on):
         return 0
 
     if args.cmd == "diagnostic":
+        if args.diagnostic_cmd == "probe":
+            cmd_diagnostic_probe(settings, args.config)
+            return 0
         if args.diagnostic_cmd == "on":
             cmd_diagnostic_on(settings, args.config)
             return 0
