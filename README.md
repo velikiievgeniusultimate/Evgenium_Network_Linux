@@ -325,3 +325,28 @@ UDP DNS, or direct ISP reachability when another VPN is active.
 If `vpn diagnostic on Estonia` fails to activate, `vpn diagnostic report` now
 includes a `startup_failed` record instead of omitting the failed startup.
 This update does not bypass an unreachable or blocked server automatically.
+
+### DNS/startup and desktop fixes (0.2.27)
+
+A profile can successfully carry HTTPS while the DNS server used by host capture
+is unreachable. In the reproduced failure, `195.80.119.99` did not answer UDP or
+TCP through Estonia, while three other `dns.cert.ee` addresses did. Version
+0.2.27 uses Xray's native DNS resolver with parallel CERT-EE backends for A/AAAA
+queries, instead of depending on that one endpoint. Other query types are
+forwarded to the primary CERT-EE address through the same VLESS outbound.
+No system/LAN resolver fallback is used. DNS is carried through the selected VPN
+exit; no change to `/etc/resolv.conf` is made.
+
+`vpn diagnostic probe Estonia` now checks the actual DNS handler over UDP and
+TCP as well as VLESS/HTTPS. This still does not replace a full TUN test.
+
+GUI polling cannot unlock an in-flight action or erase its error. Polling is
+bounded and nonoverlapping; an action has a client watchdog. CLI/GUI/widget
+share operation state, and core process startup alone is not reported as a
+completed VPN connection. Unexpected activation failures/interrupts trigger
+bounded recovery, with the previous guard retained if warm recovery fails.
+
+After `vpn update`, close and reopen an already-running GUI. Existing Plasma
+applet objects keep their loaded QML: reload the widget/Plasma panel when no VPN
+operation is running to use the updated widget code. The updater does not
+restart the desktop automatically or disconnect another VPN.

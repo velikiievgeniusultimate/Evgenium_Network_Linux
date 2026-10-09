@@ -33,13 +33,14 @@ def find_qml_runtime() -> str | None:
     return shutil.which("qml6") or shutil.which("qml-qt6") or shutil.which("qml")
 
 
-def run_vpn(args: list[str], timeout: int = 360) -> str:
+def run_vpn(args: list[str], timeout: int = 750) -> str:
     cp = subprocess.run(
         [VPN, *args],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
+        stdin=subprocess.DEVNULL,
         check=False,
     )
     if cp.returncode != 0:
@@ -49,7 +50,7 @@ def run_vpn(args: list[str], timeout: int = 360) -> str:
 
 
 def run_vpn_json(args: list[str]) -> dict:
-    raw = run_vpn(args)
+    raw = run_vpn(args, timeout=10)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -98,8 +99,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Evgenium-Token")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            # The UI may have closed or canceled a poll. Do not emit a second response.
+            return
 
     def _authorized(self) -> bool:
         return secrets.compare_digest(
