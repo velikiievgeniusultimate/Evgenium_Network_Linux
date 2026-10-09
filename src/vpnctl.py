@@ -30,7 +30,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.2.27"
+MANAGER_VERSION = "0.2.28"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -54,8 +54,8 @@ DIRECT_SOCKS_HOST = "127.0.0.1"
 DIRECT_SOCKS_PORT = 18443
 DNS_PROXY_PORT = 18553
 # dns.cert.ee: CERT-EE public recursive resolver, reached only through VLESS.
-ESTONIA_DNS_IP = "46.226.143.83"
-ESTONIA_DNS_SERVERS = ("46.226.143.83", "195.80.119.101", "46.226.143.86", "195.80.119.99")
+DNS_PRIMARY_IP = "1.1.1.1"
+DNS_UPSTREAM_SERVERS = ("1.1.1.1", "8.8.8.8")
 
 PLASMOID_ID = "com.evgenium.network"
 APP_ICON_NAME = "evgenium-network"
@@ -3219,12 +3219,12 @@ def dns_config() -> dict:
     return {"tag": "vpn-dns-upstream", "queryStrategy": "UseIP",
             "enableParallelQuery": True,
             "servers": [{"address": address, "port": 53, "timeoutMs": 1500}
-                        for address in ESTONIA_DNS_SERVERS]}
+                        for address in DNS_UPSTREAM_SERVERS]}
 
 
 def dns_outbound() -> dict:
     return {"tag": "dns-out", "protocol": "dns",
-            "settings": {"rewriteAddress": ESTONIA_DNS_IP, "rewritePort": 53,
+            "settings": {"rewriteAddress": DNS_PRIMARY_IP, "rewritePort": 53,
                          "rules": [{"qType": "1,28", "action": "hijack"}, {"action": "direct"}]},
             "proxySettings": {"tag": "proxy"}}
 
@@ -3337,7 +3337,7 @@ def build_config(settings: dict, nodes: list[dict], selected: int = 0,
                 "port": DNS_PROXY_PORT,
                 "protocol": "dokodemo-door",
                 "settings": {
-                    "address": ESTONIA_DNS_IP,
+                    "address": DNS_PRIMARY_IP,
                     "port": 53,
                     "network": "tcp,udp",
                     "followRedirect": False,
@@ -4219,7 +4219,7 @@ def cmd_diagnostic_probe(settings: dict, config: str | None) -> None:
         "listen": "127.0.0.1", "port": port, "protocol": "socks",
         "settings": {"auth": "password", "accounts": [{"user": "probe", "pass": password}], "udp": False},
     }, {"tag": "dns-in-v4", "listen": "127.0.0.1", "port": dns_port,
-        "protocol": "dokodemo-door", "settings": {"address": ESTONIA_DNS_IP, "port": 53, "network": "tcp,udp"}}],
+        "protocol": "dokodemo-door", "settings": {"address": DNS_PRIMARY_IP, "port": 53, "network": "tcp,udp"}}],
         "dns": dns_config(), "routing": {"rules": dns_routing_rules()},
         "outbounds": [node["outbound"], dns_outbound()]}
     ensure_runtime(settings)
@@ -4256,7 +4256,7 @@ def cmd_diagnostic_probe(settings: dict, config: str | None) -> None:
     with contextlib.suppress(OSError, VPNError):
         _diagnostic_write({"event": "isolated_probe", "profile": path.name, "success": good, "detail": detail})
     if not good:
-        fail("Профиль не прошёл изолированную HTTPS-проверку через текущую сеть: " + detail +
+        fail("Профиль не прошёл изолированную проверку HTTPS/DNS через текущую сеть: " + detail +
              ". Маршруты, DNS и kill switch не менялись.")
     ok(f"Профиль {path.name} работает через текущую сеть: {detail}")
     info("Проверены VLESS, HTTPS и DNS UDP/TCP через текущую сеть; TUN и прямой доступ провайдера не проверяются.")

@@ -279,15 +279,15 @@ VPN подключён: проверь `vpn status` и повтори нужну
 
 While Xray VPN is active, host TCP/UDP DNS on port 53 is redirected to
 loopback-only Xray listeners and forwarded through the selected VLESS node to
-CERT-EE (`dns.cert.ee`, pinned IPv4 `195.80.119.99`). With the Estonia profile,
-DNS leaves through the Estonian VPN exit. CERT-EE is an Estonian public resolver
-with malicious-domain filtering: https://www.ria.ee/kuberturvalisus/kuberintsidentide-kasitlemine-cert-ee/cert-ee-tooriistad-ja-teenused
+independent Cloudflare (`1.1.1.1`) and Google (`8.8.8.8`) resolvers for A/AAAA.
+Other query types use Cloudflare through the same VLESS node. With the Estonia
+profile, all captured DNS leaves through the Estonian VPN exit.
 
 The capture covers router DNS, IPv6 link-local DNS and local resolver stubs,
 regardless of application/LAN DIRECT exceptions. The dedicated Xray UID is
 excluded to avoid transport recursion. Existing unredirected DNS connections
 are blocked on physical interfaces. DNS is encrypted inside VLESS up to the
-exit; the exit-to-CERT-EE hop uses normal DNS. Browser-configured DoH/DoT and
+exit; the exit-to-resolver hop uses normal DNS. Browser-configured DoH/DoT and
 forwarded container traffic are outside this port-53 host capture.
 
 `vpn update` installs the new archive and rebuilds an active Xray configuration.
@@ -325,6 +325,14 @@ UDP DNS, or direct ISP reachability when another VPN is active.
 If `vpn diagnostic on Estonia` fails to activate, `vpn diagnostic report` now
 includes a `startup_failed` record instead of omitting the failed startup.
 This update does not bypass an unreachable or blocked server automatically.
+
+### Independent DNS providers (0.2.28)
+
+After the initial fix, all four CERT-EE addresses became unreachable through
+the Estonia exit while Cloudflare and Google still answered over UDP and TCP.
+The active pool now spans those two providers rather than one service.
+A/AAAA requests run in parallel; other types use the reachable Cloudflare primary.
+All requests remain tunneled through VLESS. CERT-EE filtering is no longer used.
 
 ### DNS/startup and desktop fixes (0.2.27)
 

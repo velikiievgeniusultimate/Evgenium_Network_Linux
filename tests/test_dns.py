@@ -22,7 +22,7 @@ class DnsTests(unittest.TestCase):
             listeners = [i for i in cfg['inbounds'] if i['tag'].startswith('dns-in-')]
             self.assertEqual({i['listen'] for i in listeners}, {'127.0.0.1', '::1'})
             for inbound in listeners:
-                self.assertEqual(inbound['settings']['address'], vpn.ESTONIA_DNS_IP)
+                self.assertEqual(inbound['settings']['address'], vpn.DNS_PRIMARY_IP)
                 self.assertEqual(inbound['settings']['network'], 'tcp,udp')
                 matches = [r for r in cfg['routing']['rules'] if inbound['tag'] in r.get('inboundTag', [])]
                 self.assertEqual(matches[0]['outboundTag'], 'dns-out')
@@ -32,7 +32,7 @@ class DnsTests(unittest.TestCase):
 
     def test_resolver_pool_and_non_ip_queries_never_use_direct_egress(self):
         cfg = self.config(False)
-        self.assertGreaterEqual(len(cfg['dns']['servers']), 3)
+        self.assertGreaterEqual(len(cfg['dns']['servers']), 2)
         self.assertTrue(cfg['dns']['enableParallelQuery'])
         self.assertNotIn('localhost', [s['address'] for s in cfg['dns']['servers']])
         upstream = next(r for r in cfg['routing']['rules'] if 'vpn-dns-upstream' in r.get('inboundTag', []))
