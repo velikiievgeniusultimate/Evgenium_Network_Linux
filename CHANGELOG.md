@@ -1,3 +1,9 @@
+## 0.2.28
+
+- Fix recurring DNS startup failure when every CERT-EE address is unavailable: use independently operated Cloudflare and Google resolvers through VLESS. A/AAAA use the parallel pool; other types use Cloudflare. CERT-EE filtering is no longer applied.
+- Clarify isolated probe failure messages to identify HTTPS/DNS checks.
+- Verified the previous CERT-EE pool times out while both replacement providers answer UDP and TCP through the same Estonia profile.
+
 ## 0.2.27
 
 - Fix reproducible startup DNS failure: replace the single nonresponsive CERT-EE endpoint with the native Xray resolver and parallel CERT-EE IPv4 backends. A/AAAA requests can fail over; other query types remain forwarded to the primary CERT-EE endpoint through VLESS. No system/LAN DNS fallback is added.

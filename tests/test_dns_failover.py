@@ -37,7 +37,7 @@ class DnsFailoverTests(unittest.TestCase):
         reserve = socket.socket(); reserve.bind(('127.0.0.1', 0)); port = reserve.getsockname()[1]; reserve.close()
         dns = vpn.dns_config()
         dns['servers'] = [{'address':'127.0.0.2','port':upstream_port,'timeoutMs':250}, {'address':'127.0.0.1','port':upstream_port,'timeoutMs':250}]
-        cfg = {'log':{'loglevel':'none'},'dns':dns,'inbounds':[{'tag':'dns-in-v4','listen':'127.0.0.1','port':port,'protocol':'dokodemo-door','settings':{'address':vpn.ESTONIA_DNS_IP,'port':53,'network':'tcp,udp'}}], 'outbounds':[{'tag':'proxy','protocol':'freedom'},vpn.dns_outbound()], 'routing':{'rules':vpn.dns_routing_rules()}}
+        cfg = {'log':{'loglevel':'none'},'dns':dns,'inbounds':[{'tag':'dns-in-v4','listen':'127.0.0.1','port':port,'protocol':'dokodemo-door','settings':{'address':vpn.DNS_PRIMARY_IP,'port':53,'network':'tcp,udp'}}], 'outbounds':[{'tag':'proxy','protocol':'freedom'},vpn.dns_outbound()], 'routing':{'rules':vpn.dns_routing_rules()}}
         try:
             with tempfile.TemporaryDirectory() as td:
                 p=Path(td)/'config.json'; p.write_text(json.dumps(cfg))
