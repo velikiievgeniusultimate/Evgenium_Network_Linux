@@ -75,10 +75,10 @@ class TransportTests(unittest.TestCase):
             proc.terminate.assert_called_once(); proc.wait.assert_called_once()
             self.assertEqual(list(Path(td).iterdir()), [])
             config = configs[0]
-            self.assertEqual(len(config['inbounds']), 1)
+            self.assertEqual(len(config['inbounds']), 2)
             self.assertEqual(config['inbounds'][0]['protocol'], 'socks')
             self.assertEqual(config['inbounds'][0]['settings']['auth'], 'password')
-            self.assertEqual(config['outbounds'], [NODE['outbound']])
+            self.assertEqual(config['outbounds'][0], NODE['outbound'])
 
     def test_probe_does_not_wait_for_mutating_operation_lock(self):
         self.assertFalse(vpn.operation_requires_lock(SimpleNamespace(cmd='diagnostic', diagnostic_cmd='probe')))

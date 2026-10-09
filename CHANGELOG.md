@@ -1,3 +1,13 @@
+## 0.2.27
+
+- Fix reproducible startup DNS failure: replace the single nonresponsive CERT-EE endpoint with the native Xray resolver and parallel CERT-EE IPv4 backends. A/AAAA requests can fail over; other query types remain forwarded to the primary CERT-EE endpoint through VLESS. No system/LAN DNS fallback is added.
+- Extend the isolated profile probe with UDP/TCP checks through the actual DNS handler; HTTPS-only success no longer hides that handler failing.
+- Keep GUI poll state separate from mutating action state, preserve action errors across polls, prevent overlapping polls, and add a client watchdog. Match backend action lifetime to the manager deadline and handle disconnected poll clients without recursive BrokenPipe responses.
+- Publish shared operation/connecting state for CLI, GUI and Plasma. Do not present a starting core as a completed VPN connection; block concurrent UI toggles and show the widget's remembered profile.
+- Roll back unexpected activation exceptions and interrupts; bound exceptional cleanup to 60 seconds, preserve guarded warm rollback, and refuse restarting a running core when its previous config is unavailable.
+- Align GUI profile activation and widget toggle with the console diagnostic-monitor lifecycle.
+- Add regression tests, real pinned-Xray DNS failover integration, real Qt tests for poll/action races and missing responses, and stable/testing update archives.
+
 ## 0.2.26 — 2026-10-09
 
 - Check the cold-start route and server TCP reachability before changing TUN, DNS or kill-switch rules. Leave another VPN untouched and report the transport failure directly.

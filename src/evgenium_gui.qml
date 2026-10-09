@@ -28,6 +28,7 @@ C.ApplicationWindow {
     property int pageIndex: 0
     property bool busy: false
     property string errorText: ""
+    property string pollErrorText: ""
     property var state: ({})
     property var runningApps: []
     readonly property var experiment: root.state.experimental || ({})
@@ -37,69 +38,94 @@ C.ApplicationWindow {
     readonly property string apiPort: args.length >= 3 ? String(args[args.length - 2]) : "0"
     readonly property string apiBase: "http://127.0.0.1:" + apiPort
 
-    function parseReply(xhr, callback) {
-        let payload = null
-        try {
-            payload = JSON.parse(String(xhr.responseText || "{}"))
-        } catch (e) {
-            errorText = "Не удалось разобрать ответ локального API"
-            busy = false
-            return
-        }
-        if (xhr.status < 200 || xhr.status >= 300 || !payload.ok) {
-            errorText = String(payload.error || ("HTTP " + xhr.status))
-            busy = false
-            return
-        }
-        errorText = ""
-        if (callback)
-            callback(payload)
-    }
+    property bool statePending: false
+    property bool runningPending: false
 
-    function api(method, path, body, callback) {
+    function api(method, path, body, callback, operation) {
         const xhr = new XMLHttpRequest()
+        let finished = false
+        const timer = requestTimer.createObject(root)
+        function finish(error, payload) {
+            if (finished)
+                return
+            finished = true
+            timer.stop()
+            timer.destroy()
+            if (path === "/api/state") root.statePending = false
+            if (path === "/api/running") root.runningPending = false
+            if (operation) {
+                root.busy = false
+                root.errorText = error || ""
+            } else {
+                root.pollErrorText = error || ""
+            }
+            if (!error && callback) callback(payload)
+        }
+        timer.interval = operation ? 780000 : 12000
+        timer.triggered.connect(function() {
+            finish(operation ? "Ответ операции не получен. Проверь vpn status перед повторным переключением." : "Опрос состояния не завершился", null)
+            xhr.abort()
+        })
         xhr.open(method, apiBase + path, true)
         xhr.setRequestHeader("X-Evgenium-Token", apiToken)
         if (body !== null)
             xhr.setRequestHeader("Content-Type", "application/json; charset=utf-8")
         xhr.onreadystatechange = function() {
-            if (xhr.readyState === XMLHttpRequest.DONE)
-                root.parseReply(xhr, callback)
+            if (xhr.readyState !== XMLHttpRequest.DONE || finished)
+                return
+            let payload = null
+            try { payload = JSON.parse(String(xhr.responseText || "{}")) }
+            catch (e) { finish("Не удалось разобрать ответ локального API", null); return }
+            if (xhr.status < 200 || xhr.status >= 300 || !payload.ok) {
+                finish(String(payload.error || ("HTTP " + xhr.status)), null)
+                return
+            }
+            finish(null, payload)
         }
+        timer.start()
         xhr.send(body === null ? null : JSON.stringify(body))
     }
 
+    Component {
+        id: requestTimer
+        Timer { repeat: false }
+    }
+
     function refreshState() {
+        if (statePending) return
+        statePending = true
         api("GET", "/api/state", null, function(payload) {
             root.state = payload.state || ({})
         })
     }
 
     function refreshRunning() {
+        if (runningPending) return
+        runningPending = true
         api("GET", "/api/running", null, function(payload) {
             root.runningApps = (payload.running && payload.running.applications) || []
         })
     }
 
     function action(payload) {
-        if (busy)
+        if (busy || Boolean(state.connecting))
             return
         busy = true
         api("POST", "/api/action", payload, function(_reply) {
             root.busy = false
             root.refreshState()
             root.refreshRunning()
-        })
+        }, true)
     }
 
     function toggleVpn() {
-        if (busy)
+        if (busy || Boolean(state.connecting))
             return
         busy = true
         api("POST", "/api/toggle", {}, function(payload) {
             root.busy = false
             root.state = payload.state || ({})
-        })
+        }, true)
     }
 
     function filteredRunning() {
@@ -295,7 +321,7 @@ C.ApplicationWindow {
                             Layout.fillWidth: true
                             spacing: 1
                             C.Label {
-                                text: Boolean(root.state.active) ? "VPN включён" : "VPN выключен"
+                                text: root.state.connecting ? "Выполняется операция VPN…" : (Boolean(root.state.active) ? "VPN включён" : "VPN выключен")
                                 color: "white"
                                 font.pixelSize: 12
                                 font.weight: Font.DemiBold
@@ -339,7 +365,7 @@ C.ApplicationWindow {
                     }
                     FlatButton {
                         label: "Обновить"
-                        enabledButton: !root.busy
+                        enabledButton: !root.busy && !Boolean(root.state.connecting)
                         onClicked: {
                             root.refreshState()
                             if (root.pageIndex === 2)
@@ -349,7 +375,7 @@ C.ApplicationWindow {
                 }
 
                 Rectangle {
-                    visible: root.errorText.length > 0
+                    visible: root.errorText.length > 0 || root.pollErrorText.length > 0
                     Layout.fillWidth: true
                     implicitHeight: errorLabel.implicitHeight + 22
                     radius: 10
@@ -360,7 +386,7 @@ C.ApplicationWindow {
                         id: errorLabel
                         anchors.fill: parent
                         anchors.margins: 11
-                        text: root.errorText
+                        text: root.errorText || root.pollErrorText
                         color: root.bad
                         wrapMode: Text.WordWrap
                         font.pixelSize: 12
@@ -420,7 +446,7 @@ C.ApplicationWindow {
                                         label: Boolean(root.state.active) ? "Выключить VPN" : "Включить VPN"
                                         primary: !Boolean(root.state.active)
                                         danger: Boolean(root.state.active)
-                                        enabledButton: !root.busy
+                                        enabledButton: !root.busy && !Boolean(root.state.connecting)
                                         onClicked: root.toggleVpn()
                                     }
                                 }
@@ -657,7 +683,7 @@ C.ApplicationWindow {
                                             FlatButton {
                                                 label: Boolean(profileRow.modelData.active) ? "Активен" : "Подключить"
                                                 primary: !Boolean(profileRow.modelData.active)
-                                                enabledButton: !root.busy && !Boolean(profileRow.modelData.active)
+                                                enabledButton: !root.busy && !Boolean(root.state.connecting) && !Boolean(profileRow.modelData.active)
                                                 onClicked: root.action({
                                                     action: "profile_activate",
                                                     target: String(profileRow.modelData.name || "")
@@ -701,7 +727,7 @@ C.ApplicationWindow {
                                     FlatButton {
                                         label: "Добавить вручную"
                                         primary: true
-                                        enabledButton: !root.busy && manualApp.text.trim().length > 0
+                                        enabledButton: !root.busy && !Boolean(root.state.connecting) && manualApp.text.trim().length > 0
                                         onClicked: {
                                             root.action({action: "app_add", target: manualApp.text.trim()})
                                             manualApp.clear()
@@ -739,7 +765,7 @@ C.ApplicationWindow {
                                             FlatButton {
                                                 label: "Удалить"
                                                 danger: true
-                                                enabledButton: !root.busy
+                                                enabledButton: !root.busy && !Boolean(root.state.connecting)
                                                 onClicked: root.action({action: "app_remove", target: String(modelData)})
                                             }
                                         }
@@ -757,7 +783,7 @@ C.ApplicationWindow {
                             RowLayout {
                                 Layout.fillWidth: true
                                 C.Label { text: "Запущены сейчас"; color: root.textMain; font.pixelSize: 15; font.weight: Font.Bold; Layout.fillWidth: true }
-                                FlatButton { label: "Обновить список"; enabledButton: !root.busy; onClicked: root.refreshRunning() }
+                                FlatButton { label: "Обновить список"; enabledButton: !root.busy && !Boolean(root.state.connecting); onClicked: root.refreshRunning() }
                             }
 
                             C.TextField {
@@ -812,7 +838,7 @@ C.ApplicationWindow {
                                             FlatButton {
                                                 label: Boolean(modelData.excluded) ? "Уже исключено" : "Исключить"
                                                 primary: !Boolean(modelData.excluded)
-                                                enabledButton: !root.busy && !Boolean(modelData.excluded)
+                                                enabledButton: !root.busy && !Boolean(root.state.connecting) && !Boolean(modelData.excluded)
                                                 onClicked: root.action({action: "app_add", target: String(modelData.exe || modelData.name || "")})
                                             }
                                         }
@@ -846,7 +872,7 @@ C.ApplicationWindow {
                                     FlatButton {
                                         label: "Добавить исключение"
                                         primary: true
-                                        enabledButton: !root.busy && directTarget.text.trim().length > 0
+                                        enabledButton: !root.busy && !Boolean(root.state.connecting) && directTarget.text.trim().length > 0
                                         onClicked: {
                                             root.action({action: "direct_add", target: directTarget.text.trim()})
                                             directTarget.clear()
@@ -880,7 +906,7 @@ C.ApplicationWindow {
                                                 RowLayout {
                                                     anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 7
                                                     C.Label { Layout.fillWidth: true; text: String(modelData); color: root.textMain; elide: Text.ElideRight }
-                                                    FlatButton { label: "Удалить"; danger: true; enabledButton: !root.busy; onClicked: root.action({action: "direct_remove", target: String(modelData)}) }
+                                                    FlatButton { label: "Удалить"; danger: true; enabledButton: !root.busy && !Boolean(root.state.connecting); onClicked: root.action({action: "direct_remove", target: String(modelData)}) }
                                                 }
                                             }
                                             C.ScrollBar.vertical: C.ScrollBar {}
@@ -909,7 +935,7 @@ C.ApplicationWindow {
                                                 RowLayout {
                                                     anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 7
                                                     C.Label { Layout.fillWidth: true; text: String(modelData); color: root.textMain; elide: Text.ElideMiddle }
-                                                    FlatButton { label: "Удалить"; danger: true; enabledButton: !root.busy; onClicked: root.action({action: "direct_remove", target: String(modelData)}) }
+                                                    FlatButton { label: "Удалить"; danger: true; enabledButton: !root.busy && !Boolean(root.state.connecting); onClicked: root.action({action: "direct_remove", target: String(modelData)}) }
                                                 }
                                             }
                                             C.ScrollBar.vertical: C.ScrollBar {}
@@ -956,7 +982,7 @@ C.ApplicationWindow {
                                         FlatButton {
                                             label: "Добавить"
                                             primary: true
-                                            enabledButton: !root.busy && portField.text.length > 0
+                                            enabledButton: !root.busy && !Boolean(root.state.connecting) && portField.text.length > 0
                                             onClicked: {
                                                 const p = Number(portField.text)
                                                 if (p >= 1 && p <= 65535 && p === Math.floor(p)) {
@@ -991,7 +1017,7 @@ C.ApplicationWindow {
                                             }
                                             C.Label { Layout.fillWidth: true; text: String(modelData.port || ""); color: root.textMain; font.pixelSize: 16; font.weight: Font.DemiBold }
                                             FlatButton {
-                                                label: "Удалить"; danger: true; enabledButton: !root.busy
+                                                label: "Удалить"; danger: true; enabledButton: !root.busy && !Boolean(root.state.connecting)
                                                 onClicked: root.action({action: "port_remove", port: Number(modelData.port), proto: String(modelData.proto)})
                                             }
                                         }
@@ -1106,7 +1132,7 @@ C.ApplicationWindow {
                                     }
                                     FlatButton {
                                         label: root.experiment.available ? "IKEv2 готов" : "Подготовить IKEv2"
-                                        enabledButton: !root.busy && !Boolean(root.experiment.available) && !Boolean(root.state.active)
+                                        enabledButton: !root.busy && !Boolean(root.state.connecting) && !Boolean(root.experiment.available) && !Boolean(root.state.active)
                                         onClicked: root.action({action: "experimental_prepare"})
                                     }
                                     C.Label { Layout.fillWidth: true; text: root.experiment.configured ? "Персональный профиль установлен" : "Нужен персональный профиль устройства"; color: root.experiment.configured ? root.good : root.textMuted; wrapMode: Text.WordWrap }
@@ -1115,7 +1141,7 @@ C.ApplicationWindow {
                                         C.TextField { id: starfiveProfile; Layout.fillWidth: true; placeholderText: "~/Vpn/StarFive/profile.json"; selectByMouse: true }
                                         FlatButton {
                                             label: "Импортировать"
-                                            enabledButton: !root.busy && !Boolean(root.experiment.guard)
+                                            enabledButton: !root.busy && !Boolean(root.state.connecting) && !Boolean(root.experiment.guard)
                                             onClicked: root.action({action: "experimental_import", target: starfiveProfile.text.trim() || "~/Vpn/StarFive/profile.json"})
                                         }
                                     }
@@ -1136,7 +1162,7 @@ C.ApplicationWindow {
                                     }
                                     FlatButton {
                                         label: "Отправить диагностику напрямую"
-                                        enabledButton: !root.busy && Boolean(root.experiment.configured) && Boolean(root.experiment.telemetry)
+                                        enabledButton: !root.busy && !Boolean(root.state.connecting) && Boolean(root.experiment.configured) && Boolean(root.experiment.telemetry)
                                         onClicked: root.action({action: "experimental_send-diagnostics"})
                                     }
                                     C.Label {
@@ -1152,7 +1178,7 @@ C.ApplicationWindow {
                                         C.TextField { id: starfiveDomain; Layout.fillWidth: true; placeholderText: "Домен неработающего сайта, например yandex.ru"; selectByMouse: true }
                                         FlatButton {
                                             label: "Проверить и отправить"
-                                            enabledButton: !root.busy && Boolean(root.experiment.active) && Boolean(root.experiment.telemetry) && starfiveDomain.text.trim().length > 0
+                                            enabledButton: !root.busy && !Boolean(root.state.connecting) && Boolean(root.experiment.active) && Boolean(root.experiment.telemetry) && starfiveDomain.text.trim().length > 0
                                             onClicked: root.action({action: "experimental_report", target: starfiveDomain.text.trim()})
                                         }
                                     }
@@ -1166,12 +1192,12 @@ C.ApplicationWindow {
                                     RowLayout {
                                         FlatButton {
                                             label: "Глобальный тест"
-                                            enabledButton: !root.busy && Boolean(root.experiment.active) && Boolean(root.experiment.telemetry) && String((root.experiment.test || {}).phase) !== "running"
+                                            enabledButton: !root.busy && !Boolean(root.state.connecting) && Boolean(root.experiment.active) && Boolean(root.experiment.telemetry) && String((root.experiment.test || {}).phase) !== "running"
                                             onClicked: root.action({action: "experimental_global-test"})
                                         }
                                         FlatButton {
                                             label: "Остановить тест"
-                                            enabledButton: !root.busy && String((root.experiment.test || {}).phase) === "running"
+                                            enabledButton: !root.busy && !Boolean(root.state.connecting) && String((root.experiment.test || {}).phase) === "running"
                                             onClicked: root.action({action: "experimental_cancel-test"})
                                         }
                                     }

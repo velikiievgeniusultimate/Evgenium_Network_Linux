@@ -22,13 +22,25 @@ class DnsTests(unittest.TestCase):
             listeners = [i for i in cfg['inbounds'] if i['tag'].startswith('dns-in-')]
             self.assertEqual({i['listen'] for i in listeners}, {'127.0.0.1', '::1'})
             for inbound in listeners:
-                self.assertEqual(inbound['settings']['address'], '195.80.119.99')
+                self.assertEqual(inbound['settings']['address'], vpn.ESTONIA_DNS_IP)
                 self.assertEqual(inbound['settings']['network'], 'tcp,udp')
                 matches = [r for r in cfg['routing']['rules'] if inbound['tag'] in r.get('inboundTag', [])]
-                self.assertEqual(matches[0]['outboundTag'], 'proxy')
+                self.assertEqual(matches[0]['outboundTag'], 'dns-out')
             rules = cfg['routing']['rules']
             tags = [r['ruleTag'] for r in rules]
             self.assertLess(tags.index('estonia-dns-always-vpn'), tags.index('user-direct-applications'))
+
+    def test_resolver_pool_and_non_ip_queries_never_use_direct_egress(self):
+        cfg = self.config(False)
+        self.assertGreaterEqual(len(cfg['dns']['servers']), 3)
+        self.assertTrue(cfg['dns']['enableParallelQuery'])
+        self.assertNotIn('localhost', [s['address'] for s in cfg['dns']['servers']])
+        upstream = next(r for r in cfg['routing']['rules'] if 'vpn-dns-upstream' in r.get('inboundTag', []))
+        self.assertEqual(upstream['outboundTag'], 'proxy')
+        outbound = next(o for o in cfg['outbounds'] if o['tag'] == 'dns-out')
+        self.assertEqual(outbound['proxySettings']['tag'], 'proxy')
+        self.assertEqual(outbound['settings']['rules'][-1]['action'], 'direct')
+        # "direct" is the DNS protocol action; proxySettings still tunnels it through VLESS.
 
     def test_capture_both_transports_and_families_before_lan_exceptions(self):
         rules = vpn.render_guard_rules(999, set(), set(), dns_redirect=True)
