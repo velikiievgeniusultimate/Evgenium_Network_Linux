@@ -1,0 +1,87 @@
+{
+  "scope": "notebook namespace -> StarFive on same home LAN; no external ISP-segment claim",
+  "cipher": "ESP ChaCha20-Poly1305",
+  "checks": [
+    {
+      "test": "working_vpn_and_dns_unchanged_before",
+      "ok": true
+    },
+    {
+      "test": "ipsec_sa_and_health",
+      "ok": true
+    },
+    {
+      "test": "five_authenticated_health_requests",
+      "ok": true,
+      "latency_ms": [
+        81.37,
+        98.89,
+        80.72,
+        99.01,
+        89.87
+      ]
+    },
+    {
+      "test": "ping_56",
+      "ok": true,
+      "packet_loss_percent": 0.0
+    },
+    {
+      "test": "ping_1200",
+      "ok": true,
+      "packet_loss_percent": 0.0
+    },
+    {
+      "test": "ping_1360",
+      "ok": true,
+      "packet_loss_percent": 0.0
+    },
+    {
+      "test": "eight_mib_integrity",
+      "ok": true,
+      "bytes": 8388608
+    },
+    {
+      "test": "one_mib_upload_integrity",
+      "ok": true
+    },
+    {
+      "test": "dns_and_https_yandex.ru",
+      "ok": true,
+      "http_status": "302"
+    },
+    {
+      "test": "dns_and_https_mail.ru",
+      "ok": true,
+      "http_status": "302"
+    },
+    {
+      "test": "dns_and_https_www.rt.ru",
+      "ok": true,
+      "http_status": "302"
+    },
+    {
+      "test": "no_plaintext_escape_10.77.0.1",
+      "ok": true
+    },
+    {
+      "test": "no_plaintext_escape_1.1.1.1",
+      "ok": true
+    },
+    {
+      "test": "no_plaintext_escape_192.168.0.163",
+      "ok": true
+    },
+    {
+      "test": "automatic_reconnect_after_sa_loss",
+      "ok": true,
+      "elapsed_s": 10.23
+    },
+    {
+      "test": "working_vpn_and_dns_unchanged_after",
+      "ok": true
+    }
+  ],
+  "passed": 16,
+  "failed": 0
+}

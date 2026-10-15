@@ -33,14 +33,15 @@ def find_qml_runtime() -> str | None:
     return shutil.which("qml6") or shutil.which("qml-qt6") or shutil.which("qml")
 
 
-def run_vpn(args: list[str], timeout: int = 750) -> str:
+def run_vpn(args: list[str], timeout: int = 750, secret_input: str | None = None) -> str:
+    stdin_options = {"input": secret_input} if secret_input is not None else {"stdin": subprocess.DEVNULL}
     cp = subprocess.run(
         [VPN, *args],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
-        stdin=subprocess.DEVNULL,
+        **stdin_options,
         check=False,
     )
     if cp.returncode != 0:
@@ -161,7 +162,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             payload = self._read_json()
             if self.path == "/api/action":
                 token = encode_ui_payload(payload)
-                output = run_vpn(["ui", "action", token])
+                output = run_vpn(["ui", "action", "-"], secret_input=token)
                 self._json({"ok": True, "output": output})
                 return
             if self.path == "/api/toggle":

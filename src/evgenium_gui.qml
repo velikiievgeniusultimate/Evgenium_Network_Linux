@@ -1074,7 +1074,7 @@ C.ApplicationWindow {
                         }
                     }
 
-                    // Experimental IKEv2 is deliberately opt-in; no automatic activation.
+                    // Isolated experimental tunnel: the ordinary VPN/browser remain untouched.
                     Item {
                         Card {
                             anchors.fill: parent
@@ -1085,135 +1085,70 @@ C.ApplicationWindow {
                                 contentWidth: availableWidth
                                 ColumnLayout {
                                     width: starfiveScroll.availableWidth
-                                    spacing: 18
-                                    C.Label { text: "StarFive · IKEv2/IPsec"; color: root.textMain; font.pixelSize: 20; font.weight: Font.Bold }
+                                    spacing: 20
+                                    C.Label {
+                                        text: "Экспериментальный VPN"
+                                        color: root.textMain; font.pixelSize: 22; font.weight: Font.Bold
+                                    }
                                     C.Label {
                                         Layout.fillWidth: true
-                                        text: "Тестовый выход в интернет через домашний StarFive в России. Эстонский выход пока не подключён."
-                                        wrapMode: Text.WordWrap; color: root.textMuted
+                                        text: "Один туннель Россия → Россия. Испытания идут отдельно от Firefox и рабочего VPN."
+                                        color: root.textMuted; wrapMode: Text.WordWrap
+                                    }
+                                    C.Label { text: "Токен клиента"; color: root.textMain; font.weight: Font.DemiBold }
+                                    C.TextField {
+                                        id: starfiveToken
+                                        Layout.fillWidth: true
+                                        placeholderText: Boolean((root.experiment.tunnel || {}).has_token) ? "Токен сохранён на этом устройстве" : "Вставьте токен EVN1-…"
+                                        echoMode: TextInput.Password
+                                        selectByMouse: true
+                                        enabled: !root.busy && !Boolean((root.experiment.tunnel || {}).running)
+                                        maximumLength: 64
+                                        Accessible.name: "Токен клиента"
                                     }
                                     RowLayout {
-                                        Layout.fillWidth: true
-                                        ColumnLayout {
-                                            Layout.fillWidth: true
-                                            C.Label { text: "Подключение к StarFive"; color: root.textMain; font.weight: Font.DemiBold }
-                                            C.Label {
-                                                Layout.fillWidth: true
-                                                text: root.experiment.active ? "Подключено · выход Россия" : (root.experiment.guard ? "Соединение потеряно · интернет заблокирован" : "Выключено")
-                                                color: root.experiment.active ? root.good : (root.experiment.guard ? root.bad : root.textMuted)
-                                                wrapMode: Text.WordWrap
+                                        spacing: 12
+                                        FlatButton {
+                                            label: Boolean((root.experiment.tunnel || {}).running) ? "Отключить" : "Подключить"
+                                            enabledButton: !root.busy && (Boolean((root.experiment.tunnel || {}).running) || Boolean((root.experiment.tunnel || {}).has_token) || starfiveToken.text.trim().length > 0)
+                                            onClicked: {
+                                                var running = Boolean((root.experiment.tunnel || {}).running)
+                                                root.action({action: running ? "experimental_disconnect" : "experimental_connect", target: starfiveToken.text.trim()})
+                                                starfiveToken.clear()
                                             }
                                         }
-                                        C.Switch {
-                                            checked: Boolean(root.experiment.guard)
-                                            enabled: !root.busy && (Boolean(root.experiment.guard) || (Boolean(root.experiment.configured) && Boolean(root.experiment.available) && !Boolean(root.state.active)))
-                                            onClicked: root.action({action: checked ? "experimental_on" : "experimental_off"})
-                                        }
-                                    }
-                                    C.Label {
-                                        Layout.fillWidth: true
-                                        text: "Сначала выключи обычный VPN. В этом режиме IPv6, DIRECT-исключения и доступ к локальной сети блокируются. При обрыве интернет остаётся закрытым, пока ты не выключишь режим."
-                                        color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
-                                    }
-                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.border }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        C.Label { Layout.fillWidth: true; text: "Совместимость SteamOS: IPsec через TUN"; color: root.textMain; wrapMode: Text.WordWrap }
-                                        C.Switch {
-                                            checked: String(root.experiment.ipsec_backend || "kernel") === "userspace"
-                                            enabled: !root.busy && !Boolean(root.experiment.guard) && !Boolean(root.experiment.active)
-                                            onClicked: root.action({action: checked ? "experimental_backend-userspace" : "experimental_backend-kernel"})
-                                        }
-                                    }
-                                    C.Label {
-                                        Layout.fillWidth: true
-                                        text: "На SteamOS выбирается автоматически. Отдельный движок обрабатывает IPsec через TUN, сохраняя системный запрет esp4. Перед первым подключением нажми «Подготовить IKEv2». Системные библиотеки не заменяются. Режим может работать медленнее реализации в ядре."
-                                        color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
-                                    }
-                                    FlatButton {
-                                        label: root.experiment.available ? "IKEv2 готов" : "Подготовить IKEv2"
-                                        enabledButton: !root.busy && !Boolean(root.state.connecting) && !Boolean(root.experiment.available) && !Boolean(root.state.active)
-                                        onClicked: root.action({action: "experimental_prepare"})
-                                    }
-                                    C.Label { Layout.fillWidth: true; text: root.experiment.configured ? "Персональный профиль установлен" : "Нужен персональный профиль устройства"; color: root.experiment.configured ? root.good : root.textMuted; wrapMode: Text.WordWrap }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        C.TextField { id: starfiveProfile; Layout.fillWidth: true; placeholderText: "~/Vpn/StarFive/profile.json"; selectByMouse: true }
                                         FlatButton {
-                                            label: "Импортировать"
-                                            enabledButton: !root.busy && !Boolean(root.state.connecting) && !Boolean(root.experiment.guard)
-                                            onClicked: root.action({action: "experimental_import", target: starfiveProfile.text.trim() || "~/Vpn/StarFive/profile.json"})
+                                            label: "Починить"
+                                            enabledButton: !root.busy && (Boolean((root.experiment.tunnel || {}).has_token) || starfiveToken.text.trim().length > 0)
+                                            onClicked: {
+                                                root.action({action: "experimental_repair", target: starfiveToken.text.trim()})
+                                                starfiveToken.clear()
+                                            }
                                         }
                                     }
                                     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.border }
-                                    RowLayout {
+                                    C.Label { text: "Строка состояния"; color: root.textMain; font.weight: Font.DemiBold }
+                                    C.TextArea {
                                         Layout.fillWidth: true
-                                        C.Label { Layout.fillWidth: true; text: "Временная диагностика"; color: root.textMain; font.weight: Font.DemiBold }
-                                        C.Switch {
-                                            checked: Boolean(root.experiment.telemetry)
-                                            enabled: !root.busy && Boolean(root.experiment.configured)
-                                            onClicked: root.action({action: checked ? "experimental_telemetry-on" : "experimental_telemetry-off"})
-                                        }
-                                    }
-                                    C.Label {
-                                        Layout.fillWidth: true
-                                        text: "Каждую минуту проверяются Яндекс, Mail и Ростелеком. Ошибки подключения и результаты теста отправляются напрямую на StarFive по HTTPS с персональным сертификатом, даже при неработающем VPN. Только служебный канал обходит блокировку интернета. Неотправленные отчёты сохраняются на устройстве; попытки повторяются с паузами. Пароли, ключи и содержимое трафика не отправляются. Хранение на сервере: 7 дней. Сервер видит IP соединения; это псевдонимная диагностика, а не полная анонимность."
-                                        color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
-                                    }
-                                    FlatButton {
-                                        label: "Отправить диагностику напрямую"
-                                        enabledButton: !root.busy && !Boolean(root.state.connecting) && Boolean(root.experiment.configured) && Boolean(root.experiment.telemetry)
-                                        onClicked: root.action({action: "experimental_send-diagnostics"})
-                                    }
-                                    C.Label {
-                                        Layout.fillWidth: true
-                                        text: "Доставка отчётов: " + ({idle:"ещё не запускалась",queued:"отчёт в очереди",sending:"отправляется",sent:"доставлен на StarFive",retry:"не доставлен; повторяем с паузами"}[String((root.experiment.delivery || {}).status || "idle")])
-                                            + ". В очереди: " + Number((root.experiment.delivery || {}).pending || 0)
-                                            + (root.experiment.telemetry ? "" : ". Отправка выключена")
-                                            + ((root.experiment.delivery || {}).error ? ". Причина: " + String(root.experiment.delivery.error) : "")
-                                        color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
-                                    }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        C.TextField { id: starfiveDomain; Layout.fillWidth: true; placeholderText: "Домен неработающего сайта, например yandex.ru"; selectByMouse: true }
-                                        FlatButton {
-                                            label: "Проверить и отправить"
-                                            enabledButton: !root.busy && !Boolean(root.state.connecting) && Boolean(root.experiment.active) && Boolean(root.experiment.telemetry) && starfiveDomain.text.trim().length > 0
-                                            onClicked: root.action({action: "experimental_report", target: starfiveDomain.text.trim()})
-                                        }
-                                    }
-                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.border }
-                                    C.Label { text: "Стабильность российского моста"; color: root.textMain; font.weight: Font.DemiBold }
-                                    C.Label {
-                                        Layout.fillWidth: true
-                                        text: "Глобальный тест займёт примерно 4–8 минут и до 200 МиБ трафика. Интернет несколько раз прервётся: проверяются переподключения, файлы и докачка, потери, простой и параллельная нагрузка. Kill switch остаётся включённым. Проверки: StarFive, Яндекс, Mail, Ростелеком. Итог отправится напрямую по HTTPS; если сервер недоступен, отчёт останется в очереди."
-                                        color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12
-                                    }
-                                    RowLayout {
-                                        FlatButton {
-                                            label: "Глобальный тест"
-                                            enabledButton: !root.busy && !Boolean(root.state.connecting) && Boolean(root.experiment.active) && Boolean(root.experiment.telemetry) && String((root.experiment.test || {}).phase) !== "running"
-                                            onClicked: root.action({action: "experimental_global-test"})
-                                        }
-                                        FlatButton {
-                                            label: "Остановить тест"
-                                            enabledButton: !root.busy && !Boolean(root.state.connecting) && String((root.experiment.test || {}).phase) === "running"
-                                            onClicked: root.action({action: "experimental_cancel-test"})
-                                        }
+                                        Layout.minimumHeight: 120
+                                        readOnly: true
+                                        selectByMouse: true
+                                        wrapMode: TextEdit.Wrap
+                                        text: String((root.experiment.tunnel || {}).message || "Введите токен клиента. Рабочий VPN останется включённым.")
+                                            + (String((root.experiment.tunnel || {}).scope || "") === "lan" ? "\nПроверка в домашней сети; внешний путь через провайдера ещё не проверен." : "")
+                                            + (Boolean(((root.experiment.tunnel || {}).metrics || {}).integrity) ? "\nПередача данных: целостность подтверждена." : "")
+                                            + ((((root.experiment.tunnel || {}).metrics || {}).reference || {}).estimated_mbps ? "\nЯндекс: оценка прямой скорости " + Number((((root.experiment.tunnel || {}).metrics || {}).reference || {}).estimated_mbps).toFixed(1) + " Мбит/с (короткий замер)." : "")
+                                            + ((((root.experiment.tunnel || {}).metrics || {}).reference || {}).available === false ? "\nЯндекс: ориентир скорости сейчас недоступен." : "")
+                                        color: Boolean((root.experiment.tunnel || {}).active) ? root.good : root.textMain
+                                        Accessible.name: "Строка состояния"
                                     }
                                     C.ProgressBar {
                                         Layout.fillWidth: true
-                                        from: 0; to: 100; value: Number((root.experiment.test || {}).progress || 0)
-                                        visible: String((root.experiment.test || {}).phase) === "running"
+                                        from: 0; to: 100
+                                        value: Number((root.experiment.tunnel || {}).progress || 0)
+                                        visible: Boolean((root.experiment.tunnel || {}).running) && !Boolean((root.experiment.tunnel || {}).active)
                                     }
-                                    C.Label {
-                                        Layout.fillWidth: true
-                                        text: String((root.experiment.test || {}).message || "Тест ещё не запускался")
-                                            + ((root.experiment.test || {}).passed !== undefined ? " Проверок успешно: " + (root.experiment.test || {}).passed + "; со сбоями: " + (root.experiment.test || {}).failed + "." : "")
-                                        color: root.textMuted; wrapMode: Text.WordWrap
-                                    }
-                                    C.Label { Layout.fillWidth: true; text: "Последний отчёт: " + String(root.experiment.last_report || "ещё не отправлен"); color: root.textMuted; wrapMode: Text.WordWrap; font.pixelSize: 12 }
-                                    C.Label { Layout.fillWidth: true; text: String(root.experiment.last_error || ""); color: root.bad; wrapMode: Text.WordWrap }
+                                    Item { Layout.fillHeight: true }
                                 }
                             }
                         }

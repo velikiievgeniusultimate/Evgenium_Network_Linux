@@ -248,7 +248,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
             for chunk in blob_chunks(count,offset): self.wfile.write(chunk)
         else:
             self.reply(404, {})
+    def enroll(self):
+        # The first device has no certificate yet. Only this route accepts a token.
+        try:
+            size = int(self.headers.get('Content-Length', '0'))
+            if not 0 < size <= 20000 or self.headers.get('Transfer-Encoding'):
+                raise ValueError('size')
+            body = json.loads(self.rfile.read(size))
+            raw = json.dumps(body, separators=(',', ':')).encode()+b'\n'
+            if len(raw) > 20000:
+                raise ValueError('size')
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as issuer:
+                issuer.settimeout(30)
+                issuer.connect('/run/evgenium-enrollment/issuer.sock')
+                issuer.sendall(raw)
+                with issuer.makefile('rb') as stream:
+                    reply = json.loads(stream.readline(20001))
+            self.reply(200 if reply.get('ok') else 403, reply)
+        except (ValueError, TypeError, OSError):
+            self.reply(503, {'ok': False, 'error': 'enrollment_unavailable'})
+
     def do_POST(self):
+        if getattr(self.server, 'enrollment', False) and self.path == '/enroll':
+            self.enroll(); return
+        # Enrollment never turns report/upload APIs into anonymous endpoints.
+        if not self.connection.getpeercert(binary_form=True):
+            self.reply(403, {'accepted': False}); return
         if not Path('/etc/evgenium-diagnostics-enabled').exists():
             self.reply(403, {}); return
         try:
@@ -298,14 +323,18 @@ if __name__ == '__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--listen',default='10.77.0.1')
     parser.add_argument('--direct-only',action='store_true')
+    parser.add_argument('--enrollment', action='store_true')
     args=parser.parse_args()
     prune()
     server = Server((args.listen, 8443), Handler)
+    if args.enrollment and not args.direct_only:
+        parser.error("Enrollment is allowed only on the public direct endpoint")
     server.direct_only=args.direct_only
+    server.enrollment=args.enrollment
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain('/etc/swanctl/x509/starfive.pem', '/etc/swanctl/private/starfive.pem')
-    context.verify_mode = ssl.CERT_REQUIRED
+    context.verify_mode = ssl.CERT_OPTIONAL if args.enrollment else ssl.CERT_REQUIRED
     context.load_verify_locations('/etc/swanctl/x509ca/starfive-ca.pem')
     context.load_verify_locations('/etc/swanctl/x509crl/devices.pem')
     context.verify_flags |= ssl.VERIFY_CRL_CHECK_LEAF

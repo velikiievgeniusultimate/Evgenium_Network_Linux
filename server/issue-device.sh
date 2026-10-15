@@ -3,6 +3,8 @@
 set -euo pipefail
 umask 077
 pki=/root/evgenium-ikev2-pki
+exec 9>"$pki/ca.lock"
+flock -x 9
 identity="device-$(openssl rand -hex 12)"
 folder="$pki/$identity"
 mkdir -m 700 "$folder"

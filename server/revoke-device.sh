@@ -5,6 +5,8 @@ umask 077
 identity=${1:-}
 [[ "$identity" =~ ^device-[a-f0-9]{24}$ ]] || { echo 'Expected device-<24 hex digits>' >&2; exit 1; }
 pki=/root/evgenium-ikev2-pki
+exec 9>"$pki/ca.lock"
+flock -x 9
 openssl ca -batch -config "$pki/ca.conf" -revoke "$pki/$identity/cert.pem"
 openssl ca -batch -config "$pki/ca.conf" -gencrl -out /etc/swanctl/x509crl/devices.pem.new
 mv /etc/swanctl/x509crl/devices.pem.new /etc/swanctl/x509crl/devices.pem

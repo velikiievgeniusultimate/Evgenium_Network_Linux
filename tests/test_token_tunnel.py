@@ -1,0 +1,130 @@
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+issuer = load('issuer', ROOT/'server/token_issuer.py')
+tunnel = load('tunnel', ROOT/'src/starfive_tunnel.py')
+gui = load('gui', ROOT/'src/evgenium_gui.py')
+collector = load('collector', ROOT/'server/diagnostic_collector.py')
+
+
+class TokenTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        cls.pki = cls.root/'pki'; cls.pki.mkdir()
+        def run(*args):
+            subprocess.run(['openssl', *map(str,args)], check=True, capture_output=True, timeout=30)
+        run('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=Test CA',
+            '-keyout', cls.pki/'ca-key.pem', '-out', cls.pki/'ca.pem')
+        (cls.pki/'index.txt').touch(); (cls.pki/'serial').write_text('1000\n')
+        (cls.pki/'ca.conf').write_text(f'''[ca]
+default_ca=vpn_ca
+[vpn_ca]
+dir={cls.pki}
+database=$dir/index.txt
+serial=$dir/serial
+new_certs_dir=$dir
+certificate=$dir/ca.pem
+private_key=$dir/ca-key.pem
+default_md=sha256
+default_days=30
+policy=policy
+unique_subject=no
+[policy]
+commonName=supplied
+''')
+        cls.csrs=[]
+        for index in range(2):
+            key=cls.root/f'key{index}.pem';csr=cls.root/f'csr{index}.pem'
+            run('req','-new','-newkey','rsa:3072','-nodes','-subj','/CN=untrusted-subject',
+                '-keyout',key,'-out',csr)
+            cls.csrs.append(csr.read_text())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_account_token_is_hashed_and_devices_have_distinct_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(issuer,'ROOT',Path(tmp)),patch.object(issuer,'PKI',self.pki):
+            token=issuer.issue('tester')
+            self.assertNotIn(token,(Path(tmp)/'accounts.json').read_text())
+            first=issuer.enroll({'token':token,'device':'a'*32,'csr':self.csrs[0]})
+            second=issuer.enroll({'token':token,'device':'b'*32,'csr':self.csrs[1]})
+            self.assertEqual(first['account'],second['account'])
+            self.assertNotEqual(first['identity'],second['identity'])
+            self.assertNotEqual(first['certificate'],second['certificate'])
+            self.assertNotIn('private_key',first)
+            again=issuer.enroll({'token':token,'device':'a'*32,'csr':self.csrs[0]})
+            self.assertEqual(again['certificate'],first['certificate'])
+            with self.assertRaises(PermissionError):
+                issuer.enroll({'token':token,'device':'a'*32,'csr':self.csrs[1]})
+            self.assertEqual((Path(tmp)/'accounts.json').stat().st_mode&0o777,0o600)
+
+    def test_disabled_or_invalid_token_never_reaches_certificate_signing(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(issuer,'ROOT',Path(tmp)),patch.object(issuer,'run')as sign:
+            token=issuer.issue('disabled')
+            data=issuer.accounts(); next(iter(data.values()))['enabled']=False
+            issuer.write_json(Path(tmp)/'accounts.json',data)
+            for value in (token,'EVN1-'+'a'*43,'not-a-token'):
+                with self.assertRaises(PermissionError):issuer.enroll({'token':value,'device':'c'*32,'csr':self.csrs[0]})
+            sign.assert_not_called()
+
+
+class IsolatedClientTests(unittest.TestCase):
+    def test_token_reaches_privileged_action_via_stdin_not_process_arguments(self):
+        result=subprocess.CompletedProcess([],0,'ok','')
+        with patch.object(gui.subprocess,'run',return_value=result)as run:
+            gui.run_vpn(['ui','action','-'],secret_input='SENSITIVE')
+        self.assertNotIn('SENSITIVE',str(run.call_args.args))
+        self.assertEqual(run.call_args.kwargs['input'],'SENSITIVE')
+
+    def test_cleanup_without_ownership_does_not_change_network(self):
+        with tempfile.TemporaryDirectory()as tmp,patch.object(tunnel,'ROOT',Path(tmp)),patch.object(tunnel,'command')as command:
+            tunnel.cleanup()
+            command.assert_not_called()
+
+    def test_stopped_worker_cannot_report_connected_or_expose_token(self):
+        with tempfile.TemporaryDirectory()as tmp,patch.object(tunnel,'ROOT',Path(tmp)),patch.object(tunnel,'STATE',Path(tmp)/'state.json'),patch.object(tunnel,'command',return_value=subprocess.CompletedProcess([],3,'','')):
+            tunnel.write(tunnel.ROOT/'token','SECRET')
+            tunnel.stage('connected','old',100,active=True,token='SECRET')
+            status=tunnel.status()
+            self.assertFalse(status['active']);self.assertEqual(status['phase'],'interrupted')
+            self.assertNotIn('SECRET',json.dumps(status))
+
+    def test_reference_probe_rejects_non_yandex_and_non_https_urls(self):
+        self.assertEqual(tunnel.validate_yandex_probe('https://node.cdn.yandex.net/probes/50mb')[0], 'node.cdn.yandex.net')
+        for url in ('http://node.cdn.yandex.net/probes/50mb', 'https://cdn.yandex.net.attacker.test/x',
+                    'https://127.0.0.1/x', 'https://user:pass@node.cdn.yandex.net/x',
+                    'https://node.cdn.yandex.net:8443/x'):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                tunnel.validate_yandex_probe(url)
+
+    def test_lab_filter_preserves_forwarding_disabled_outside_test(self):
+        self.assertIn('meta nfproto ipv4 drop', tunnel.host_rules('wlan0', previous_forward=False))
+        self.assertNotIn('meta nfproto ipv4 drop', tunnel.host_rules('wlan0', previous_forward=True))
+        self.assertNotIn('flush ruleset', tunnel.host_rules('wlan0'))
+
+    def test_public_report_still_requires_client_certificate(self):
+        from types import SimpleNamespace
+        handler=collector.Handler.__new__(collector.Handler)
+        handler.server=SimpleNamespace(enrollment=True,direct_only=True)
+        handler.path='/report'
+        handler.connection=SimpleNamespace(getpeercert=lambda **_:None)
+        with patch.object(handler,'reply')as reply,patch.object(collector,'store_report')as store:
+            handler.do_POST()
+            reply.assert_called_once_with(403,{'accepted':False})
+            store.assert_not_called()

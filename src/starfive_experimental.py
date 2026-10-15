@@ -19,6 +19,8 @@ import platform
 import io
 import tarfile
 
+tunnel = None  # Wired to the embedded isolated test backend by vpnctl.
+
 ROOT = pathlib.Path("/etc/vpn-manager/starfive")
 STATE = pathlib.Path("/var/lib/vpn-manager/starfive.json")
 RUNTIME = pathlib.Path("/run/evgenium-ikev2")
@@ -313,7 +315,8 @@ def status():
     state = stored()
     guard = active_guard()
     live = connected()
-    return {"configured": ROOT.joinpath("profile.json").exists(),
+    return {"tunnel": tunnel.status() if tunnel else {},
+            "configured": ROOT.joinpath("profile.json").exists(),
             "available": available(), "ipsec_backend":backend(), "userspace_version":USERSPACE_VERSION,
             "active": live, "guard": guard,
             "telemetry": bool(state.get("telemetry", False)),
@@ -795,7 +798,11 @@ def monitor():
 
 def dispatch(api, settings, action, target=""):
     try:
-        if action == "global-test": start_global_test()
+        if action in ('connect', 'repair') and tunnel:
+            tunnel.connect(target, repair=action == 'repair')
+        elif action == 'disconnect' and tunnel:
+            tunnel.disconnect()
+        elif action == "global-test": start_global_test()
         elif action == "cancel-test": cmd(["systemctl", "stop", TEST_UNIT],check=False)
         elif action == "backend-userspace": select_backend("userspace")
         elif action == "backend-kernel": select_backend("kernel")
