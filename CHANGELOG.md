@@ -1,3 +1,9 @@
+## 0.3.0-ru.3
+
+- Undo the erroneous removal of ordinary Xray VPN application exceptions in 0.3.0-ru.2.
+- Restore Firefox/Codex entries from the saved list on update, preserving intervening edits and keeping the backup.
+- Do not change experimental VPN behavior in this correction.
+
 ## 0.3.0-ru.2
 
 - Save the client token separately from connecting; lock the field with a masked ID after success.

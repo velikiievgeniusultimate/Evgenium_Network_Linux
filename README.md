@@ -2,7 +2,7 @@
 
 A small Linux VPN manager built around **Xray-core**.
 
-Current release: **0.3.0-ru.2** (saved client token controls).
+Current release: **0.3.0-ru.3** (restore ordinary VPN application exceptions).
 
 Existing supported Arch/Fedora installations on x86_64 and aarch64 receive the
 same architecture-independent manager archive through `vpn update`. Xray-core
@@ -370,12 +370,11 @@ to keep the existing one. Disconnect the experimental tunnel before replacement.
 Connection and repair use only the saved token. Tokens are passed through stdin
 and are never returned in GUI state; only a short SHA-256 identifier is shown.
 
-This update removes existing Firefox/Codex process entries from the DIRECT apps
-list once, retaining a backup beside it (`.before-0.3.0-ru.2`). Other application
-rules are kept; subsequent manually added rules are respected. No special
-Firefox/Codex exclusions are built in. The experimental StarFive tunnel still
-runs in its own network namespace; this UI release does not add full desktop
-routing through that tunnel or prove connectivity between independent networks.
+Version 0.3.0-ru.3 reverses the erroneous DIRECT application migration from
+0.3.0-ru.2. On `vpn update`, previously removed Firefox/Codex entries are restored
+from `.before-0.3.0-ru.2` beside the application list. Later edits and other rules
+are preserved. Installations that never ran the migration are left untouched.
+The experimental tunnel is unchanged by this correction.
 
 Release procedure: build with `python3 scripts/build_release.py --channels stable testing`,
 run the tests, and publish the archive, checksum and both manifests together on

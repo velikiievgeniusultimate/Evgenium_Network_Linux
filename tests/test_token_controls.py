@@ -65,18 +65,3 @@ class TokenControlTests(unittest.TestCase):
             self.assertNotEqual(before, tunnel.token_status()['token_hint'])
             self.assertFalse((Path(td) / 'private/client-key.pem').exists())
             self.assertFalse((Path(td) / 'profile.json').exists())
-
-    def test_update_removes_only_firefox_codex_and_keeps_backup_and_future_choices(self):
-        with tempfile.TemporaryDirectory() as td, patch.object(vpn, '_owner_ids', return_value=(os.getuid(), os.getgid())), \
-                patch.object(vpn, 'save_settings') as save:
-            path = Path(td) / 'DIRECT apps.txt'
-            original = '# personal rules\nfirefox\n/usr/lib/firefox/\n/opt/Codex/codex\nCodex\nsteam\n/opt/mycodex/helper\n'
-            path.write_text(original)
-            settings = {'direct_apps': str(path)}
-            vpn.migrate_firefox_codex_exceptions(settings)
-            self.assertEqual(path.read_text(), '# personal rules\nsteam\n/opt/mycodex/helper\n')
-            self.assertEqual(path.with_name(path.name + '.before-0.3.0-ru.2').read_text(), original)
-            path.write_text('firefox\n')
-            vpn.migrate_firefox_codex_exceptions(settings)
-            self.assertEqual(path.read_text(), 'firefox\n')
-            save.assert_called_once_with(settings)

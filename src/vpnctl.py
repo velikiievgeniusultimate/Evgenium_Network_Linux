@@ -30,7 +30,7 @@ import urllib.request
 import zipfile
 from typing import NoReturn
 
-MANAGER_VERSION = "0.3.0-ru.2"
+MANAGER_VERSION = "0.3.0-ru.3"
 
 # Не "latest". Это намеренно совместимый pin.
 # Его меняет следующая проверенная версия VPN Manager.
@@ -2092,28 +2092,40 @@ def _remove_app_entry(settings: dict, target: str) -> bool:
     return changed
 
 
-def migrate_firefox_codex_exceptions(settings: dict) -> None:
-    """Remove the old app bypasses once; later explicit user choices remain possible."""
-    if settings.get('firefox_codex_exceptions_migrated'):
+def restore_firefox_codex_exceptions(settings: dict) -> None:
+    """Undo only the erroneous 0.3.0-ru.2 application-list migration."""
+    if not settings.get('firefox_codex_exceptions_migrated'):
         return
     path = _safe_direct_path(settings, 'direct_apps')
-    if path.exists():
-        original = path.read_text()
+    backup_settings = {**settings, 'direct_apps': str(path.with_name(path.name + '.before-0.3.0-ru.2'))}
+    backup = _safe_direct_path(backup_settings, 'direct_apps')
+    if backup.exists():
+        original = backup.read_text()
         names = {'firefox', 'firefox-bin', 'firefox-esr', 'codex', 'codex-desktop'}
-        kept = []
+        removed, kept = [], []
         for line in original.splitlines(keepends=True):
             value = line.strip()
             if value and not value.startswith('#') and pathlib.PurePosixPath(value).name.lower() in names:
-                continue
-            kept.append(line)
-        updated = ''.join(kept)
-        if updated != original:
-            backup = path.with_name(path.name + '.before-0.3.0-ru.2')
-            if not backup.exists():
-                _write_direct_file({**settings, 'direct_apps': str(backup)}, 'direct_apps', original)
-            _write_direct_file(settings, 'direct_apps', updated)
-            info('Исключения Firefox и Codex удалены из DIRECT-приложений.')
-    settings['firefox_codex_exceptions_migrated'] = True
+                removed.append(line)
+            else:
+                kept.append(line)
+        current = path.read_text() if path.exists() else ''
+        if current == ''.join(kept):
+            restored = original  # No intervening edits: restore the exact original bytes.
+        else:
+            # Keep later edits and restore only the entries removed by our migration.
+            existing = {line.strip() for line in current.splitlines() if line.strip()}
+            additions = []
+            for line in removed:
+                if line.strip() not in existing:
+                    additions.append(line.rstrip('\r\n') + '\n')
+                    existing.add(line.strip())
+            restored = current + ('\n' if additions and current and not current.endswith('\n') else '') + ''.join(additions)
+        if restored != current:
+            _write_direct_file(settings, 'direct_apps', restored)
+            info('Прежние исключения Firefox и Codex восстановлены из резервной копии.')
+    # No backup means the previous migration found no matching entries to remove.
+    settings.pop('firefox_codex_exceptions_migrated', None)
     save_settings(settings)
 
 
@@ -7090,7 +7102,7 @@ Local DIRECT SOCKS (only localhost, only while VPN is on):
         return 0
 
     if args.cmd == "internal-after-update":
-        migrate_firefox_codex_exceptions(settings)
+        restore_firefox_codex_exceptions(settings)
         sync_system_files()
         cmd_gui_install(settings)
         if _widget_package_dir(settings).exists():
