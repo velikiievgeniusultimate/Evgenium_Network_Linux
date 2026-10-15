@@ -798,7 +798,10 @@ def monitor():
 
 def dispatch(api, settings, action, target=""):
     try:
-        if action in ('connect', 'repair') and tunnel:
+        if action == 'token-save' and tunnel:
+            tunnel.save_token(target)
+            print('Токен сохранён на этом устройстве.')
+        elif action in ('connect', 'repair') and tunnel:
             tunnel.connect(target, repair=action == 'repair')
         elif action == 'disconnect' and tunnel:
             tunnel.disconnect()

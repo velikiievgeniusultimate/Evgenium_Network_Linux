@@ -163,7 +163,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if self.path == "/api/action":
                 token = encode_ui_payload(payload)
                 output = run_vpn(["ui", "action", "-"], secret_input=token)
-                self._json({"ok": True, "output": output})
+                reply = {"ok": True, "output": output}
+                if payload.get("action") == "experimental_token-save":
+                    reply["state"] = run_vpn_json(["ui", "state"])
+                self._json(reply)
                 return
             if self.path == "/api/toggle":
                 output = run_vpn(["toggle"])

@@ -2,7 +2,7 @@
 
 A small Linux VPN manager built around **Xray-core**.
 
-Current stable release: **0.2.25** (Estonian DNS through the VPN).
+Current release: **0.3.0-ru.2** (saved client token controls).
 
 Existing supported Arch/Fedora installations on x86_64 and aarch64 receive the
 same architecture-independent manager archive through `vpn update`. Xray-core
@@ -358,3 +358,26 @@ After `vpn update`, close and reopen an already-running GUI. Existing Plasma
 applet objects keep their loaded QML: reload the widget/Plasma panel when no VPN
 operation is running to use the updated widget code. The updater does not
 restart the desktop automatically or disconnect another VPN.
+
+## Client token controls (0.3.0-ru.2)
+
+Update existing installations with `vpn update`, then reopen Evgenium Network.
+In the experimental tab, paste a client token and choose **Подтвердить**.
+Saving does not connect or validate the account with the server. The field locks,
+shows a masked token ID, and the button changes to **Изменить**. The saved state
+survives reopening the app. Choose **Изменить** to replace the token or **Отмена**
+to keep the existing one. Disconnect the experimental tunnel before replacement.
+Connection and repair use only the saved token. Tokens are passed through stdin
+and are never returned in GUI state; only a short SHA-256 identifier is shown.
+
+This update removes existing Firefox/Codex process entries from the DIRECT apps
+list once, retaining a backup beside it (`.before-0.3.0-ru.2`). Other application
+rules are kept; subsequent manually added rules are respected. No special
+Firefox/Codex exclusions are built in. The experimental StarFive tunnel still
+runs in its own network namespace; this UI release does not add full desktop
+routing through that tunnel or prove connectivity between independent networks.
+
+Release procedure: build with `python3 scripts/build_release.py --channels stable testing`,
+run the tests, and publish the archive, checksum and both manifests together on
+`main`. The updater reads `update/stable.json` from `main`; files on a development
+branch alone do not make an update available.

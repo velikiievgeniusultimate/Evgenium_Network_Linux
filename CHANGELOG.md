@@ -1,3 +1,10 @@
+## 0.3.0-ru.2
+
+- Save the client token separately from connecting; lock the field with a masked ID after success.
+- Add Confirm / Change / Cancel controls, persist saved state across app restarts, and reject token replacement while the tunnel is running.
+- Remove Firefox and Codex DIRECT application exceptions once during update, preserving a backup and other rules.
+- Package the token-based experiment for the existing `vpn update` stable/testing channels.
+
 ## 0.2.28
 
 - Fix recurring DNS startup failure when every CERT-EE address is unavailable: use independently operated Cloudflare and Google resolvers through VLESS. A/AAAA use the parallel pool; other types use Cloudflare. CERT-EE filtering is no longer applied.

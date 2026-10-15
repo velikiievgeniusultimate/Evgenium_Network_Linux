@@ -31,6 +31,9 @@ C.ApplicationWindow {
     property string pollErrorText: ""
     property var state: ({})
     property var runningApps: []
+    property bool tokenEditing: false
+    readonly property bool tokenSaved: Boolean((root.experiment.tunnel || {}).has_token)
+    readonly property bool tokenLocked: tokenSaved && !tokenEditing
     readonly property var experiment: root.state.experimental || ({})
 
     readonly property var args: Qt.application.arguments
@@ -107,12 +110,14 @@ C.ApplicationWindow {
         })
     }
 
-    function action(payload) {
+    function action(payload, onSuccess) {
         if (busy || Boolean(state.connecting))
             return
         busy = true
         api("POST", "/api/action", payload, function(_reply) {
             root.busy = false
+            if (_reply.state) root.state = _reply.state
+            if (onSuccess) onSuccess()
             root.refreshState()
             root.refreshRunning()
         }, true)
@@ -299,7 +304,7 @@ C.ApplicationWindow {
                 NavButton { label: "Сайты и IP"; shortLabel: "NET"; index: 3 }
                 NavButton { label: "Порты"; shortLabel: "PRT"; index: 4 }
                 NavButton { label: "Диагностика"; shortLabel: "SYS"; index: 5 }
-                NavButton { label: "Экспериментальное"; shortLabel: "EXP"; index: 6 }
+                NavButton { label: "Эксперимент"; shortLabel: "EXP"; index: 6 }
 
                 Item { Layout.fillHeight: true }
 
@@ -1092,38 +1097,84 @@ C.ApplicationWindow {
                                     }
                                     C.Label {
                                         Layout.fillWidth: true
-                                        text: "Один туннель Россия → Россия. Испытания идут отдельно от Firefox и рабочего VPN."
+                                        text: "Один туннель Россия → Россия. Сохраните токен и подключите устройство."
                                         color: root.textMuted; wrapMode: Text.WordWrap
                                     }
                                     C.Label { text: "Токен клиента"; color: root.textMain; font.weight: Font.DemiBold }
-                                    C.TextField {
-                                        id: starfiveToken
+                                    RowLayout {
                                         Layout.fillWidth: true
-                                        placeholderText: Boolean((root.experiment.tunnel || {}).has_token) ? "Токен сохранён на этом устройстве" : "Вставьте токен EVN1-…"
-                                        echoMode: TextInput.Password
-                                        selectByMouse: true
-                                        enabled: !root.busy && !Boolean((root.experiment.tunnel || {}).running)
-                                        maximumLength: 64
-                                        Accessible.name: "Токен клиента"
+                                        spacing: 12
+                                        C.TextField {
+                                            id: starfiveToken
+                                            Layout.fillWidth: true
+                                            implicitHeight: 42
+                                            leftPadding: 12
+                                            rightPadding: 12
+                                            font.pixelSize: 14
+                                            color: root.textMain
+                                            background: Rectangle {
+                                                radius: 10
+                                                color: root.tokenLocked ? "#f0f8fc" : root.surface
+                                                border.width: 1
+                                                border.color: starfiveToken.activeFocus ? root.accent : root.border
+                                            }
+                                            placeholderText: root.tokenLocked ? String((root.experiment.tunnel || {}).token_hint || "Токен сохранён") : "Вставьте токен EVN1-…"
+                                            echoMode: TextInput.Password
+                                            readOnly: root.tokenLocked
+                                            selectByMouse: !root.tokenLocked
+                                            enabled: !root.busy && !Boolean((root.experiment.tunnel || {}).running)
+                                            maximumLength: 64
+                                            Accessible.name: "Токен клиента"
+                                            onAccepted: tokenConfirm.confirm()
+                                        }
+                                        FlatButton {
+                                            id: tokenConfirm
+                                            label: root.tokenLocked ? "Изменить" : "Подтвердить"
+                                            primary: !root.tokenLocked
+                                            enabledButton: !root.busy && !Boolean((root.experiment.tunnel || {}).running)
+                                                && (root.tokenLocked || /^EVN1-[A-Za-z0-9_-]{43}$/.test(starfiveToken.text.trim()))
+                                            function confirm() {
+                                                if (!enabledButton) return
+                                                if (root.tokenLocked) {
+                                                    root.tokenEditing = true
+                                                    starfiveToken.forceActiveFocus()
+                                                } else {
+                                                    root.action({action: "experimental_token-save", target: starfiveToken.text.trim()}, function() {
+                                                        starfiveToken.clear()
+                                                        root.tokenEditing = false
+                                                    })
+                                                }
+                                            }
+                                            onClicked: confirm()
+                                        }
+                                        FlatButton {
+                                            id: tokenCancel
+                                            label: "Отмена"
+                                            visible: root.tokenEditing && root.tokenSaved
+                                            enabledButton: !root.busy
+                                            onClicked: { starfiveToken.clear(); root.tokenEditing = false }
+                                        }
+                                    }
+                                    C.Label {
+                                        Layout.fillWidth: true
+                                        wrapMode: Text.WordWrap
+                                        text: root.tokenLocked ? "Токен сохранён на устройстве. Проверка на сервере — при подключении."
+                                            : root.tokenEditing ? "Вставьте новый токен и нажмите «Подтвердить». До сохранения действует прежний токен."
+                                            : "Токен ещё не сохранён. Вставьте его и нажмите «Подтвердить»."
+                                        color: root.tokenLocked ? root.good : root.textMuted
                                     }
                                     RowLayout {
                                         spacing: 12
                                         FlatButton {
                                             label: Boolean((root.experiment.tunnel || {}).running) ? "Отключить" : "Подключить"
-                                            enabledButton: !root.busy && (Boolean((root.experiment.tunnel || {}).running) || Boolean((root.experiment.tunnel || {}).has_token) || starfiveToken.text.trim().length > 0)
-                                            onClicked: {
-                                                var running = Boolean((root.experiment.tunnel || {}).running)
-                                                root.action({action: running ? "experimental_disconnect" : "experimental_connect", target: starfiveToken.text.trim()})
-                                                starfiveToken.clear()
-                                            }
+                                            primary: !Boolean((root.experiment.tunnel || {}).running)
+                                            enabledButton: !root.busy && (Boolean((root.experiment.tunnel || {}).running) || root.tokenLocked)
+                                            onClicked: root.action({action: Boolean((root.experiment.tunnel || {}).running) ? "experimental_disconnect" : "experimental_connect"})
                                         }
                                         FlatButton {
                                             label: "Починить"
-                                            enabledButton: !root.busy && (Boolean((root.experiment.tunnel || {}).has_token) || starfiveToken.text.trim().length > 0)
-                                            onClicked: {
-                                                root.action({action: "experimental_repair", target: starfiveToken.text.trim()})
-                                                starfiveToken.clear()
-                                            }
+                                            enabledButton: !root.busy && root.tokenLocked
+                                            onClicked: root.action({action: "experimental_repair"})
                                         }
                                     }
                                     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.border }

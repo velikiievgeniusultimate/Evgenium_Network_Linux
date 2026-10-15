@@ -49,7 +49,9 @@ class RecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td,patch.object(vpn,'RUNTIME_DIR',Path(td)):
             p=Path(td)/'operation.lock';p.write_text('')
             self.assertEqual(vpn._operation_payload(),{})
-            p.write_text(json.dumps({'pid':os.getpid(),'command':'toggle','started':0}))
-            self.assertEqual(vpn._operation_payload()['command'],'toggle')
-            p.write_text(json.dumps({'pid':99999999,'command':'toggle','started':0}))
-            self.assertEqual(vpn._operation_payload(),{})
+            # Model liveness independently of the test runner's /proc namespace.
+            with patch.object(Path, 'exists', autospec=True, side_effect=lambda p: str(p) == f'/proc/{os.getpid()}'):
+                p.write_text(json.dumps({'pid':os.getpid(),'command':'toggle','started':0}))
+                self.assertEqual(vpn._operation_payload()['command'],'toggle')
+                p.write_text(json.dumps({'pid':99999999,'command':'toggle','started':0}))
+                self.assertEqual(vpn._operation_payload(),{})

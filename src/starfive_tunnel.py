@@ -80,9 +80,10 @@ def status():
         data.update(phase='interrupted', message='Тестовый туннель остановился. Рабочий VPN сохранён.', active=False)
     public = {key: data[key] for key in ('phase', 'message', 'progress', 'active', 'updated', 'metrics',
                                         'scope', 'since', 'retry') if key in data}
-    return {'phase': 'off', 'message': 'Введите токен клиента. Рабочий VPN останется включённым.',
+    token_info = token_status()
+    return {'phase': 'off', 'message': ('Токен сохранён. Нажмите «Подключить».' if token_info['has_token'] else 'Введите и подтвердите токен клиента.'),
             'progress': 0, 'active': False, **public, 'running': running,
-            'has_token': (ROOT/'token').is_file(), 'isolated': True, 'protocol': 'IKEv2'}
+            **token_info, 'isolated': True, 'protocol': 'IKEv2'}
 
 
 @contextlib.contextmanager
@@ -493,20 +494,40 @@ def download(size=1048576):
             'elapsed_ms': round(elapsed*1000), 'integrity': True, 'limited_sample': True}
 
 
+def token_status():
+    try:
+        token = (ROOT/'token').read_text().strip()
+    except FileNotFoundError:
+        token = ''
+    valid = re.fullmatch(TOKEN_PATTERN, token) is not None
+    return {'has_token': valid,
+            'token_hint': 'EVN1-•••• · ID ' + hashlib.sha256(token.encode()).hexdigest()[:8] if valid else ''}
+
+
+def save_token(token):
+    token = token.strip()
+    if not re.fullmatch(TOKEN_PATTERN, token):
+        raise ValueError('Нужен токен клиента формата EVN1-…')
+    ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    old = (ROOT/'token').read_text().strip() if (ROOT/'token').exists() else ''
+    if old == token:
+        return
+    if command(['systemctl', 'is-active', '--quiet', UNIT], check=False).returncode == 0:
+        raise RuntimeError('Сначала отключите тестовый туннель перед сменой токена.')
+    # A different account needs its own device credentials. Never reuse its certificate.
+    for name in ('device', 'client-key.pem', 'client.pem', 'profile.json', 'request.pem',
+                 'private/client-key.pem', 'x509/client.pem'):
+        (ROOT/name).unlink(missing_ok=True)
+    write(ROOT/'token', token)
+    stage('off', 'Токен сохранён. Нажмите «Подключить».', 0, active=False, metrics={})
+
+
 def connect(token='', repair=False):
     ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     if token:
-        if not re.fullmatch(TOKEN_PATTERN, token):
-            raise ValueError('Нужен токен клиента формата EVN1-…')
-        old = (ROOT/'token').read_text() if (ROOT/'token').exists() else ''
-        if old != token:
-            if command(['systemctl', 'is-active', '--quiet', UNIT], check=False).returncode == 0:
-                raise RuntimeError('Сначала остановите тестовый туннель перед сменой токена.')
-            for name in ('device', 'client-key.pem', 'client.pem', 'profile.json'):
-                (ROOT/name).unlink(missing_ok=True)
-            write(ROOT/'token', token)
-    if not (ROOT/'token').is_file():
-        raise ValueError('Введите токен клиента.')
+        save_token(token)
+    if not token_status()['has_token']:
+        raise ValueError('Введите и подтвердите токен клиента.')
     # Do not auto-install packages or change the working VPN to make a test succeed.
     if not shutil.which('swanctl') or not Path('/usr/sbin/charon-systemd').is_file():
         raise RuntimeError('Для тестового туннеля нужен штатный пакет strongSwan.')
