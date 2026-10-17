@@ -315,13 +315,17 @@ def status():
     state = stored()
     guard = active_guard()
     live = connected()
-    return {"tunnel": tunnel.status() if tunnel else {},
+    token_state = tunnel.status() if tunnel else {}
+    if token_state.get('guard'):
+        guard = True
+        live = token_state.get('active', False)
+    return {"tunnel": token_state,
             "configured": ROOT.joinpath("profile.json").exists(),
             "available": available(), "ipsec_backend":backend(), "userspace_version":USERSPACE_VERSION,
             "active": live, "guard": guard,
             "telemetry": bool(state.get("telemetry", False)),
             "phase": "connected" if live else ("blocked" if guard else "off"),
-            "server": SERVER, "egress": "Россия — тестовый выход",
+            "server": SERVER, "egress": "Эстония через StarFive",
             "last_report": state.get("last_report", ""),
             "last_error": state.get("last_error", ""),
             "delivery": {"status":state.get('delivery_status','idle'),
@@ -812,7 +816,9 @@ def dispatch(api, settings, action, target=""):
         elif action == "prepare": prepare()
         elif action == "import": import_profile(settings, target)
         elif action == "on": on(api, settings)
-        elif action == "off": off()
+        elif action == "off":
+            if tunnel and tunnel.full_guard_active(): tunnel.disconnect()
+            else: off()
         elif action == "telemetry-on": telemetry(True)
         elif action == "telemetry-off": telemetry(False)
         elif action == "report": report(target or None)

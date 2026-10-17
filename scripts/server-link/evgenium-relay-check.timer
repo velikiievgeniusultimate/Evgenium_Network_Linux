@@ -1,0 +1,7 @@
+[Unit]
+Description=Periodic Evgenium client relay check
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=30
+[Install]
+WantedBy=timers.target

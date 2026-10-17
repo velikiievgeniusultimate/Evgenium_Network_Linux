@@ -1,0 +1,15 @@
+[Unit]
+Description=Evgenium IKEv2 client relay to Estonia
+After=network-online.target nftables.service evgenium-link.service
+Wants=evgenium-link.service
+Before=strongswan.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /opt/evgenium-link/relay-star.py start
+ExecStop=/usr/bin/python3 /opt/evgenium-link/relay-star.py stop
+TimeoutStartSec=45
+TimeoutStopSec=30
+UMask=0077
+[Install]
+WantedBy=multi-user.target

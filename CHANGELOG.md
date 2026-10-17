@@ -1,3 +1,13 @@
+## 0.3.1 (unreleased; desktop validation incomplete)
+
+- Clear obsolete manager DNS NAT mappings across mode transitions; verify cached UDP sockets in an offline namespace regression.
+- Preserve loopback DNS stubs under the full-device guard; regression-test the actual Linux NAT path in an isolated namespace.
+- Add full-device token VPN through StarFive and the independent Estonia relay.
+- Install native StrongSwan and required tools automatically on Arch/Fedora.
+- Guard IPv4 routing and tunneled DNS; block IPv6 and plaintext after IPsec/relay failure.
+- Preserve ordinary VPN DIRECT lists, use separate namespace to avoid local address collisions.
+- Add scoped server relay service, boot guard, bounded recovery and fault checks.
+
 ## 0.3.0-ru.3
 
 - Undo the erroneous removal of ordinary Xray VPN application exceptions in 0.3.0-ru.2.

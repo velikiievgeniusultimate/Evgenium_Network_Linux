@@ -37,7 +37,7 @@ class TokenControlTests(unittest.TestCase):
             self.assertFalse(public['running'])
             self.assertEqual(public['phase'], 'off')
             for call in command.call_args_list:
-                self.assertEqual(call.args[0][:2], ['systemctl', 'is-active'])
+                self.assertIn(call.args[0][:2], (['systemctl', 'is-active'], ['nft', 'list']))
 
     def test_invalid_or_running_replacement_preserves_existing_credentials(self):
         with tempfile.TemporaryDirectory() as td, patch.object(tunnel, 'ROOT', Path(td)), \

@@ -380,3 +380,7 @@ Release procedure: build with `python3 scripts/build_release.py --channels stabl
 run the tests, and publish the archive, checksum and both manifests together on
 `main`. The updater reads `update/stable.json` from `main`; files on a development
 branch alone do not make an update available.
+
+## StarFive → Эстония (0.3.1)
+
+`vpn update`, затем закройте и откройте GUI. Сохраните токен в экспериментальной вкладке и нажмите «Подключить». Системные зависимости устанавливаются автоматически. Режим направляет трафик всего компьютера через StarFive в Эстонию; IPv6 блокируется. При отказе защита сохраняется до «Починить» или «Отключить». Обычный Xray останавливается при переключении, его DIRECT-списки сохраняются. Подробнее: [docs/STARFIVE-ESTONIA.md](docs/STARFIVE-ESTONIA.md).

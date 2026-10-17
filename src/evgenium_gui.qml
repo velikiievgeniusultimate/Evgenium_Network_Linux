@@ -1097,7 +1097,7 @@ C.ApplicationWindow {
                                     }
                                     C.Label {
                                         Layout.fillWidth: true
-                                        text: "Один туннель Россия → Россия. Сохраните токен и подключите устройство."
+                                        text: "Весь интернет через StarFive и Эстонию. Зависимости установятся автоматически."
                                         color: root.textMuted; wrapMode: Text.WordWrap
                                     }
                                     C.Label { text: "Токен клиента"; color: root.textMain; font.weight: Font.DemiBold }
@@ -1185,7 +1185,7 @@ C.ApplicationWindow {
                                         readOnly: true
                                         selectByMouse: true
                                         wrapMode: TextEdit.Wrap
-                                        text: String((root.experiment.tunnel || {}).message || "Введите токен клиента. Рабочий VPN останется включённым.")
+                                        text: String((root.experiment.tunnel || {}).message || "Сохраните токен клиента. Подключение переключит весь интернет на экспериментальный VPN.")
                                             + (String((root.experiment.tunnel || {}).scope || "") === "lan" ? "\nПроверка в домашней сети; внешний путь через провайдера ещё не проверен." : "")
                                             + (Boolean(((root.experiment.tunnel || {}).metrics || {}).integrity) ? "\nПередача данных: целостность подтверждена." : "")
                                             + ((((root.experiment.tunnel || {}).metrics || {}).reference || {}).estimated_mbps ? "\nЯндекс: оценка прямой скорости " + Number((((root.experiment.tunnel || {}).metrics || {}).reference || {}).estimated_mbps).toFixed(1) + " Мбит/с (короткий замер)." : "")

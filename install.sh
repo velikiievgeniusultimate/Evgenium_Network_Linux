@@ -121,7 +121,7 @@ sudo -v
 say "Проверяю зависимости..."
 if [[ "$DISTRO" == "arch" ]]; then
     command -v pacman >/dev/null 2>&1 || die "Arch обнаружен, но pacman не найден."
-    packages=(python curl nftables iproute2 ca-certificates qt6-declarative)
+    packages=(python curl nftables iproute2 ca-certificates qt6-declarative strongswan openssl conntrack-tools)
     missing=()
     for p in "${packages[@]}"; do
         pacman -Q "$p" >/dev/null 2>&1 || missing+=("$p")
@@ -142,7 +142,7 @@ else
     # large Qt/KDE upgrade and hit RPM file conflicts. Install the ordinary
     # runtime dependencies first, then request the devel package matching the
     # already-installed qt6-qtdeclarative NEVRA.
-    packages=(python3 curl nftables iproute ca-certificates shadow-utils)
+    packages=(python3 curl nftables iproute ca-certificates shadow-utils strongswan openssl conntrack-tools)
     missing=()
     for p in "${packages[@]}"; do
         rpm -q "$p" >/dev/null 2>&1 || missing+=("$p")

@@ -1,4 +1,4 @@
-"""One isolated Russia-to-Russia IKEv2 test tunnel. Never controls the working Xray."""
+"""Token IKEv2 client: isolated transport and guarded full-device Estonia egress."""
 import contextlib
 import fcntl
 import hashlib
@@ -27,7 +27,7 @@ NETWORK = '172.29.246.0/30'
 CLIENT = '172.29.246.2'
 GATEWAY = '172.29.246.1'
 TABLE = 51824
-PRIORITY = 110
+PRIORITY = 75
 NFT = 'evgenium_starfive_lab_host'
 SERVER = '109.194.67.159'
 SERVER_LAN = '192.168.0.163'
@@ -36,6 +36,282 @@ REQID = 177
 TOKEN_PATTERN = r'EVN1-[A-Za-z0-9_-]{43}'
 STOP = False
 PINNED_CA = '-----BEGIN CERTIFICATE-----\nMIIEODCCAqCgAwIBAgIUbkJ+8SaqAgwY1RDAjZRTjcqQ9eMwDQYJKoZIhvcNAQEL\nBQAwIjEgMB4GA1UEAwwXRXZnZW5pdW0gcHJpdmF0ZSBWUE4gQ0EwHhcNMjYxMDA3\nMTkxMzQxWhcNMzYxMDA0MTkxMzQxWjAiMSAwHgYDVQQDDBdFdmdlbml1bSBwcml2\nYXRlIFZQTiBDQTCCAaIwDQYJKoZIhvcNAQEBBQADggGPADCCAYoCggGBAOZ+nviE\n2OrF7Pdtkk/XIaFVIvJlvC11VZf9rljCBIvBykbsrArGryQHGnuuXLNaaS8NtLxY\nNeSBDK6MdgYJAejsP4wITub3nMjSG2umIIVU6mE+GDozGPlNMNJ+bhkKaVhaPjFE\nyYLYrdPe5VA4w+5p0NZOD6CBHD3tEXWBNRIeVSWbtMITsOES1Pe/aAL7v3oNIVkV\n8nDw9j7+wG2y5dhbp7KUJHbrDB024r7cYrQ3axYF6gykjmztpKXsbkxQv27BvhSB\ne0EktJ/jCS6R9IImYgIQrCraWZmVScnGF/Aq4TNw1H4OzFCkR+7JUlYnSYUvMRi1\nLzKekUC+2/0WFmhnCoDtdjcoYbxpLpKDelGiS3RsNCvxnslMaPz5hCcF64Y7RijX\nj6DuCYpFYWlr13B20qAnRoUas+AjX7PXCkR4xOhH+kW8/HmFHiHkohWE0wllISBX\nVBo7KBOZd8SVewybd2rB4soXouTtjXs/jTge+HWxQDGPP1umfz8cFLR/uQIDAQAB\no2YwZDAdBgNVHQ4EFgQUoQfTif77xWt06haXh3ha890qkT8wHwYDVR0jBBgwFoAU\noQfTif77xWt06haXh3ha890qkT8wEgYDVR0TAQH/BAgwBgEB/wIBADAOBgNVHQ8B\nAf8EBAMCAQYwDQYJKoZIhvcNAQELBQADggGBAI7GKnmfJjuL1QvyRtlw+Hr6AY/Z\nOxdDvECefoFL7Q41VZa+L7DI87kMLYHygRHush66oUv878TWMtasnbt/8wYg6jrw\nAygpg/F3VD24yTrnJ7OCdyGib6LGuusuTP4rUGsccWcznQXYFkzRVz1VeYMZUN+P\ntAViNl4ERS1fh+cGzT4OqXQkJDkReqH/HCTE8kUQUUgXaSXphKjGa8pR2HVeFukX\n+0pp1iR+6di4aCKapkaTiVR3r62tRBUwbxoFYRyxNXynTK9EhnM25WEpn/qu0lsD\noXrFVmj0AQfAUHRN/2rPL//w6RPEpHgUcrt7zuSgoXJZh0DT30VEIK9NNbuKSFd9\nIiWvrxbVQS6mQgtEZN4Lc2Hm1pvY+WrI+H03u8042+cpLIsCnxPm9Wvi7dMXxqob\no2/aL2xDG5G/8WVR/W5EAfvKdxdrk3H602occov7+Jg1voxi00IbdMExoMxd5aeh\nfXRiJhTEFouIpmESCF4vVMlWFr3mqlQ3GKSPVA==\n-----END CERTIFICATE-----\n'
+
+
+FULL_HOST = 'evn-full-host'
+FULL_PEER = 'evn-full-peer'
+FULL_NET = '172.29.247.0/30'
+FULL_TABLE = '51828'
+ADMIN_TABLE = '51829'
+FULL_GUARD = 'evn_starfive_full'
+def full_state():
+    return ROOT/'full-network.json'
+
+
+def charon_binary():
+    candidates = ('/usr/sbin/charon-systemd', '/usr/bin/charon-systemd',
+                  '/usr/lib/ipsec/charon-systemd', '/usr/libexec/ipsec/charon-systemd',
+                  '/usr/lib/strongswan/charon-systemd', '/usr/libexec/strongswan/charon-systemd')
+    return next((p for p in candidates if Path(p).is_file()), None)
+
+
+def ensure_dependencies():
+    if charon_binary() and all(shutil.which(p) for p in ('swanctl','ip','nft','curl','openssl','conntrack')):
+        return
+    stage('dependencies', 'Устанавливаю необходимые системные компоненты VPN.', 3, active=False)
+    if shutil.which('pacman'):
+        args = ['pacman','-S','--needed','--noconfirm','strongswan','iproute2','nftables','curl','openssl','ca-certificates','conntrack-tools']
+    elif shutil.which('dnf'):
+        args = ['dnf','install','-y','--setopt=install_weak_deps=False','strongswan','iproute','nftables','curl','openssl','ca-certificates','conntrack-tools']
+    else:
+        raise RuntimeError('Автоматическая установка экспериментального клиента поддерживает Arch и Fedora.')
+    command(args, timeout=300)
+    if not charon_binary() or not all(shutil.which(p) for p in ('swanctl','conntrack')):
+        raise RuntimeError('Пакет strongSwan не предоставил необходимые программы.')
+
+
+def clear_dns_mappings(previous_vpn=False):
+    """Forget only this manager's obsolete DNS NAT, never flush all connections.
+
+    Removing an nft NAT chain does not remove existing conntrack translations.
+    A running resolver can reuse its UDP socket indefinitely after a VPN switch.
+    """
+    filters = (['--reply-port-src','18553'] if previous_vpn else
+               ['--reply-port-src','53','--dst-nat','1.1.1.1'])
+    for protocol in ('udp','tcp'):
+        result = command(['conntrack','-D','-f','ipv4','-p',protocol,
+                          '--dport','53',*filters], check=False,
+                         env={**os.environ,'LC_ALL':'C'})
+        empty = result.returncode == 1 and '0 flow entries have been deleted' in result.stderr
+        if result.returncode != 0 and not empty:
+            raise RuntimeError('dns_transition_cleanup_failed')
+
+
+def full_guard_active():
+    return command(['nft','list','table','inet',FULL_GUARD],check=False).returncode == 0
+
+
+def full_firewall():
+    # No process, DIRECT list, established socket or IPv6 exception can bypass this guard.
+    # Keep local stub DNS on loopback. DNAT of 127/8 onto a veth fails Linux's
+    # loopback route checks; upstream resolver traffic still obeys the full guard.
+    return f'''table inet {FULL_GUARD} {{
+ chain dns {{ type nat hook output priority -101; policy accept;
+  ip daddr 127.0.0.0/8 return
+  ip daddr {{ 1.1.1.1, 9.9.9.9 }} return
+  meta nfproto ipv4 meta l4proto {{ tcp, udp }} th dport 53 dnat ip to 1.1.1.1
+ }}
+ chain source {{ type nat hook postrouting priority srcnat; policy accept;
+  meta nfproto ipv4 oifname "{FULL_HOST}" snat ip to 172.29.247.1
+ }}
+ chain output {{ type filter hook output priority -30; policy drop;
+  oifname "lo" accept
+  meta nfproto ipv4 oifname "{FULL_HOST}" accept
+  ip daddr 255.255.255.255 udp sport 68 udp dport 67 accept
+ }}
+ chain forward {{ type filter hook forward priority -30; policy drop;
+  iifname "{HOST}" ip saddr {CLIENT} ip daddr {{ {SERVER}, {SERVER_LAN} }} udp dport {{500,4500}} accept
+  iifname "{HOST}" ip saddr {CLIENT} ip daddr {{ {SERVER}, {SERVER_LAN} }} tcp dport 8443 accept
+  oifname "{HOST}" ip daddr {CLIENT} ct state established,related accept
+  meta nfproto ipv4 oifname "{FULL_HOST}" accept
+  meta nfproto ipv4 iifname "{FULL_HOST}" ct state established,related accept
+ }}
+}}'''
+
+
+def virtual_ip():
+    data = json.loads(inside(['ip','-j','-4','addr']).stdout)
+    ips = [a['local'] for link in data for a in link.get('addr_info', [])
+           if ipaddress.ip_address(a['local']) in ipaddress.ip_network('10.77.0.0/24')]
+    if len(ips) != 1:
+        raise RuntimeError('virtual_ip_missing')
+    return ips[0]
+
+
+def full_namespace(address):
+    vip = virtual_ip()
+    if not Path('/sys/class/net/'+FULL_HOST).exists():
+        command(['ip','link','add',FULL_HOST,'type','veth','peer','name',FULL_PEER])
+        command(['ip','link','set',FULL_PEER,'netns',NS])
+    command(['ip','addr','replace','172.29.247.1/30','dev',FULL_HOST])
+    command(['ip','link','set',FULL_HOST,'mtu','1280','up'])
+    inside(['ip','addr','replace','172.29.247.2/30','dev',FULL_PEER])
+    inside(['ip','link','set',FULL_PEER,'mtu','1280','up'])
+    inside(['sysctl','-qw','net.ipv4.conf.all.forwarding=1','net.ipv4.conf.all.rp_filter=0'])
+    # StrongSwan's catch-all route must not capture replies to the host-facing interface.
+    inside(['ip','rule','del','priority','90','to',FULL_NET,'lookup','main'],check=False)
+    inside(['ip','rule','add','priority','90','to',FULL_NET,'lookup','main'])
+    deletions = ''
+    for family,table in [('inet','evn_full_forward'),('netdev','evn_full_wire')]:
+        if inside(['nft','list','table',family,table],check=False).returncode == 0:
+            deletions += f'delete table {family} {table}\n'
+    rules = deletions + f'''table inet evn_full_forward {{
+ chain forward {{ type filter hook forward priority -5; policy drop;
+  iifname "{FULL_PEER}" oifname "{PEER}" ip saddr 172.29.247.1 accept
+  iifname "{PEER}" oifname "{FULL_PEER}" ip daddr 172.29.247.1 ipsec in reqid {REQID} ct state established,related accept
+ }}
+ chain nat {{ type nat hook postrouting priority srcnat; policy accept;
+  ip saddr 172.29.247.1 oifname "{PEER}" snat ip to {vip}
+ }}
+}}
+table netdev evn_full_wire {{
+ chain egress {{ type filter hook egress device "{PEER}" priority 0; policy drop;
+  ether type arp accept
+  ip daddr {address} udp dport {{500,4500}} accept
+  ip daddr {address} tcp dport 8443 accept
+ }}
+}}'''
+    inside(['nft','-c','-f','-'],data=rules)
+    inside(['nft','-f','-'],data=rules)
+    # Replace the original lab forward drop; host ingress remains constrained by full_forward.
+    inside(['nft','flush','chain','inet','evn_starfive_guard','forward'])
+    inside(['nft','add','rule','inet','evn_starfive_guard','forward','iifname',FULL_PEER,'meta','nfproto','ipv4','accept'])
+    inside(['nft','add','rule','inet','evn_starfive_guard','forward','oifname',FULL_PEER,'ipsec','in','reqid',str(REQID),'ct','state','established,related','accept'])
+
+
+def egress_health():
+    for url,expected in [('https://www.cloudflare.com/cdn-cgi/trace','ip=38.180.164.67'),
+                         ('https://api.ipify.org','38.180.164.67')]:
+        result = inside(['curl','-4','--noproxy','*','--fail','--silent','--show-error',
+                         '--connect-timeout','3','--max-time','5',url],timeout=7,check=False)
+        if result.returncode == 0 and expected in result.stdout.splitlines():
+            return True
+    return False
+
+
+def retire_previous_connections(addresses):
+    # A changed VPN egress cannot preserve old TCP sessions. Wake applications now
+    # instead of leaving stale source addresses and UDP NAT until their timeouts.
+    for address in addresses:
+        command(['ss','-K','src',address],check=False)
+        for protocol in ('tcp','udp'):
+            command(['conntrack','-D','-f','ipv4','-p',protocol,'-s',address],check=False)
+
+
+def system_dns_health(resolv_conf=Path('/etc/resolv.conf')):
+    # getaddrinfo/curl may use nss-resolve over a Unix socket and miss a broken
+    # UDP stub used by other applications. Exercise resolv.conf independently.
+    servers = [line.split()[1] for line in resolv_conf.read_text().splitlines()
+               if line.split()[:1] == ['nameserver'] and len(line.split()) >= 2][:3]
+    for server in servers:
+        try:
+            family = socket.AF_INET6 if ipaddress.ip_address(server).version == 6 else socket.AF_INET
+            transaction = secrets.token_bytes(2)
+            query = transaction+b'\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00'
+            query += b'\x03api\x05ipify\x03org\x00\x00\x01\x00\x01'
+            with socket.socket(family, socket.SOCK_DGRAM) as resolver:
+                resolver.settimeout(2)
+                resolver.connect((server, 53))
+                resolver.send(query)
+                answer = resolver.recv(4096)
+            if (len(answer) >= 12 and answer[:2] == transaction and
+                    answer[2] & 0x80 and answer[3] & 15 == 0 and
+                    int.from_bytes(answer[6:8], 'big') > 0):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def activate_full(address):
+    old_addresses = [a['local'] for link in json.loads(command(['ip','-j','-4','addr','show','scope','global']).stdout)
+                     if link.get('ifname') not in (HOST,FULL_HOST)
+                     for a in link.get('addr_info',[]) if a.get('scope') == 'global']
+    if not full_state().exists():
+        if Path('/sys/class/net/'+FULL_HOST).exists():
+            raise RuntimeError('full_interface_collision')
+        if command(['ip','route','show','table',FULL_TABLE],check=False).stdout.strip():
+            raise RuntimeError('full_table_collision')
+        if command(['ip','route','show','table',ADMIN_TABLE],check=False).stdout.strip():
+            raise RuntimeError('admin_table_collision')
+        if any(r.get('priority') in (79,80) for r in json.loads(command(['ip','-j','-4','rule']).stdout)):
+            raise RuntimeError('full_rule_collision')
+        write(full_state(),json.dumps({'active':False}))
+    full_namespace(address)
+    # Validate the egress filter before interrupting the previous VPN.
+    if not egress_health():
+        raise RuntimeError('estonia_egress_failed')
+    rules = full_firewall()
+    # Repair may inherit a guard from an older version. Replace our table in
+    # one nft transaction, so fixes apply without opening an unguarded window.
+    replacement = ('delete table inet '+FULL_GUARD+'\n' if full_guard_active() else '')+rules
+    command(['nft','-c','-f','-'],data=replacement)
+    command(['nft','-f','-'],data=replacement)
+    # Guard persistence precedes switching. Cleanup after a crash never opens the Internet.
+    guard_unit = '''[Unit]
+Description=Evgenium experimental full-device kill switch
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/vpn-manager/starfive-tunnel/full-guard.nft
+[Install]
+WantedBy=multi-user.target
+'''.replace('/usr/sbin/nft', shutil.which('nft'))
+    write(ROOT/'full-guard.nft',rules)
+    write(Path('/etc/systemd/system/evgenium-starfive-full-guard.service'),guard_unit)
+    command(['systemctl','daemon-reload'])
+    command(['systemctl','enable','evgenium-starfive-full-guard.service'])
+    # This command stops only this manager's previous Xray mode and removes its guard.
+    command(['/usr/local/sbin/vpnctl','internal-starfive-pause-main'],timeout=40)
+    command(['ip','route','replace','unreachable','default','metric','32760','table',FULL_TABLE])
+    command(['ip','route','replace','default','via','172.29.247.2','dev',FULL_HOST,'metric','10','table',FULL_TABLE])
+    command(['ip','rule','del','priority','80','lookup',FULL_TABLE],check=False)
+    for rule in (['priority','79','to',CLIENT+'/32','lookup','main'],
+                 ['priority','79','iif',FULL_HOST,'lookup','main']):
+        command(['ip','rule','del',*rule],check=False)
+        command(['ip','rule','add',*rule])
+    command(['ip','rule','add','priority','80','lookup',FULL_TABLE])
+    data=json.loads(full_state().read_text())
+    if shutil.which('resolvectl') and command(['systemctl','is-active','--quiet','systemd-resolved'],check=False).returncode == 0:
+        data['dns_mode']='resolved_link'
+        write(full_state(),json.dumps(data))
+        command(['resolvectl','dns',FULL_HOST,'1.1.1.1','9.9.9.9'])
+        command(['resolvectl','domain',FULL_HOST,'~.'])
+        command(['resolvectl','default-route',FULL_HOST,'yes'])
+        command(['resolvectl','flush-caches'],check=False)
+    else:
+        if 'dns_backup' not in data:
+            data['dns_backup']=Path('/etc/resolv.conf').read_text()
+            write(full_state(),json.dumps(data))
+        Path('/etc/resolv.conf').write_text('nameserver 1.1.1.1\nnameserver 9.9.9.9\noptions timeout:2 attempts:2\n')
+    clear_dns_mappings(previous_vpn=True)
+    retire_previous_connections(old_addresses)
+    if not system_dns_health():
+        raise RuntimeError('system_dns_failed')
+    # Test the actual host path as well as namespace probes before announcing connected.
+    check = command(['curl','-4','--noproxy','*','--fail','--silent','--max-time','10','https://api.ipify.org'],timeout=12)
+    if check.stdout.strip() != '38.180.164.67':
+        raise RuntimeError('host_egress_failed')
+    data['active']=True
+    write(full_state(),json.dumps(data))
+
+
+def cleanup_full(release=False):
+    if not full_state().exists():
+        return
+    data=json.loads(full_state().read_text())
+    command(['ip','route','del','default','metric','10','table',FULL_TABLE],check=False)
+    command(['ip','link','del',FULL_HOST],check=False)
+    # On failure: retain routing, DNS and the persistent guard until explicit disconnect.
+    if not release:
+        return
+    if 'dns_backup' in data:
+        Path('/etc/resolv.conf').write_text(data['dns_backup'])
+    command(['ip','rule','del','priority','80','lookup',FULL_TABLE],check=False)
+    command(['ip','rule','del','priority','79','to',CLIENT+'/32','lookup','main'],check=False)
+    command(['ip','rule','del','priority','79','iif',FULL_HOST,'lookup','main'],check=False)
+    command(['ip','route','flush','table',FULL_TABLE],check=False)
+    for server in (SERVER_LAN, '38.180.164.67'):
+        command(['ip','rule','del','priority','79','to',server,'ipproto','tcp','dport','22','lookup',ADMIN_TABLE],check=False)
+    command(['systemctl','disable','--now','evgenium-starfive-full-guard.service'],check=False)
+    command(['nft','delete','table','inet',FULL_GUARD],check=False)
+    clear_dns_mappings()
+    command(['ip','route','flush','table',ADMIN_TABLE],check=False)
+    full_state().unlink()
+    command(['resolvectl','flush-caches'],check=False) if shutil.which('resolvectl') else None
 
 
 def command(args, check=True, timeout=20, data=None, env=None):
@@ -77,13 +353,13 @@ def status():
     data = saved()
     running = command(['systemctl', 'is-active', '--quiet', UNIT], check=False, timeout=2).returncode == 0
     if data.get('phase') == 'connected' and (not running or time.monotonic()-data.get('heartbeat', 0) > 45):
-        data.update(phase='interrupted', message='Тестовый туннель остановился. Рабочий VPN сохранён.', active=False)
+        data.update(phase='interrupted', message='Соединение остановилось. Проверьте состояние защиты и нажмите «Починить».', active=False)
     public = {key: data[key] for key in ('phase', 'message', 'progress', 'active', 'updated', 'metrics',
                                         'scope', 'since', 'retry') if key in data}
     token_info = token_status()
     return {'phase': 'off', 'message': ('Токен сохранён. Нажмите «Подключить».' if token_info['has_token'] else 'Введите и подтвердите токен клиента.'),
             'progress': 0, 'active': False, **public, 'running': running,
-            **token_info, 'isolated': True, 'protocol': 'IKEv2'}
+            **token_info, 'isolated': False, 'full_device': True, 'guard': full_guard_active(), 'protocol': 'IKEv2 → Эстония'}
 
 
 @contextlib.contextmanager
@@ -146,7 +422,11 @@ def setup_network():
     uplink = Path('/proc/sys/net/ipv4/conf')/route['dev']/'forwarding'
     write(ROOT/'network.json', json.dumps({'forward': old_forward, 'interface': route['dev'], 'uplink_forward': uplink.read_text().strip()}))
     command(['ip', 'netns', 'add', NS])
-    write(Path('/etc/netns')/NS/'resolv.conf', 'nameserver 77.88.8.8\nnameserver 77.88.8.1\noptions timeout:2 attempts:2\n')
+    write(Path('/etc/netns')/NS/'resolv.conf', 'nameserver 1.1.1.1\nnameserver 9.9.9.9\noptions timeout:2 attempts:2\n')
+    # nss-resolve talks to the host daemon over a Unix socket even inside netns.
+    nss=Path('/etc/nsswitch.conf').read_text()
+    nss=re.sub(r'^hosts:.*$', 'hosts: files dns', nss, flags=re.M)
+    write(Path('/etc/netns')/NS/'nsswitch.conf', nss)
     command(['ip', 'link', 'add', HOST, 'type', 'veth', 'peer', 'name', PEER])
     command(['ip', 'link', 'set', PEER, 'netns', NS])
     command(['ip', 'addr', 'add', GATEWAY+'/30', 'dev', HOST])
@@ -168,6 +448,7 @@ def setup_network():
 
 
 def cleanup():
+    cleanup_full()
     # An unowned namespace/table must never be deleted by a generic cleanup call.
     if not (ROOT/'network.json').exists():
         return
@@ -189,6 +470,7 @@ def cleanup():
     elif data.get('forward') == '0' and Path('/proc/sys/net/ipv4/ip_forward').read_text().strip() == '1':
         Path('/proc/sys/net/ipv4/ip_forward').write_text('0\n')
     (Path('/etc/netns')/NS/'resolv.conf').unlink(missing_ok=True)
+    (Path('/etc/netns')/NS/'nsswitch.conf').unlink(missing_ok=True)
     with contextlib.suppress(OSError):
         (Path('/etc/netns')/NS).rmdir()
     (ROOT/'network.json').unlink(missing_ok=True)
@@ -528,13 +810,11 @@ def connect(token='', repair=False):
         save_token(token)
     if not token_status()['has_token']:
         raise ValueError('Введите и подтвердите токен клиента.')
-    # Do not auto-install packages or change the working VPN to make a test succeed.
-    if not shutil.which('swanctl') or not Path('/usr/sbin/charon-systemd').is_file():
-        raise RuntimeError('Для тестового туннеля нужен штатный пакет strongSwan.')
+    ensure_dependencies()
     if repair:
         write(ROOT/'recalibrate', '1')
     unit = f'''[Unit]
-Description=Evgenium isolated StarFive Russia-to-Russia tunnel
+Description=Evgenium StarFive full-device Estonia VPN
 After=network.target
 [Service]
 Type=simple
@@ -561,22 +841,23 @@ WantedBy=multi-user.target
 """)
     command(['systemctl', 'daemon-reload'])
     command(['systemctl', 'enable', recovery])
-    stage('starting' , 'Готовлю тестовый туннель. Рабочий VPN сохранён.', 2, active=False, retry=0)
+    stage('starting' , 'Готовлю подключение через StarFive в Эстонию.', 2, active=False, retry=0, error_code='')
     command(['systemctl', 'restart' if repair else 'start', UNIT])
-    print('Тестовый туннель запускается. Этапы видны в строке состояния.')
+    print('Экспериментальный VPN запускается. Этапы видны в строке состояния.')
 
 
 def disconnect():
     command(['systemctl', 'stop', UNIT], check=False, timeout=25)
     cleanup()
-    stage('off', 'Тестовый туннель выключен. Рабочий VPN сохранён.', 0, active=False)
-    print('Тестовый туннель выключен.')
+    cleanup_full(release=True)
+    stage('off', 'Экспериментальный VPN выключен.', 0, active=False)
+    print('Экспериментальный VPN выключен.')
 
 
 def start_daemon(env):
     (RUNTIME/'charon.vici').unlink(missing_ok=True)
     log = (ROOT/'charon.log').open('w')
-    daemon = subprocess.Popen(['ip', 'netns', 'exec', NS, '/usr/sbin/charon-systemd'],
+    daemon = subprocess.Popen(['ip', 'netns', 'exec', NS, charon_binary()],
                               env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
     log.close()
     for _ in range(60):
@@ -598,10 +879,10 @@ def worker():
     daemon = None
     try:
         cleanup()
-        stage('prepare', 'Создаю отдельную сеть для испытаний.', 8, active=False)
+        stage('prepare', 'Готовлю защищённое соединение со StarFive.', 8, active=False)
         setup_network()
         try:
-            reference = reference_sample(force=(ROOT/'recalibrate').exists())
+            reference = ({'skipped': 'guard_active'} if full_guard_active() else reference_sample(force=(ROOT/'recalibrate').exists()))
         except (OSError, RuntimeError, ValueError):
             reference = {'available': False, 'provider': 'Yandex Internetometer'}
         (ROOT/'recalibrate').unlink(missing_ok=True)
@@ -623,7 +904,9 @@ def worker():
         stage('measure', 'Проверяю передачу данных и целостность файла.', 85)
         metrics = download()
         metrics['reference'] = reference
-        stage('connected', 'Туннель Россия → Россия работает. Рабочий VPN не переключался.', 100,
+        stage('routing', 'Подключаю весь трафик компьютера к выходу в Эстонии.', 92)
+        activate_full(address)
+        stage('connected', 'Подключено: компьютер → StarFive → Эстония. IPv6 заблокирован.', 100,
               active=True, metrics=metrics, since=int(time.time()))
         failures = 0
         while not STOP:
@@ -635,6 +918,9 @@ def worker():
                 break
             try:
                 ok = daemon.poll() is None and installed() and health()
+                if ok and not egress_health():
+                    stage('egress_wait', 'StarFive доступен; ожидаю восстановления выхода в Эстонии.', 90, active=False)
+                    continue
             except (OSError, RuntimeError, subprocess.TimeoutExpired):
                 ok = False
             failures = 0 if ok else failures+1
@@ -652,8 +938,11 @@ def worker():
                 swan('--initiate', '--child', 'starfive-net', timeout=35)
                 if not installed() or not health():
                     raise RuntimeError('recovery_failed')
+                full_namespace(address)
+                if not egress_health():
+                    raise RuntimeError('estonia_egress_failed')
                 failures = 0
-            stage('connected', 'Туннель Россия → Россия работает. Рабочий VPN не переключался.', 100, active=True)
+            stage('connected', 'Подключено: компьютер → StarFive → Эстония. IPv6 заблокирован.', 100, active=True)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         code = str(exc) if re.fullmatch(r"[a-z_]{1,64}", str(exc)) else type(exc).__name__
         current = saved().get('phase', 'prepare')
@@ -661,7 +950,7 @@ def worker():
                    'handshake': 'StarFive не подтвердил подключение IKEv2.',
                    'measure': 'Проверка передачи данных не прошла.',
                    'repairing': 'Автовосстановление не удалось. Нажмите «Починить».'}.get(current, 'Тестовый туннель не запустился. Нажмите «Починить».')
-        stage('failed', message+' Рабочий VPN сохранён.', 0, active=False, error_code=code, metrics={})
+        stage('failed', message+(' Интернет заблокирован до отключения режима.' if full_guard_active() else ' Маршрутизация компьютера не переключена.'), 0, active=False, error_code=code, metrics={})
     finally:
         if daemon and daemon.poll() is None:
             daemon.terminate()
@@ -671,4 +960,4 @@ def worker():
                 daemon.kill(); daemon.wait(timeout=3)
         cleanup()
         if STOP:
-            stage('off', 'Тестовый туннель выключен. Рабочий VPN сохранён.', 0, active=False)
+            stage('off', 'Экспериментальный VPN выключен.', 0, active=False)

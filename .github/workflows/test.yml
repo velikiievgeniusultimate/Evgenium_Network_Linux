@@ -24,8 +24,8 @@ jobs:
           grep -F 'vpn update' install.sh
           grep -F 'DISTRO="arch"' install.sh
           grep -F 'DISTRO="fedora"' install.sh
-          grep -F 'packages=(python curl nftables iproute2 ca-certificates qt6-declarative)' install.sh
-          grep -F 'packages=(python3 curl nftables iproute ca-certificates shadow-utils)' install.sh
+          grep -F 'packages=(python curl nftables iproute2 ca-certificates qt6-declarative strongswan openssl conntrack-tools)' install.sh
+          grep -F 'packages=(python3 curl nftables iproute ca-certificates shadow-utils strongswan openssl conntrack-tools)' install.sh
           grep -F 'QT_DECL_VERSION="$(rpm -q --qf' install.sh
           grep -F 'QT_DECL_DEVEL="qt6-qtdeclarative-devel-${QT_DECL_VERSION}"' install.sh
           grep -F 'sudo dnf install -y --no-best --setopt=install_weak_deps=False' install.sh
@@ -155,7 +155,7 @@ jobs:
           rm -f src/.qmllint.ini
       - name: Validate nftables server-port and Waydroid rules
         run: |
-          sudo apt-get install -y -qq nftables
+          sudo apt-get install -y -qq nftables conntrack
           python - <<'PY'
           import importlib.util
           from pathlib import Path
@@ -170,6 +170,10 @@ jobs:
           sudo nft -c -f /tmp/vpn-guard-waydroid.nft
           sudo nft -c -f /tmp/starfive-guard.nft
           ip rule help 2>&1 | grep -F 'fwmark'
+      - name: Verify DNS transitions and loopback stubs in isolated namespaces
+        run: |
+          sudo python3 scripts/test-dns-transition.py
+          sudo python3 scripts/test-local-dns-guard.py
       - name: Validate dedicated server bypass table
         run: |
           grep -F 'SERVER_BYPASS_TABLE = 51820' src/vpnctl.py

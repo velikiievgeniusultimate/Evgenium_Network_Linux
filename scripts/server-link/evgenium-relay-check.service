@@ -1,0 +1,10 @@
+[Unit]
+Description=Check only Evgenium client relay routing and guard
+After=evgenium-relay.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/evgenium-link/relay-star.py check
+TimeoutStartSec=45
+MemoryMax=64M
+CPUQuota=5%
+UMask=0077

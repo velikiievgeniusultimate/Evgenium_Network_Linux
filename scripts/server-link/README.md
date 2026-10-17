@@ -11,3 +11,7 @@
 Диагностические серверы запускаются только на время испытаний. Их порты и разрешения отсутствуют в постоянных примерах транспортов. Не запускать нагрузочные пробы без ресурсного наблюдения.
 
 `transport.py` устанавливается на StarFive в `/opt/evgenium-link/transport.py`. Он необходим для link-star.sh и health.py: фиксация источника UDP24444 предотвращает смену endpoint запоздавшими пакетами неактивного relay. Ручной выбор транспорта выполняется этим же скриптом.
+
+## IKEv2 client relay
+
+After the link is installed on StarFive, `install-relay-star.sh` adds the authenticated client-pool policy route, fail-closed forwarding and a boot-time guard include. It does not modify strongSwan or the Estonia panel. Stop `evgenium-relay` to block client egress; stopping is deliberately not an uninstall. See `docs/STARFIVE-ESTONIA.md` for lifecycle and client behavior.
