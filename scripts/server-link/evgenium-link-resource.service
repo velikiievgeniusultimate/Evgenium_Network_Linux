@@ -1,0 +1,13 @@
+[Unit]
+Description=Bounded resource log and guard for Evgenium link
+After=network-online.target
+[Service]
+ExecStart=/usr/bin/python3 /opt/evgenium-link/resource-watch.py NODE 0
+Restart=on-failure
+RestartSec=30
+MemoryMax=64M
+CPUQuota=5%
+TasksMax=16
+UMask=0077
+[Install]
+WantedBy=multi-user.target

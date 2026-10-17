@@ -1,0 +1,24 @@
+table inet evg_link {
+ chain input {
+  type filter hook input priority -5; policy accept;
+  iifname "evg-wg" ct state established,related accept
+  iifname "evg-wg" ip saddr 10.203.71.2 ip protocol icmp accept
+  iifname "evg-wg" drop
+ }
+ chain forward {
+  type filter hook forward priority -5; policy accept;
+  iifname "evg-wg" ip saddr != 10.203.71.2 drop
+  iifname "evg-wg" ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } drop
+  iifname "evg-wg" oifname "eth0" ct state new,established,related accept
+  iifname "evg-wg" drop
+  oifname "evg-wg" iifname "eth0" ip daddr 10.203.71.2 ct state established,related accept
+  oifname "evg-wg" drop
+  iifname "eth0" drop
+ }
+}
+table ip evg_link_nat {
+ chain postrouting {
+  type nat hook postrouting priority srcnat; policy accept;
+  ip saddr 10.203.71.2 oifname "eth0" masquerade
+ }
+}

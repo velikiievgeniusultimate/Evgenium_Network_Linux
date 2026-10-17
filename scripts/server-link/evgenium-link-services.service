@@ -1,0 +1,13 @@
+[Unit]
+Description=Lightweight internet checks inside Evgenium link
+After=evgenium-link.service
+ConditionPathExists=!/var/lib/evgenium-link/resource-hold
+ConditionPathExists=!/var/lib/evgenium-link/maintenance
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/ip netns exec evg-link /usr/bin/python3 /opt/evgenium-link/service-check.py
+TimeoutStartSec=90
+CPUQuota=10%
+MemoryMax=128M
+TasksMax=32
+UMask=0077

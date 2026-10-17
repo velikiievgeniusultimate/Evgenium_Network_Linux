@@ -1,0 +1,27 @@
+{
+  "obfs": {
+    "type": "salamander",
+    "salamander": {
+      "password": "REPLACE_WITH_RANDOM_OBFS"
+    }
+  },
+  "quic": {
+    "initStreamReceiveWindow": 1048576,
+    "maxStreamReceiveWindow": 1048576,
+    "initConnReceiveWindow": 4194304,
+    "maxConnReceiveWindow": 4194304
+  },
+  "server": "38.180.164.67:24446",
+  "auth": "REPLACE_WITH_RANDOM_AUTH",
+  "tls": {
+    "sni": "evgenium-link",
+    "ca": "/etc/evgenium-link/hy-tls.crt"
+  },
+  "udpForwarding": [
+    {
+      "listen": "127.0.0.1:24445",
+      "remote": "127.0.0.1:24447",
+      "timeout": "120s"
+    }
+  ]
+}

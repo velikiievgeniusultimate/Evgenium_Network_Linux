@@ -1,0 +1,30 @@
+{
+  "obfs": {
+    "type": "salamander",
+    "salamander": {
+      "password": "REPLACE_WITH_RANDOM_OBFS"
+    }
+  },
+  "quic": {
+    "initStreamReceiveWindow": 1048576,
+    "maxStreamReceiveWindow": 1048576,
+    "initConnReceiveWindow": 4194304,
+    "maxConnReceiveWindow": 4194304
+  },
+  "listen": "0.0.0.0:24446",
+  "tls": {
+    "cert": "/etc/evgenium-link/hy-tls.crt",
+    "key": "/etc/evgenium-link/hy-tls.key"
+  },
+  "auth": {
+    "type": "password",
+    "password": "REPLACE_WITH_RANDOM_AUTH"
+  },
+  "ignoreClientBandwidth": true,
+  "acl": {
+    "inline": [
+      "direct(127.0.0.1, udp/24447)",
+      "reject(all)"
+    ]
+  }
+}

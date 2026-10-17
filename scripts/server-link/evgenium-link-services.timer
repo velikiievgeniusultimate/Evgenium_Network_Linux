@@ -1,0 +1,8 @@
+[Unit]
+Description=Check Evgenium DNS and public services every five minutes
+[Timer]
+OnBootSec=120
+OnUnitInactiveSec=300
+AccuracySec=5
+[Install]
+WantedBy=timers.target

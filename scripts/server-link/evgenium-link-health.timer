@@ -1,0 +1,8 @@
+[Unit]
+Description=Bounded health checks for Evgenium interserver link
+[Timer]
+OnBootSec=45
+OnUnitInactiveSec=5
+AccuracySec=1
+[Install]
+WantedBy=timers.target

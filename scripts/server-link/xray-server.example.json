@@ -1,0 +1,72 @@
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "none"
+  },
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": 24443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "00000000-0000-4000-8000-000000000000"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "/etc/evgenium-link/hy-tls.crt",
+              "keyFile": "/etc/evgenium-link/hy-tls.key"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "deny",
+      "protocol": "blackhole"
+    },
+    {
+      "tag": "local",
+      "protocol": "freedom",
+      "settings": {
+        "finalRules": [
+          {
+            "action": "allow",
+            "network": "udp",
+            "ip": [
+              "127.0.0.1"
+            ],
+            "port": "24447"
+          },
+          {
+            "action": "block",
+            "blockDelay": "0"
+          }
+        ]
+      }
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "ip": [
+          "127.0.0.1"
+        ],
+        "port": "24447",
+        "network": "udp",
+        "outboundTag": "local"
+      }
+    ]
+  }
+}

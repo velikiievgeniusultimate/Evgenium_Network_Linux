@@ -1,0 +1,53 @@
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "none"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 24449,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "127.0.0.1",
+        "port": 24447,
+        "network": "udp"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "38.180.164.67",
+            "port": 24443,
+            "users": [
+              {
+                "id": "00000000-0000-4000-8000-000000000000",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "evgenium-link",
+          "certificates": [
+            {
+              "certificateFile": "/etc/evgenium-link/hy-tls.crt",
+              "usage": "verify"
+            }
+          ]
+        }
+      },
+      "mux": {
+        "enabled": false
+      }
+    }
+  ]
+}

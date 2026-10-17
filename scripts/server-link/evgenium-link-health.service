@@ -1,0 +1,10 @@
+[Unit]
+Description=Check only the Evgenium interserver link and recover its own objects
+After=evgenium-link.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/evgenium-link/health.py NODE
+TimeoutStartSec=55
+CPUQuota=10%
+MemoryMax=64M
+TasksMax=16

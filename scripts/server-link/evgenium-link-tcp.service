@@ -1,0 +1,20 @@
+[Unit]
+Description=Evgenium independent TCP fallback transport
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+ConditionPathExists=!/var/lib/evgenium-link/resource-hold
+[Service]
+ExecStart=/opt/evgenium-link/xray run -c /etc/evgenium-link/xray.json
+Restart=on-failure
+RestartSec=15
+MemoryMax=192M
+CPUQuota=25%
+TasksMax=48
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+[Install]
+WantedBy=multi-user.target
