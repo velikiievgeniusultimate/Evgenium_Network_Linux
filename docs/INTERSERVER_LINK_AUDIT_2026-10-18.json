@@ -1,0 +1,149 @@
+{
+  "utc": "2026-10-17T23:44:55.946019+00:00",
+  "mode": "tcp",
+  "observation_since": "2026-10-17T21:06:52Z",
+  "server_checks": {
+    "star": {
+      "through": "2026-10-17T23:44:19Z",
+      "samples": 1153,
+      "failures": 0,
+      "recovery_actions": 0,
+      "endpoint_mismatches": 0,
+      "services": {
+        "inner_ping": {
+          "n": 31,
+          "failed": 0
+        },
+        "dns_udp": {
+          "n": 31,
+          "failed": 0
+        },
+        "dns_tcp": {
+          "n": 31,
+          "failed": 0
+        },
+        "egress": {
+          "n": 31,
+          "failed": 0
+        },
+        "discord_api": {
+          "n": 31,
+          "failed": 0
+        },
+        "discord_cdn": {
+          "n": 31,
+          "failed": 0
+        },
+        "youtube": {
+          "n": 31,
+          "failed": 0
+        },
+        "github": {
+          "n": 31,
+          "failed": 0
+        },
+        "cloudflare": {
+          "n": 31,
+          "failed": 0
+        },
+        "telegram": {
+          "n": 31,
+          "failed": 0
+        },
+        "discord_ws": {
+          "n": 31,
+          "failed": 0
+        }
+      },
+      "resource_guard_events": [],
+      "min_available_mib": 7371
+    },
+    "est": {
+      "through": "2026-10-17T23:44:21Z",
+      "samples": 1383,
+      "failures": 0,
+      "recovery_actions": 0,
+      "endpoint_mismatches": 0,
+      "services": {},
+      "resource_guard_events": [],
+      "min_available_mib": 2972
+    }
+  },
+  "change": {
+    "server": "star",
+    "unit": "evgenium-link-tcp.service",
+    "old_cpu_quota_percent_of_one_core": 25,
+    "new_cpu_quota_percent_of_one_core": 75,
+    "new_quota_period_ms": 20,
+    "pid_before_after": 24029,
+    "persistent_dropin": "/etc/systemd/system/evgenium-link-tcp.service.d/30-cpu-budget.conf",
+    "memory_limit_mib": 192,
+    "estonia_transport_limits_changed": false,
+    "global_resource_guard_changed": false
+  },
+  "final_quality": {
+    "utc": "2026-10-17T23:42:17Z",
+    "duration_s": 120,
+    "packet_bytes": 160,
+    "packets_per_second": 50,
+    "invalid": 0,
+    "all": {
+      "sent": 6000,
+      "lost": 0,
+      "over_200ms": 0,
+      "p50_ms": 22.99,
+      "p95_ms": 70.23,
+      "p99_ms": 99.42
+    },
+    "quiet_before": {
+      "sent": 1500,
+      "lost": 0,
+      "over_200ms": 0,
+      "p50_ms": 22.99,
+      "p95_ms": 24.78,
+      "p99_ms": 27.81
+    },
+    "download_window": {
+      "sent": 500,
+      "lost": 0,
+      "over_200ms": 0,
+      "p50_ms": 74.74,
+      "p95_ms": 112.61,
+      "p99_ms": 118.56
+    },
+    "quiet_after": {
+      "sent": 4000,
+      "lost": 0,
+      "over_200ms": 0,
+      "p50_ms": 22.96,
+      "p95_ms": 24.66,
+      "p99_ms": 29.98
+    },
+    "load_started_s": 30.00120378797874,
+    "load_finished_s": 38.049133074935526,
+    "download": {
+      "status": 200,
+      "bytes": 25250136,
+      "mbps": 25.248,
+      "exit": 28
+    }
+  },
+  "limits": [
+    "Initial attempts to closed diagnostic ports and the desktop-local 10.77.0.1 address are invalid and excluded; artifacts are prefixed INVALID_.",
+    "Download exit 28 after HTTP200 is the intentional 8-second limit, not a tunnel failure. Synthetic transfer cap was 50 Mbps.",
+    "Earlier 4 MiB uploads included the HTTP Expect/100-continue wait; final 8 MiB uploads disable Expect and verify SHA256.",
+    "StarFive baseline route comparison is false because the original baseline predates the authorized relay (table 51827, rule 210, evg-relay-host) and current strongSwan client routes. There were no removed baseline routes in the inspected diff.",
+    "0/6000 in the final packet series does not erase earlier 0-5/2000 losses under load or establish long-term loss-free operation.",
+    "ISP plan and router WAN rate were not independently verified. Desktop and StarFive Ethernet negotiated at 1000 Mbps.",
+    "No new fault injection or live transport switching. Paused desktop monitoring schedule was not resumed."
+  ],
+  "speed_mbps": {
+    "baseline_download": 7.573,
+    "tuned_download": 24.662,
+    "repeat_tuned_download": 25.248,
+    "tuned_upload": 10.631,
+    "desktop_https_download": 23.705,
+    "desktop_starfive_download_capped": 50.003,
+    "desktop_starfive_upload_capped": 49.859
+  }
+}
