@@ -1,0 +1,5 @@
+Flask>=3.1,<4
+gunicorn>=23,<24
+cryptography>=43
+qrcode>=7.4,<9
+# Production reads strongSwan status through the existing swanctl --list-sas --raw.
