@@ -66,7 +66,10 @@ def main():
             exp.backend=lambda:'userspace';exp.SERVER='10.78.0.1'
             for name in ('server','client'):
                 r=root/name;exp.ROOT=r;exp.URI='unix://'+str(r/'charon.vici')
-                (r/'strongswan.conf').write_text(exp.render_strongswan())
+                strongswan_conf=exp.render_strongswan()
+                if name=='server':
+                    strongswan_conf=strongswan_conf.replace('charon {','charon {\n port_nat_t = '+str(exp.IKE_PORT),1)
+                (r/'strongswan.conf').write_text(strongswan_conf)
                 if name=='client':
                     config=exp.render_connection({'identity':'device-'+'a'*24}).replace(str(r/'client.pem'),str(r/'x509/cert.pem')).replace(str(r/'ca.pem'),str(r/'x509ca/ca.pem'))
                 else:

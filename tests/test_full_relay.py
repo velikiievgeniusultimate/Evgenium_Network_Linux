@@ -50,6 +50,19 @@ class FullRelayTests(unittest.TestCase):
         self.assertIn('snat ip to 172.29.247.1',text)
         self.assertIn('ip daddr 255.255.255.255 udp sport 68 udp dport 67 accept',text)
 
+    def test_ingress_migration_replaces_retained_guard_atomically(self):
+        with tempfile.TemporaryDirectory() as d,patch.object(t,'ROOT',Path(d)),patch.object(t,'full_guard_active',return_value=True),patch.object(t,'command') as cmd:
+            t.refresh_retained_guard()
+            rules=(Path(d)/'full-guard.nft').read_text()
+            self.assertIn('195.209.211.163',rules)
+            self.assertIn('udp dport 24550',rules)
+            self.assertNotIn('udp dport {500,4500}',rules)
+            self.assertNotIn('109.194.67.159',rules)
+            self.assertNotIn('192.168.0.163',rules)
+            self.assertIn('policy drop',rules)
+            self.assertEqual([c.args[0] for c in cmd.call_args_list],[['nft','-c','-f','-'],['nft','-f','-']])
+            self.assertTrue(cmd.call_args.kwargs['data'].startswith('delete table inet '+t.FULL_GUARD+'\n'))
+
     def test_retirement_is_scoped_to_previous_addresses(self):
         with patch.object(t,'command') as cmd:
             t.retire_previous_connections(['172.31.255.1'])
