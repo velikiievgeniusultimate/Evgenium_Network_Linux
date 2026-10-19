@@ -46,76 +46,19 @@ find_python() {
     fi
 }
 
-is_existing_install() {
-    # Treat a manager+settings installation as recoverable even if the final
-    # Xray download was interrupted. This lets rerunning install.sh repair a
-    # partial installation instead of rebuilding it from scratch.
-    [[ -x /usr/local/sbin/vpnctl ]] || return 1
-    [[ -f /opt/vpn-manager/current/VERSION ]] || return 1
-    [[ -f /etc/vpn-manager/settings.json ]] || return 1
-    return 0
-}
+# Recovery always downloads the current release. Never execute the installed
+# manager: it may be too old, missing, or only partially upgraded.
+case "${1:-}" in
+    ""|--repair|--reinstall) ;;
+    --help|-h)
+        echo "Установка/восстановление: bash install.sh [--repair|--reinstall]"
+        echo "Заново устанавливает CLI, GUI и зависимости; сохраняет токен, ключи и исключения."
+        exit 0 ;;
+    *) die "Неизвестный параметр: $1" ;;
+esac
+[[ $# -le 1 ]] || die "Слишком много параметров."
 
-if is_existing_install; then
-    say "Найдена существующая установка ${APP_NAME}."
-    say "Переустановка не требуется. Подключаю stable-канал и проверяю обновления..."
-    sudo -v
-    PYTHON_BIN="$(find_python || true)"
-    [[ -n "$PYTHON_BIN" ]] || die "Не найден Python 3, хотя VPN Manager уже установлен."
-
-    sudo "$PYTHON_BIN" - "${MANIFEST_URL}" <<'PY'
-import json, os, pathlib, sys, tempfile
-manifest = sys.argv[1]
-p = pathlib.Path('/etc/vpn-manager/settings.json')
-if not p.exists():
-    raise SystemExit('settings.json отсутствует; установка выглядит повреждённой')
-d = json.loads(p.read_text())
-if d.get('engine') not in ('xray','token-ipsec'):
-    raise SystemExit('установленный manager не распознан')
-d['manager_manifest_url'] = manifest
-fd, tmp = tempfile.mkstemp(prefix='settings.', suffix='.json', dir=str(p.parent))
-try:
-    with os.fdopen(fd, 'w') as f:
-        json.dump(d, f, ensure_ascii=False, indent=2)
-        f.write('\n')
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, p)
-finally:
-    try:
-        os.unlink(tmp)
-    except FileNotFoundError:
-        pass
-PY
-
-    if [[ -x /opt/vpn-manager/current/vpnadmin.py ]]; then
-        sudo ln -sfn /opt/vpn-manager/current/vpnadmin.py /usr/local/sbin/vpn-manager-admin
-    fi
-    sudo /usr/local/sbin/vpnctl internal-sync
-
-    printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/vpnctl\n' "$OWNER_USER" | \
-        sudo tee /etc/sudoers.d/zz-evgenium-vpn >/dev/null
-    sudo chmod 0440 /etc/sudoers.d/zz-evgenium-vpn
-    if command -v visudo >/dev/null 2>&1; then
-        sudo visudo -cf /etc/sudoers.d/zz-evgenium-vpn >/dev/null || {
-            sudo rm -f /etc/sudoers.d/zz-evgenium-vpn
-            die "Проверка sudoers не прошла."
-        }
-    fi
-
-    sudo /usr/local/sbin/vpnctl update
-    # Dependency synchronization also repairs a previous
-    # clean install that reached the manager/GUI stage but lost the Xray asset
-    # download to a transient GitHub/CDN error.
-    sudo /usr/local/sbin/vpnctl internal-sync
-    ok "${APP_NAME} уже установлен. Ничего заново не переустанавливалось."
-    echo
-    echo "Дальше достаточно: vpn update"
-    exit 0
-fi
-
-say "Обнаружена система: ${DISTRO}. Получаю sudo для чистой установки..."
+say "Обнаружена система: ${DISTRO}. Получаю sudo для установки/восстановления..."
 sudo -v
 
 say "Проверяю зависимости..."
@@ -213,7 +156,8 @@ XRAY_GID="$(id -g vpn-xray)"
 
 sudo install -d -m 0755 /opt/vpn-manager /opt/vpn-manager/bin /opt/vpn-manager/releases
 sudo install -d -m 0755 /etc/vpn-manager /usr/local/sbin /usr/local/bin
-sudo install -d -o vpn-xray -g vpn-xray -m 0750 /var/lib/vpn-manager /var/lib/vpn-manager/xray
+sudo install -d -m 0755 /var/lib/vpn-manager
+sudo install -d -o vpn-xray -g vpn-xray -m 0750 /var/lib/vpn-manager/xray
 
 # On SELinux-enabled Fedora, restore the distribution-defined labels for the
 # application directories. Arch simply skips this because restorecon is absent.
@@ -274,7 +218,7 @@ allowed = {"vpnctl.py", "vpnadmin.py", "VERSION"}
 with tarfile.open(archive, "r:gz") as tf:
     members = tf.getmembers()
     names = {m.name for m in members}
-    if names != allowed:
+    if names != allowed or len(members) != len(allowed):
         raise SystemExit(f"unexpected archive members: {sorted(names)}")
     for m in members:
         p = pathlib.PurePosixPath(m.name)
@@ -290,33 +234,75 @@ chmod 755 "${tmp}/release/vpnctl.py" "${tmp}/release/vpnadmin.py"
 "$PYTHON_BIN" "${tmp}/release/vpnctl.py" --self-test >/dev/null
 ok "Compile + self-test прошли."
 
-release_dir="/opt/vpn-manager/releases/${VERSION}"
-sudo rm -rf "${release_dir}"
-sudo install -d -m 0755 "${release_dir}"
-sudo install -m 0755 "${tmp}/release/vpnctl.py" "${release_dir}/vpnctl.py"
-sudo install -m 0755 "${tmp}/release/vpnadmin.py" "${release_dir}/vpnadmin.py"
-sudo install -m 0644 "${tmp}/release/VERSION" "${release_dir}/VERSION"
-sudo ln -sfn "${release_dir}" /opt/vpn-manager/current
-sudo ln -sfn /opt/vpn-manager/current/vpnctl.py /usr/local/sbin/vpnctl
-sudo ln -sfn /opt/vpn-manager/current/vpnadmin.py /usr/local/sbin/vpn-manager-admin
-
-"$PYTHON_BIN" - "$OWNER_USER" "$OWNER_HOME" "$CONFIG_DIR" "$DIRECT_SITES" "$DIRECT_NETWORKS" "$XRAY_UID" "$XRAY_GID" "$MANIFEST_URL" > "${tmp}/settings.json" <<'PY'
-import json, sys
-user, home, configs, sites, networks, uid, gid, manifest = sys.argv[1:]
-print(json.dumps({
-    "schema": 2,
-    "engine": "token-ipsec",
-    "owner_user": user,
-    "owner_home": home,
-    "config_dir": configs,
-    "direct_sites": sites,
-    "direct_networks": networks,
-    "xray_uid": int(uid),
-    "xray_gid": int(gid),
-    "manager_manifest_url": manifest,
-}, ensure_ascii=False, indent=2))
+# The staged files are new, but user data stays in place. Keep a private backup
+# before repairing settings or pointers; never remove the currently running release.
+say "Сохраняю пользовательские данные и устанавливаю свежие файлы..."
+sudo "$PYTHON_BIN" - "$OWNER_USER" "$OWNER_HOME" "$XRAY_UID" "$XRAY_GID" "$MANIFEST_URL" "${tmp}/release" <<'PY'
+import fcntl, json, os, pathlib, pwd, shutil, sys, tarfile, tempfile, time
+user, home, uid, gid, manifest, source = sys.argv[1:]
+root = pathlib.Path('/opt/vpn-manager')
+settings = pathlib.Path('/etc/vpn-manager/settings.json')
+runtime = pathlib.Path('/run/vpn-manager')
+runtime.mkdir(mode=0o750, parents=True, exist_ok=True)
+lock = (runtime/'operation.lock').open('a+')
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    raise SystemExit('Другая операция VPN ещё работает. Повторите установщик после её завершения.')
+account = pwd.getpwnam(user)
+if pathlib.Path(home).resolve() != pathlib.Path(account.pw_dir).resolve():
+    raise SystemExit('HOME не совпадает с домашней папкой пользователя.')
+data = {}
+if settings.exists():
+    try:
+        data = json.loads(settings.read_text())
+        if not isinstance(data, dict):
+            data = {}
+    except (ValueError, UnicodeError):
+        pass  # Preserve the broken file in the backup, then rebuild settings.
+if data.get('owner_user', user) != user or data.get('owner_home', home) != home:
+    raise SystemExit('Запустите восстановление от владельца существующей установки.')
+backups = pathlib.Path('/var/lib/vpn-manager/backups')
+backups.mkdir(mode=0o700, parents=True, exist_ok=True)
+backups.chmod(0o700)
+fd, name = tempfile.mkstemp(prefix=time.strftime('reinstall-%Y%m%d-%H%M%S-'), suffix='.tar.gz', dir=backups)
+os.close(fd)
+with tarfile.open(name, 'w:gz') as tar:
+    for path in [settings.parent, pathlib.Path(home)/'Vpn', root/'current', root/'previous',
+                 pathlib.Path(home)/'.local/share/evgenium-network',
+                 pathlib.Path(home)/'.local/share/plasma/plasmoids/com.evgenium.network']:
+        if path.exists() or path.is_symlink():
+            tar.add(path, arcname=str(path).lstrip('/'), recursive=True)
+print('Резервная копия данных: '+name)
+# Retain every existing setting and credential; only fill absent bootstrap fields.
+for key, value in {'schema':2, 'engine':'token-ipsec', 'owner_user':user, 'owner_home':home,
+                   'config_dir':home+'/Vpn/VPN configs', 'direct_sites':home+'/Vpn/DIRECT sites.txt',
+                   'direct_networks':home+'/Vpn/DIRECT networks.txt', 'direct_apps':home+'/Vpn/DIRECT apps.txt'}.items():
+    data.setdefault(key, value)
+data.update(xray_uid=int(uid), xray_gid=int(gid), manager_manifest_url=manifest)
+fd, name = tempfile.mkstemp(prefix='.settings-', dir=settings.parent)
+with os.fdopen(fd, 'w') as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+    f.write('\n'); f.flush(); os.fsync(f.fileno())
+os.chmod(name, 0o600)
+os.replace(name, settings)
+version = (pathlib.Path(source)/'VERSION').read_text().strip()
+dest = pathlib.Path(tempfile.mkdtemp(prefix=version+'-install-', dir=root/'releases'))
+for filename in ('vpnctl.py', 'vpnadmin.py', 'VERSION'):
+    shutil.copy2(pathlib.Path(source)/filename, dest/filename)
+dest.chmod(0o755)
+def link(target, path):
+    temp = path.with_name(path.name+'.install-new')
+    temp.unlink(missing_ok=True)
+    temp.symlink_to(target)
+    os.replace(temp, path)
+current = root/'current'
+if current.exists():
+    link(current.resolve(), root/'previous')
+link(dest, current)
+link(current/'vpnctl.py', pathlib.Path('/usr/local/sbin/vpnctl'))
+link(current/'vpnadmin.py', pathlib.Path('/usr/local/sbin/vpn-manager-admin'))
 PY
-sudo install -m 0600 "${tmp}/settings.json" /etc/vpn-manager/settings.json
 
 printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/vpnctl\n' "$OWNER_USER" > "${tmp}/sudoers"
 sudo install -o root -g root -m 0440 "${tmp}/sudoers" /etc/sudoers.d/zz-evgenium-vpn
@@ -330,8 +316,9 @@ else
 fi
 
 say "Устанавливаю systemd unit, GUI и команду vpn..."
-sudo /usr/local/sbin/vpnctl internal-sync
-sudo systemctl disable vpn-xray.service >/dev/null 2>&1 || true
+if ! sudo /usr/local/sbin/vpnctl internal-sync; then
+    die "Завершение установки прервано. Данные сохранены. Повторите эту команду с --repair; не удаляйте папки вручную."
+fi
 
 if command -v restorecon >/dev/null 2>&1; then
     sudo restorecon -RF /opt/vpn-manager /etc/vpn-manager /var/lib/vpn-manager >/dev/null 2>&1 || true
@@ -342,10 +329,11 @@ if command -v restorecon >/dev/null 2>&1; then
     done
 fi
 
-say "Проверяю локальный обработчик исключений..."
-sudo /usr/local/sbin/vpnctl internal-sync
+say "Проверяю установленную версию..."
+sudo /usr/local/sbin/vpnctl version
 
-ok "${APP_NAME} установлен на ${DISTRO}."
+ok "${APP_NAME} ${VERSION} установлен/восстановлен на ${DISTRO}."
+echo "Закройте старое окно Evgenium Network и откройте приложение заново."
 echo
 echo "Команда: vpn"
 echo "Приложение KDE: Evgenium Network"
