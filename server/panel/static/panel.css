@@ -5,3 +5,5 @@
 .form-error{color:#ffc2b6}
 
 .password-entry{margin:20px 0}.password-entry>label{margin:0}.password-field{position:relative;margin-top:9px}.password-field input{margin:0;padding-right:52px}.password-toggle{position:absolute;right:3px;top:3px;bottom:3px;width:44px;display:grid;place-items:center;border:0;border-radius:5px;background:transparent;color:var(--muted);padding:9px}.password-toggle:hover,.password-toggle:focus-visible{color:var(--green);background:#23331e}.password-toggle:focus-visible{outline:2px solid var(--green);outline-offset:1px}.password-toggle svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.password-toggle[aria-pressed=false] .eye-slash{display:none}
+
+.token-note{display:block;max-width:340px;margin-top:9px;color:var(--muted);font-size:10px;line-height:1.5}.user-top button:disabled{cursor:not-allowed}
