@@ -57,7 +57,7 @@ import zipfile
 
 from typing import NoReturn
 
-MANAGER_VERSION = "0.4.0"
+MANAGER_VERSION = "0.4.1"
 
 SAFE_XRAY_VERSION = "26.7.28"
 
@@ -1411,7 +1411,7 @@ def safe_extract_manager(tar_path: pathlib.Path, dest: pathlib.Path) -> str:
     with tarfile.open(tar_path, "r:gz") as tf:
         members = tf.getmembers()
         names = {m.name for m in members}
-        if names != allowed:
+        if names != allowed or len(members) != len(allowed):
             fail(f"Manager archive: ожидались {sorted(allowed)}, получено {sorted(names)}")
         for m in members:
             pp = pathlib.PurePosixPath(m.name)
@@ -1433,7 +1433,8 @@ def manager_update_manifest(settings: dict, manifest_url: str) -> bool:
     expected = str(manifest.get("sha256") or "").lower()
 
     if version == MANAGER_VERSION:
-        ok(f"VPN Manager уже актуален: {MANAGER_VERSION}")
+        info(f"VPN Manager {MANAGER_VERSION}: проверяю завершение установки CLI и GUI...")
+        finish_installation(settings, reconnect=False)
         return False
     if not re.fullmatch(r"[0-9A-Za-z._+-]+", version):
         fail("Некорректная version в manager manifest.")
@@ -1475,10 +1476,11 @@ def manager_update_manifest(settings: dict, manifest_url: str) -> bool:
     newlink.unlink(missing_ok=True)
     newlink.symlink_to(dest)
     os.replace(newlink, CURRENT)
+    pathlib.Path("/usr/local/sbin/vpnctl.new").unlink(missing_ok=True)
     os.symlink(CURRENT / "vpnctl.py", "/usr/local/sbin/vpnctl.new")
     os.replace("/usr/local/sbin/vpnctl.new", "/usr/local/sbin/vpnctl")
 
-    ok(f"VPN Manager обновлён: {MANAGER_VERSION} -> {version}")
+    info(f"Файлы VPN Manager {version} получены. Завершаю установку...")
     os.execv(
         "/usr/local/sbin/vpnctl",
         ["/usr/local/sbin/vpnctl", "internal-after-update"]
@@ -2575,10 +2577,58 @@ def wait_service(timeout=12):
  return False
 
 def sync_system_files():
+ pathlib.Path('/var/lib/vpn-manager').mkdir(parents=True,exist_ok=True)
  os.chown('/var/lib/vpn-manager',0,0);os.chmod('/var/lib/vpn-manager',0o755)
  for filename,value in [('/usr/local/bin/vpn',WRAPPER_TEXT),('/usr/local/bin/evgenium-network',GUI_WRAPPER_TEXT)]:
   pathlib.Path(filename).write_text(value);os.chmod(filename,0o755)
+ admin=pathlib.Path('/usr/local/sbin/vpn-manager-admin')
+ temp=admin.with_name(admin.name+'.new');temp.unlink(missing_ok=True)
+ temp.symlink_to(CURRENT/'vpnadmin.py');os.replace(temp,admin)
  policy.install()
+
+def ensure_gui_dependencies():
+ """Older CLI-only installs never installed the Qt runner."""
+ candidates=('/usr/bin/qml6','/usr/bin/qml-qt6','/usr/lib/qt6/bin/qml','/usr/lib64/qt6/bin/qml')
+ if any(os.access(p,os.X_OK) for p in candidates):return
+ if shutil.which('pacman'):
+  run(['pacman','-S','--needed','--noconfirm','qt6-declarative'],timeout=300)
+ elif shutil.which('dnf'):
+  result=run(['rpm','-q','--qf','%{VERSION}-%{RELEASE}.%{ARCH}','qt6-qtdeclarative'],check=False,capture=True)
+  if result.returncode:fail('Не найден Qt 6. Установите Fedora KDE или Qt 6, затем повторите установщик с --repair.')
+  package='qt6-qtdeclarative-devel-'+result.stdout.strip()
+  run(['dnf','install','-y','--no-best','--setopt=install_weak_deps=False',package],timeout=300)
+ else:fail('Автоустановка Qt поддерживает Arch и Fedora.')
+ if not any(os.access(p,os.X_OK) for p in candidates):fail('Qt QML runner не появился. Повторите установщик с --repair.')
+
+INSTALL_PENDING=pathlib.Path('/var/lib/vpn-manager/install-pending')
+INSTALL_COMPLETE=pathlib.Path('/var/lib/vpn-manager/install-complete.json')
+
+def finish_installation(settings, *, reconnect=True):
+ """Repeatable finalization, including entry from an unmodified 0.2.x updater.
+
+ Refresh entrypoints first: a failed dependency download must not strand users
+ with the previous shell wrapper and GUI pointing at a newer backend.
+ """
+ pending=INSTALL_PENDING.exists()
+ INSTALL_PENDING.parent.mkdir(parents=True,exist_ok=True)
+ INSTALL_PENDING.write_text(MANAGER_VERSION+'\n');INSTALL_PENDING.chmod(0o600)
+ try:
+  sync_system_files();cmd_gui_install(settings)
+  if _widget_package_dir(settings).exists():cmd_widget_install(settings)
+  policy.migration(settings)
+  starfive_tunnel.ensure_dependencies();ensure_gui_dependencies();core_update(settings)
+  was_active=starfive_tunnel.status().get('running') or run(['systemctl','is-active','--quiet','vpn-xray.service'],check=False,capture=True).returncode==0
+  retire_legacy(settings)
+  has_token=starfive_tunnel.token_status()['has_token']
+  if has_token:starfive_tunnel.sync_device_name()
+  if was_active and has_token and (reconnect or pending):starfive_tunnel.connect(repair=True)
+  INSTALL_COMPLETE.write_text(json.dumps({'version':MANAGER_VERSION,'completed':int(time.time())})+'\n')
+  INSTALL_COMPLETE.chmod(0o600);INSTALL_PENDING.unlink()
+ except Exception:
+  warn('Установка не завершена. Токен и настройки сохранены. Повторите vpn update; если CLI не запускается — установщик с --repair из README.')
+  raise
+ print('CLI и GUI обновлены до '+MANAGER_VERSION+'. Закройте старое окно приложения и откройте заново.')
+ if not has_token:print('Для нового VPN нужен клиентский токен: откройте Evgenium Network или выполните vpn token save.')
 
 def retire_legacy(settings):
  """One-time retirement, preserving user lists and a private rollback snapshot."""
@@ -2651,7 +2701,7 @@ def operation_requires_lock(args):
  return args.cmd not in (None,'status','version','logs','rules','watch','internal-starfive-tunnel','internal-starfive-tunnel-cleanup','internal-starfive-pause-main') and not (args.cmd=='ui' and args.ui_cmd in ('state','running'))
 
 def self_test():
- assert MANAGER_VERSION=='0.4.0'
+ assert MANAGER_VERSION=='0.4.1'
  assert policy.config(policy.defaults())['outbounds'][0]['protocol']=='freedom'
  for source in (STANDALONE_GUI_PY_B64,STARFIVE_TUNNEL_PY_B64,NETWORK_POLICY_PY_B64):compile(base64.b64decode(source),'embedded','exec')
  assert 'VLESS' not in base64.b64decode(STANDALONE_GUI_QML_B64).decode()
@@ -2771,15 +2821,7 @@ def main(argv=None):
    values=policy.public()[cat]
    print('\n'.join('DIRECT  '+v for v in values) if values else 'Пользовательских исключений нет. Базовые: vpn base list')
   elif cmd=='update':manager_update_manifest(settings,settings['manager_manifest_url'])
-  elif cmd in ('internal-sync','internal-after-update'):
-   policy.migration(settings);starfive_tunnel.ensure_dependencies();core_update(settings)
-   sync_system_files();cmd_gui_install(settings)
-   if _widget_package_dir(settings).exists():cmd_widget_install(settings)
-   was_active=starfive_tunnel.status().get('running') or run(['systemctl','is-active','--quiet','vpn-xray.service'],check=False,capture=True).returncode==0
-   retire_legacy(settings)
-   if starfive_tunnel.token_status()['has_token']:starfive_tunnel.sync_device_name()
-   if was_active and starfive_tunnel.token_status()['has_token']:starfive_tunnel.connect(repair=True)
-   print('Обновление применено. Перезапустите окно приложения.')
+  elif cmd in ('internal-sync','internal-after-update'):finish_installation(settings)
   elif cmd=='manager-rollback':manager_rollback()
   elif cmd=='gui':(cmd_gui_install if args.operation=='install' else cmd_gui_remove)(settings)
   elif cmd=='widget':(cmd_widget_install if args.operation=='install' else cmd_widget_remove)(settings)
