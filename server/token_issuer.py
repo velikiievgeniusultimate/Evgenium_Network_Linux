@@ -12,6 +12,7 @@ import re
 import secrets
 import socket
 import socketserver
+import ssl
 import struct
 import subprocess
 import time
@@ -71,7 +72,17 @@ def delete_account(account_id):
                     run(['openssl','ca','-batch','-config',str(PKI/'ca.conf'),'-revoke',str(PKI/(serial+'.pem'))])
                 if seen!=identities:raise RuntimeError('missing_certificate_history')
                 temporary=CRL.with_suffix('.new')
-                run(['openssl','ca','-batch','-config',str(PKI/'ca.conf'),'-gencrl','-out',str(temporary)])
+                def issued_at(path):
+                    value=run(['openssl','crl','-in',str(path),'-noout','-lastupdate']).decode().strip()
+                    return ssl.cert_time_to_seconds(value.removeprefix('lastUpdate='))
+                previous=issued_at(CRL) if CRL.exists() else 0
+                # CRLs have second-resolution timestamps. Two rapid deletions must
+                # still publish a strictly newer list, including after a retry.
+                for _ in range(3):
+                    run(['openssl','ca','-batch','-config',str(PKI/'ca.conf'),'-gencrl','-out',str(temporary)])
+                    if issued_at(temporary)>previous:break
+                    time.sleep(1)
+                else:raise RuntimeError('crl_clock_not_advanced')
                 os.replace(temporary,CRL)
             run(['swanctl','--load-creds','--noprompt'])
             # Stop authenticated sessions after the new CRL prevents reconnection.

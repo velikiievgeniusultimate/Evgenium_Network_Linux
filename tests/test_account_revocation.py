@@ -70,6 +70,14 @@ commonName=supplied
         with self.assertRaises(PermissionError):self.i.authenticate(self.i.accounts(),self.tokens[0])
         self.assertEqual(self.i.authenticate(self.i.accounts(),self.tokens[1])[0],self.ids[1])
         self.assertEqual([c for c in self.calls if c[:2]==['swanctl','--terminate']],[['swanctl','--terminate','--ike-id','19']])
+        issued=self.cmd(['openssl','crl','-in',str(self.i.CRL),'-noout','-lastupdate']).stdout
+        # A failed post-CRL service action can cause an immediate retry. Force
+        # that path and verify the republished CRL has a later issue time.
+        data=self.i.accounts();data[self.ids[0]].pop('deleted');data[self.ids[0]]['delete_pending']=True
+        self.i.write_json(self.i.ROOT/'accounts.json',data)
+        with patch.object(self.i,'run',side_effect=self.fake_run),patch.object(self.i.subprocess,'run',side_effect=self.fake_subprocess):
+            self.i.delete_account(self.ids[0])
+        self.assertNotEqual(issued,self.cmd(['openssl','crl','-in',str(self.i.CRL),'-noout','-lastupdate']).stdout)
     def test_failure_leaves_disabled_visible_account_and_retry_finishes(self):
         with patch.object(self.i,'run',side_effect=RuntimeError('simulated_failure')):
             with self.assertRaises(RuntimeError):self.i.delete_account(self.ids[0])
