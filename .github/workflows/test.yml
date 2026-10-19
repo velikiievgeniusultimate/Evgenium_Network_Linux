@@ -17,7 +17,7 @@ jobs:
       - name: Dependencies for isolated tests
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap charon-systemd strongswan-swanctl nftables conntrack iproute2 curl openssl qt6-declarative-dev qt6-declarative-dev-tools qml6-module-qtqml qml6-module-qtqml-workerscript qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-templates
+          sudo apt-get install -y -qq bubblewrap charon-systemd strongswan-swanctl nftables conntrack iproute2 curl openssl qml-qt6 qt6-declarative-dev qt6-declarative-dev-tools qml6-module-qtqml qml6-module-qtqml-workerscript qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-templates
           sudo useradd --system --no-create-home vpn-xray
           python -m pip install -r server/panel/requirements.txt
       - name: Build reproducibly and test
