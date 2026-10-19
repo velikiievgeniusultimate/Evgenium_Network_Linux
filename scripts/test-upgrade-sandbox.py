@@ -129,12 +129,19 @@ if __name__=='__main__':
         if not shutil.which('bwrap'):raise SystemExit('bubblewrap required; run unit tests if unavailable')
         with tempfile.TemporaryDirectory() as td:
             fake=Path(td)
+            # A root user namespace cannot traverse a runner-owned 0700 home.
+            # Copy only public fixture files into the invoking user's temp dir.
+            snapshot=fake/'source'
+            for name in ('VERSION','install.sh','update/stable.json','dist/vpn-manager-0.2.7.tar.gz',
+                         f'dist/vpn-manager-{VERSION}.tar.gz','scripts/test-upgrade-sandbox.py'):
+                target=snapshot/name;target.parent.mkdir(parents=True,exist_ok=True)
+                shutil.copy2(ROOT/name,target)
             stub=fake/'systemctl';stub.write_text('#!/bin/sh\ncase "$*" in *is-active*) exit 3;; esac\nexit 0\n');stub.chmod(0o755)
             ip=fake/'ip';ip.write_text('#!/bin/sh\nexit 1\n');ip.chmod(0o755)
             args=['bwrap','--die-with-parent','--unshare-all','--uid','0','--gid','0','--ro-bind','/','/',
                   '--tmpfs','/etc','--tmpfs','/var','--tmpfs','/run','--tmpfs','/opt','--tmpfs','/home',
                   '--tmpfs','/tmp','--tmpfs','/usr/local','--proc','/proc','--dev','/dev',
-                  '--ro-bind',str(ROOT),'/tmp/src','--ro-bind',str(stub),'/usr/bin/systemctl',
-                  '--ro-bind',str(ip),'/usr/bin/ip','--chdir','/tmp/src',sys.executable,'/tmp/src/scripts/test-upgrade-sandbox.py','--inside']
+                  '--ro-bind',str(snapshot),'/tmp/src','--ro-bind',str(stub),'/usr/bin/systemctl',
+                  '--ro-bind',str(ip),str(Path(shutil.which('ip')).resolve()),'--chdir','/tmp/src',sys.executable,'/tmp/src/scripts/test-upgrade-sandbox.py','--inside']
             subprocess.run(args,check=True,timeout=120)
             subprocess.run(args[:-1]+['--fresh'],check=True,timeout=120)
