@@ -38,6 +38,7 @@ HEALTH = '10.77.0.1'
 REQID = 177
 TOKEN_PATTERN = r'EVN1-[A-Za-z0-9_-]{43}'
 STOP = False
+policy = None
 PINNED_CA = '-----BEGIN CERTIFICATE-----\nMIIEODCCAqCgAwIBAgIUbkJ+8SaqAgwY1RDAjZRTjcqQ9eMwDQYJKoZIhvcNAQEL\nBQAwIjEgMB4GA1UEAwwXRXZnZW5pdW0gcHJpdmF0ZSBWUE4gQ0EwHhcNMjYxMDA3\nMTkxMzQxWhcNMzYxMDA0MTkxMzQxWjAiMSAwHgYDVQQDDBdFdmdlbml1bSBwcml2\nYXRlIFZQTiBDQTCCAaIwDQYJKoZIhvcNAQEBBQADggGPADCCAYoCggGBAOZ+nviE\n2OrF7Pdtkk/XIaFVIvJlvC11VZf9rljCBIvBykbsrArGryQHGnuuXLNaaS8NtLxY\nNeSBDK6MdgYJAejsP4wITub3nMjSG2umIIVU6mE+GDozGPlNMNJ+bhkKaVhaPjFE\nyYLYrdPe5VA4w+5p0NZOD6CBHD3tEXWBNRIeVSWbtMITsOES1Pe/aAL7v3oNIVkV\n8nDw9j7+wG2y5dhbp7KUJHbrDB024r7cYrQ3axYF6gykjmztpKXsbkxQv27BvhSB\ne0EktJ/jCS6R9IImYgIQrCraWZmVScnGF/Aq4TNw1H4OzFCkR+7JUlYnSYUvMRi1\nLzKekUC+2/0WFmhnCoDtdjcoYbxpLpKDelGiS3RsNCvxnslMaPz5hCcF64Y7RijX\nj6DuCYpFYWlr13B20qAnRoUas+AjX7PXCkR4xOhH+kW8/HmFHiHkohWE0wllISBX\nVBo7KBOZd8SVewybd2rB4soXouTtjXs/jTge+HWxQDGPP1umfz8cFLR/uQIDAQAB\no2YwZDAdBgNVHQ4EFgQUoQfTif77xWt06haXh3ha890qkT8wHwYDVR0jBBgwFoAU\noQfTif77xWt06haXh3ha890qkT8wEgYDVR0TAQH/BAgwBgEB/wIBADAOBgNVHQ8B\nAf8EBAMCAQYwDQYJKoZIhvcNAQELBQADggGBAI7GKnmfJjuL1QvyRtlw+Hr6AY/Z\nOxdDvECefoFL7Q41VZa+L7DI87kMLYHygRHush66oUv878TWMtasnbt/8wYg6jrw\nAygpg/F3VD24yTrnJ7OCdyGib6LGuusuTP4rUGsccWcznQXYFkzRVz1VeYMZUN+P\ntAViNl4ERS1fh+cGzT4OqXQkJDkReqH/HCTE8kUQUUgXaSXphKjGa8pR2HVeFukX\n+0pp1iR+6di4aCKapkaTiVR3r62tRBUwbxoFYRyxNXynTK9EhnM25WEpn/qu0lsD\noXrFVmj0AQfAUHRN/2rPL//w6RPEpHgUcrt7zuSgoXJZh0DT30VEIK9NNbuKSFd9\nIiWvrxbVQS6mQgtEZN4Lc2Hm1pvY+WrI+H03u8042+cpLIsCnxPm9Wvi7dMXxqob\no2/aL2xDG5G/8WVR/W5EAfvKdxdrk3H602occov7+Jg1voxi00IbdMExoMxd5aeh\nfXRiJhTEFouIpmESCF4vVMlWFr3mqlQ3GKSPVA==\n-----END CERTIFICATE-----\n'
 
 
@@ -67,7 +68,7 @@ def ensure_dependencies():
     elif shutil.which('dnf'):
         args = ['dnf','install','-y','--setopt=install_weak_deps=False','strongswan','iproute','nftables','curl','openssl','ca-certificates','conntrack-tools']
     else:
-        raise RuntimeError('Автоматическая установка экспериментального клиента поддерживает Arch и Fedora.')
+        raise RuntimeError('Автоматическая установка клиента поддерживает Arch и Fedora.')
     command(args, timeout=300)
     if not charon_binary() or not all(shutil.which(p) for p in ('swanctl','conntrack')):
         raise RuntimeError('Пакет strongSwan не предоставил необходимые программы.')
@@ -95,7 +96,10 @@ def full_guard_active():
 
 
 def full_firewall():
-    # No process, DIRECT list, established socket or IPv6 exception can bypass this guard.
+    if policy is not None:
+        settings=policy.api.load_settings()
+        return policy.firewall(policy.load(),policy.local_networks(physical_route()),int(settings["xray_uid"]))
+    # Minimal guard used by isolated protocol tests.
     # Keep local stub DNS on loopback. DNAT of 127/8 onto a veth fails Linux's
     # loopback route checks; upstream resolver traffic still obeys the full guard.
     return f'''table inet {FULL_GUARD} {{
@@ -229,6 +233,26 @@ def system_dns_health(resolv_conf=Path('/etc/resolv.conf')):
     return False
 
 
+def persist_guard(rules):
+    # Guard persistence precedes switching. Cleanup after a crash never opens the Internet.
+    guard_unit = '''[Unit]
+Description=Evgenium full-device kill switch
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/vpn-manager/starfive-tunnel/full-guard.nft
+[Install]
+WantedBy=multi-user.target
+'''.replace('/usr/sbin/nft', shutil.which('nft'))
+    write(ROOT/'full-guard.nft',rules)
+    write(Path('/etc/systemd/system/evgenium-starfive-full-guard.service'),guard_unit)
+    command(['systemctl','daemon-reload'])
+    command(['systemctl','enable','evgenium-starfive-full-guard.service'])
+
+
 def activate_full(address):
     old_addresses = [a['local'] for link in json.loads(command(['ip','-j','-4','addr','show','scope','global']).stdout)
                      if link.get('ifname') not in (HOST,FULL_HOST)
@@ -253,23 +277,7 @@ def activate_full(address):
     replacement = ('delete table inet '+FULL_GUARD+'\n' if full_guard_active() else '')+rules
     command(['nft','-c','-f','-'],data=replacement)
     command(['nft','-f','-'],data=replacement)
-    # Guard persistence precedes switching. Cleanup after a crash never opens the Internet.
-    guard_unit = '''[Unit]
-Description=Evgenium experimental full-device kill switch
-DefaultDependencies=no
-After=local-fs.target
-Before=network-pre.target
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/sbin/nft -f /etc/vpn-manager/starfive-tunnel/full-guard.nft
-[Install]
-WantedBy=multi-user.target
-'''.replace('/usr/sbin/nft', shutil.which('nft'))
-    write(ROOT/'full-guard.nft',rules)
-    write(Path('/etc/systemd/system/evgenium-starfive-full-guard.service'),guard_unit)
-    command(['systemctl','daemon-reload'])
-    command(['systemctl','enable','evgenium-starfive-full-guard.service'])
+    persist_guard(rules)
     # This command stops only this manager's previous Xray mode and removes its guard.
     command(['/usr/local/sbin/vpnctl','internal-starfive-pause-main'],timeout=40)
     command(['ip','route','replace','unreachable','default','metric','32760','table',FULL_TABLE])
@@ -295,10 +303,12 @@ WantedBy=multi-user.target
         Path('/etc/resolv.conf').write_text('nameserver 1.1.1.1\nnameserver 9.9.9.9\noptions timeout:2 attempts:2\n')
     clear_dns_mappings(previous_vpn=True)
     retire_previous_connections(old_addresses)
+    if policy is not None:
+        policy.apply()
     if not system_dns_health():
         raise RuntimeError('system_dns_failed')
     # Test the actual host path as well as namespace probes before announcing connected.
-    check = command(['curl','-4','--noproxy','*','--fail','--silent','--max-time','10','https://api.ipify.org'],timeout=12)
+    check = command(['curl','-4','--noproxy','' if policy is not None else '*','--fail','--silent','--max-time','10',*(['--socks5-hostname','127.0.0.1:18554'] if policy is not None else []),'https://api.ipify.org'],timeout=12)
     if check.stdout.strip() != '38.180.164.67':
         raise RuntimeError('host_egress_failed')
     data['active']=True
@@ -306,6 +316,8 @@ WantedBy=multi-user.target
 
 
 def cleanup_full(release=False):
+    if policy is not None:
+        policy.stop(release=release)
     if not full_state().exists():
         return
     data=json.loads(full_state().read_text())
@@ -325,6 +337,7 @@ def cleanup_full(release=False):
     command(['systemctl','disable','--now','evgenium-starfive-full-guard.service'],check=False)
     command(['nft','delete','table','inet',FULL_GUARD],check=False)
     clear_dns_mappings()
+    clear_dns_mappings(previous_vpn=True)
     command(['ip','route','flush','table',ADMIN_TABLE],check=False)
     full_state().unlink()
     command(['resolvectl','flush-caches'],check=False) if shutil.which('resolvectl') else None
@@ -371,11 +384,11 @@ def status():
     if data.get('phase') == 'connected' and (not running or time.monotonic()-data.get('heartbeat', 0) > 45):
         data.update(phase='interrupted', message='Соединение остановилось. Проверьте состояние защиты и нажмите «Починить».', active=False)
     public = {key: data[key] for key in ('phase', 'message', 'progress', 'active', 'updated', 'metrics',
-                                        'scope', 'since', 'retry') if key in data}
+                                        'scope', 'since', 'retry', 'error_code') if key in data}
     token_info = token_status()
     return {'phase': 'off', 'message': ('Токен сохранён. Нажмите «Подключить».' if token_info['has_token'] else 'Введите и подтвердите токен клиента.'),
             'progress': 0, 'active': False, **public, 'running': running,
-            **token_info, 'isolated': False, 'full_device': True, 'guard': full_guard_active(), 'protocol': 'IKEv2 → Эстония'}
+            **token_info, **device_status(), 'isolated': False, 'full_device': True, 'guard': full_guard_active(), 'protocol': 'IKEv2 → Эстония'}
 
 
 @contextlib.contextmanager
@@ -406,7 +419,7 @@ def physical_route():
 
 def host_rules(iface, previous_forward=True):
     # Scope every new forwarding/NAT rule to our one interface and the configured ingress address.
-    preserve_disabled = '' if previous_forward else '  meta nfproto ipv4 drop'
+    preserve_disabled = '' if previous_forward else '  iifname != "waydroid0" meta nfproto ipv4 drop'
     return f'''table inet {NFT} {{
  chain forward {{
   type filter hook forward priority -20; policy accept;
@@ -794,6 +807,39 @@ def download(size=1048576):
             'elapsed_ms': round(elapsed*1000), 'integrity': True, 'limited_sample': True}
 
 
+def device_status():
+    try:
+        info=json.loads((ROOT/'device-info.json').read_text())
+        return {'device_name':info.get('name',''),'device_number':info.get('number'),
+                'device_name_pending':bool(info.get('pending') or info.get('sync_error'))}
+    except (OSError,ValueError):return {'device_name':'','device_number':None,'device_name_pending':False}
+
+
+def sync_device_name(name=None):
+    import unicodedata
+    if not token_status()['has_token']:raise ValueError('Сначала подтвердите токен клиента.')
+    if name is not None:
+        name=unicodedata.normalize('NFC',str(name)).strip()
+        if not 1<=len(name)<=64 or any(unicodedata.category(c).startswith('C') for c in name):
+            raise ValueError('Имя должно содержать от 1 до 64 обычных символов.')
+    if not (ROOT/'device').exists():write(ROOT/'device',secrets.token_hex(16))
+    try:info=json.loads((ROOT/'device-info.json').read_text())
+    except (OSError,ValueError):info={}
+    if name is not None:info.update(name=name,pending=True)
+    payload={'token':(ROOT/'token').read_text().strip(),'device':(ROOT/'device').read_text().strip()}
+    if info.get('pending'):payload['name']=info['name']
+    try:
+        with namespace() if Path('/run/netns/'+NS).exists() else contextlib.nullcontext():
+            reply=tls_request(SERVER,'/device',payload,timeout=5)
+        value=reply['device'];number=int(value['number'])
+        if not isinstance(value['name'],str) or not 1<=len(value['name'])<=64 or number<1:raise ValueError('invalid_device_metadata')
+        info={'name':value['name'],'number':number,'pending':False,'sync_error':False}
+    except (OSError,RuntimeError,ValueError,KeyError,http.client.HTTPException):
+        info['sync_error']=True
+    write(ROOT/'device-info.json',json.dumps(info,ensure_ascii=False))
+    return device_status()
+
+
 def token_status():
     try:
         token = (ROOT/'token').read_text().strip()
@@ -811,14 +857,15 @@ def save_token(token):
     ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     old = (ROOT/'token').read_text().strip() if (ROOT/'token').exists() else ''
     if old == token:
-        return
+        sync_device_name();return
     if command(['systemctl', 'is-active', '--quiet', UNIT], check=False).returncode == 0:
-        raise RuntimeError('Сначала отключите тестовый туннель перед сменой токена.')
+        raise RuntimeError('Сначала отключите VPN-туннель перед сменой токена.')
     # A different account needs its own device credentials. Never reuse its certificate.
-    for name in ('device', 'client-key.pem', 'client.pem', 'profile.json', 'request.pem',
+    for name in ('device-info.json', 'device', 'client-key.pem', 'client.pem', 'profile.json', 'request.pem',
                  'private/client-key.pem', 'x509/client.pem'):
         (ROOT/name).unlink(missing_ok=True)
     write(ROOT/'token', token)
+    sync_device_name()
     stage('off', 'Токен сохранён. Нажмите «Подключить».', 0, active=False, metrics={})
 
 
@@ -861,15 +908,15 @@ WantedBy=multi-user.target
     command(['systemctl', 'enable', recovery])
     stage('starting' , 'Готовлю подключение через HSVDS в Эстонию.', 2, active=False, retry=0, error_code='')
     command(['systemctl', 'restart' if repair else 'start', UNIT])
-    print('Экспериментальный VPN запускается. Этапы видны в строке состояния.')
+    print('VPN запускается.',flush=True)
 
 
 def disconnect():
     command(['systemctl', 'stop', UNIT], check=False, timeout=25)
     cleanup()
     cleanup_full(release=True)
-    stage('off', 'Экспериментальный VPN выключен.', 0, active=False)
-    print('Экспериментальный VPN выключен.')
+    stage('off', 'VPN выключен.', 0, active=False)
+    print('VPN выключен.')
 
 
 def start_daemon(env):
@@ -907,8 +954,9 @@ def worker():
         (ROOT/'recalibrate').unlink(missing_ok=True)
         stage('token', 'Проверяю токен и сохранённое подключение этого устройства.', 20)
         identity, address = enroll()
+        sync_device_name()
         scope = 'public-address'
-        stage('daemon', 'Запускаю туннель IKEv2 Россия → Россия.', 40, scope=scope)
+        stage('daemon', 'Запускаю туннель IKEv2 Россия → Эстония.', 40, scope=scope)
         daemon_configs(identity, address)
         env = {**os.environ, 'STRONGSWAN_CONF': str(ROOT/'strongswan.conf')}
         env.pop('NOTIFY_SOCKET', None)
@@ -925,7 +973,7 @@ def worker():
         metrics['reference'] = reference
         stage('routing', 'Подключаю весь трафик компьютера к выходу в Эстонии.', 92)
         activate_full(address)
-        stage('connected', 'Подключено: компьютер → HSVDS → Эстония. IPv6 заблокирован.', 100,
+        stage('connected', 'Подключено: компьютер → HSVDS → Эстония. ', 100,
               active=True, metrics=metrics, since=int(time.time()))
         failures = 0
         while not STOP:
@@ -936,6 +984,8 @@ def worker():
             if STOP:
                 break
             try:
+                if policy is not None:
+                    policy.ensure_route()
                 ok = daemon.poll() is None and installed() and health()
                 if ok and not egress_health():
                     stage('egress_wait', 'HSVDS доступен; ожидаю восстановления выхода в Эстонии.', 90, active=False)
@@ -944,10 +994,10 @@ def worker():
                 ok = False
             failures = 0 if ok else failures+1
             if failures == 1:
-                stage('checking', 'Ответ HSVDS задерживается. Проверяю тестовое соединение.', 90, active=False)
+                stage('checking', 'Ответ HSVDS задерживается. Проверяю соединение.', 90, active=False)
                 continue
             if failures >= 2:
-                stage('repairing', 'Связь с HSVDS потеряна. Восстанавливаю тестовый туннель.', 60, active=False)
+                stage('repairing', 'Связь с HSVDS потеряна. Восстанавливаю VPN-туннель.', 60, active=False)
                 if daemon.poll() is not None:
                     inside(['ip', 'xfrm', 'state', 'flush'])
                     inside(['ip', 'xfrm', 'policy', 'flush'])
@@ -961,14 +1011,14 @@ def worker():
                 if not egress_health():
                     raise RuntimeError('estonia_egress_failed')
                 failures = 0
-            stage('connected', 'Подключено: компьютер → HSVDS → Эстония. IPv6 заблокирован.', 100, active=True)
+            stage('connected', 'Подключено: компьютер → HSVDS → Эстония. ', 100, active=True)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         code = str(exc) if re.fullmatch(r"[a-z_]{1,64}", str(exc)) else type(exc).__name__
         current = saved().get('phase', 'prepare')
         message = {'token': 'Не удалось подтвердить токен или получить сертификат HSVDS.',
                    'handshake': 'HSVDS не подтвердил подключение IKEv2.',
                    'measure': 'Проверка передачи данных не прошла.',
-                   'repairing': 'Автовосстановление не удалось. Нажмите «Починить».'}.get(current, 'Тестовый туннель не запустился. Нажмите «Починить».')
+                   'repairing': 'Автовосстановление не удалось. Нажмите «Починить».'}.get(current, 'VPN-туннель не запустился. Нажмите «Починить».')
         stage('failed', message+(' Интернет заблокирован до отключения режима.' if full_guard_active() else ' Маршрутизация компьютера не переключена.'), 0, active=False, error_code=code, metrics={})
     finally:
         if daemon and daemon.poll() is None:
@@ -979,4 +1029,4 @@ def worker():
                 daemon.kill(); daemon.wait(timeout=3)
         cleanup()
         if STOP:
-            stage('off', 'Экспериментальный VPN выключен.', 0, active=False)
+            stage('off', 'VPN выключен.', 0, active=False)

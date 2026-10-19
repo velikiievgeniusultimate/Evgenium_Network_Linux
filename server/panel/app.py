@@ -19,6 +19,8 @@ from flask import Flask, request, jsonify, g, render_template, make_response, ab
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 COOKIE='evg_panel_session'
+DEVICE_COOKIE='evg_panel_device'
+REMEMBER_SECONDS=30*86400
 
 
 def totp(secret,counter,digits=6):
@@ -50,7 +52,7 @@ def password_valid(password,stored):
 
 def rpc(path,body):
     with socket.socket(socket.AF_UNIX) as sock:
-        sock.settimeout(20);sock.connect(path);sock.sendall(json.dumps(body).encode()+b'\n')
+        sock.settimeout(95);sock.connect(path);sock.sendall(json.dumps(body).encode()+b'\n')
         with sock.makefile('rb') as reader:raw=reader.readline(4*1024*1024+1)
     if len(raw)>4*1024*1024 or not raw.endswith(b'\n'):raise OSError('broker_response')
     return json.loads(raw)
@@ -77,6 +79,7 @@ def create_app(config=None,broker_call=None):
         CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, kind TEXT NOT NULL, csrf TEXT NOT NULL, created INTEGER NOT NULL, seen INTEGER NOT NULL, expires INTEGER NOT NULL, secret TEXT);
         CREATE TABLE IF NOT EXISTS attempts(bucket TEXT PRIMARY KEY, start INTEGER NOT NULL, count INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, event TEXT NOT NULL, subject TEXT NOT NULL DEFAULT '');
+        CREATE TABLE IF NOT EXISTS trusted_browsers(id TEXT PRIMARY KEY, created INTEGER NOT NULL, expires INTEGER NOT NULL);
         ''')
     database.chmod(0o600)
     def audit(c,event,subject=''):
@@ -106,9 +109,20 @@ def create_app(config=None,broker_call=None):
         return csrf
     def owner_required():
         if not g.session or g.session['kind']!='owner':abort(401)
+    def browser_hash():
+        value=request.cookies.get(DEVICE_COOKIE,'')
+        return hashlib.sha256(value.encode()).hexdigest() if re.fullmatch('[A-Za-z0-9_-]{43}',value) else ''
+    def remembered(c):
+        return c.execute('SELECT 1 FROM trusted_browsers WHERE id=? AND expires>?',(browser_hash(),int(time.time()))).fetchone() is not None
+    def remember(c):
+        now=int(time.time());value=secrets.token_urlsafe(32)
+        c.execute('DELETE FROM trusted_browsers WHERE expires<=? OR id=?',(now,browser_hash()))
+        c.execute('INSERT INTO trusted_browsers VALUES(?,?,?)',(hashlib.sha256(value.encode()).hexdigest(),now,now+REMEMBER_SECONDS))
+        c.execute('DELETE FROM trusted_browsers WHERE id IN (SELECT id FROM trusted_browsers ORDER BY created DESC LIMIT -1 OFFSET 50)')
+        g.set_device=value
     @app.before_request
     def guard():
-        g.set_sid=None;g.session=None;g.sid_hash=None
+        g.set_sid=None;g.set_device=None;g.session=None;g.sid_hash=None
         if request.host not in cfg['allowed_hosts']:abort(400)
         if cfg.get('https_proxy') and not request.is_secure:abort(400)
         if not cfg.get('https_proxy') and request.remote_addr not in ('127.0.0.1','::1'):abort(403)
@@ -133,6 +147,7 @@ def create_app(config=None,broker_call=None):
           'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"})
         if cfg.get('https_proxy'):response.headers['Strict-Transport-Security']='max-age=31536000'
         if getattr(g,'set_sid',None):response.set_cookie(COOKIE,g.set_sid,secure=bool(cfg.get('https_proxy')),httponly=True,samesite='Strict',path='/')
+        if getattr(g,'set_device',None):response.set_cookie(DEVICE_COOKIE,g.set_device,max_age=REMEMBER_SECONDS,secure=bool(cfg.get('https_proxy')),httponly=True,samesite='Strict',path='/')
         return response
     for code in (400,401,403,404,413,415,429,500):
         app.register_error_handler(code,lambda e:(jsonify(error={400:'invalid_request',401:'login_required',403:'request_rejected',404:'not_found',413:'too_large',415:'json_required',429:'too_many_attempts',500:'internal_error'}[e.code]),e.code))
@@ -145,8 +160,12 @@ def create_app(config=None,broker_call=None):
                 c.execute('BEGIN IMMEDIATE');allowed=limit(c,'session:'+request.remote_addr,120,60)
             if not allowed:abort(429)
             new_session()
-        with db() as c:configured=c.execute('SELECT 1 FROM owner').fetchone() is not None
-        return jsonify(authenticated=g.session['kind']=='owner',setup_required=not configured,csrf=g.session['csrf'])
+        with db() as c:
+            configured=c.execute('SELECT 1 FROM owner').fetchone() is not None
+            known=remembered(c)
+            if g.session['kind']=='owner' and not known:
+                remember(c);known=True
+        return jsonify(authenticated=g.session['kind']=='owner',remembered=known,setup_required=not configured,csrf=g.session['csrf'])
     @app.post('/api/setup/start')
     def setup_start():
         attempt();body=request.get_json()
@@ -178,7 +197,7 @@ def create_app(config=None,broker_call=None):
             c.execute('BEGIN IMMEDIATE')
             if c.execute('SELECT 1 FROM owner').fetchone():abort(403)
             c.execute('INSERT INTO owner VALUES(1,?,?,?,?)',('admin',digest,cipher.encrypt(secret.encode()).decode(),counter))
-            c.execute('DELETE FROM sessions');audit(c,'owner_initialized')
+            c.execute('DELETE FROM sessions');remember(c);audit(c,'owner_initialized')
         csrf=new_session('owner');return jsonify(ok=True,csrf=csrf)
     @app.post('/api/login')
     def login():
@@ -186,10 +205,10 @@ def create_app(config=None,broker_call=None):
         if not isinstance(password,str) or len(password)>256:abort(400)
         with db() as c:
             c.execute('BEGIN IMMEDIATE');owner=c.execute('SELECT * FROM owner WHERE id=1').fetchone()
-            valid=bool(owner) and password_valid(password,owner['password'])
+            valid=bool(owner) and (password_valid(password,owner['password']) if password else remembered(c))
             counter=match_totp(cipher.decrypt(owner['totp'].encode()).decode(),body.get('code'),owner['last_counter']) if valid else None
             if counter is not None:
-                c.execute('UPDATE owner SET last_counter=? WHERE id=1',(counter,));audit(c,'login_success')
+                c.execute('UPDATE owner SET last_counter=? WHERE id=1',(counter,));remember(c);audit(c,'login_success')
             else:audit(c,'login_failed')
         if counter is None:return jsonify(error='invalid_credentials'),401
         csrf=new_session('owner');return jsonify(ok=True,csrf=csrf)
@@ -198,6 +217,14 @@ def create_app(config=None,broker_call=None):
         with db() as c:
             c.execute('DELETE FROM sessions WHERE id=?',(g.sid_hash,));audit(c,'logout')
         response=jsonify(ok=True);response.delete_cookie(COOKIE,path='/',secure=bool(cfg.get('https_proxy')),httponly=True,samesite='Strict');return response
+    @app.post('/api/browser/forget')
+    def forget_browser():
+        with db() as c:
+            c.execute('DELETE FROM trusted_browsers WHERE id=?',(browser_hash(),))
+            c.execute('DELETE FROM sessions WHERE id=?',(g.sid_hash,));audit(c,'browser_forgotten')
+        response=jsonify(ok=True)
+        for cookie in (COOKIE,DEVICE_COOKIE):response.delete_cookie(cookie,path='/',secure=bool(cfg.get('https_proxy')),httponly=True,samesite='Strict')
+        return response
     def call(body,event=None):
         owner_required()
         try:result=broker_call(body)
@@ -214,6 +241,12 @@ def create_app(config=None,broker_call=None):
     def reveal(account_id):return call({'op':'reveal','id':account_id},'token_revealed')
     @app.post('/api/accounts/<account_id>/import')
     def import_token(account_id):return call({'op':'import','id':account_id,'token':request.get_json().get('token')},'legacy_token_imported')
+    @app.post('/api/accounts/<account_id>/rename')
+    def rename(account_id):return call({'op':'rename','id':account_id,'name':request.get_json().get('name')},'account_renamed')
+    @app.post('/api/accounts/<account_id>/devices/<device_id>/rename')
+    def rename_device(account_id,device_id):return call({'op':'rename-device','id':account_id,'device':device_id,'name':request.get_json().get('name')},'device_renamed')
+    @app.post('/api/accounts/<account_id>/delete')
+    def delete_account(account_id):return call({'op':'delete','id':account_id},'account_deleted')
     @app.get('/api/audit')
     def activity():
         owner_required()

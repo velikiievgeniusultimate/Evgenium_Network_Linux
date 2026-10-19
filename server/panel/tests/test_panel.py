@@ -114,6 +114,15 @@ class AccountTests(unittest.TestCase):
         self.assertEqual(len(self.accounts.listing()[0]['devices']),10)
         self.assertEqual(self.accounts.token(identity)['token'],token)
         self.assertEqual(self.issuer.authenticate(self.issuer.accounts(),token)[0],identity)
+    def test_client_device_rename_appears_in_panel_snapshot(self):
+        identity=self.accounts.issue('Owner')['id'];token=self.accounts.token(identity)['token'];device='a'*32
+        with self.issuer.locked():
+            data=self.issuer.accounts();data[identity]['devices'][device]={'identity':'device-test','enrolled':1};self.issuer.write_json(self.issuer.ROOT/'accounts.json',data)
+        self.assertEqual(self.accounts.listing()[0]['devices'][0]['name'],'Устройство-1')
+        self.issuer.device_info({'token':token,'device':device,'name':'Рабочий ноутбук'})
+        item=self.accounts.listing()[0]['devices'][0]
+        self.assertEqual(item['name'],'Рабочий ноутбук');self.assertEqual(item['identity'],'device-test')
+
     def test_raw_vici_session_parser(self):
         raw='list-sa event {vpn {uniqueid=3 state=ESTABLISHED remote-host=192.0.2.5 remote-id=device-abcdef remote-vips=[10.77.0.20] established=120 child-sas {vpn-1 {state=INSTALLED bytes-in=321 bytes-out=654}}}}\nlist-sas reply {}'
         item=broker.parse_connections(raw)[0];self.assertEqual(item['identity'],'device-abcdef');self.assertEqual(item['virtual_ips'],['10.77.0.20']);self.assertEqual(item['children'][0]['bytes_in'],321)

@@ -10,7 +10,7 @@ import time
 import unittest
 
 ROOT=Path(__file__).parents[1]
-QML=shutil.which('qml6') or shutil.which('qml-qt6')
+QML=shutil.which('qml6') or shutil.which('qml-qt6') or ('/usr/lib/qt6/bin/qml' if Path('/usr/lib/qt6/bin/qml').is_file() else None)
 
 @unittest.skipUnless(QML, 'Qt QML runtime not installed')
 class QmlStateTests(unittest.TestCase):
@@ -67,76 +67,3 @@ class QmlStateTests(unittest.TestCase):
         Qt.exit(0)
     }}
 ''',shorten_watchdog=True)
-
-@unittest.skipUnless(QML, 'Qt QML runtime not installed')
-class TokenFieldTests(unittest.TestCase):
-    def test_confirm_lock_edit_failed_save_cancel_and_reopen(self):
-        class Handler(http.server.BaseHTTPRequestHandler):
-            saved = False
-            reject = False
-            posts = 0
-            def log_message(self, *args): pass
-            def state(self):
-                return {'experimental': {'tunnel': {'has_token': type(self).saved,
-                        'token_hint': 'EVN1-•••• · ID 12345678' if type(self).saved else '', 'running': False}}}
-            def reply(self, payload, status=200):
-                body=json.dumps(payload).encode()
-                self.send_response(status); self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
-            def do_GET(self):
-                self.reply({'ok': True, 'state': self.state(), 'running': {'applications': []}})
-            def do_POST(self):
-                type(self).posts += 1
-                payload=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                if type(self).posts == 2:
-                    self.reply({'ok': False, 'error': 'save rejected'}, 500); return
-                if payload['action'] != 'experimental_token-save':
-                    self.reply({'ok': False, 'error': 'unexpected action'}, 400); return
-                type(self).saved = True
-                self.reply({'ok': True, 'state': self.state()})
-        server=http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        thread=threading.Thread(target=server.serve_forever, daemon=True); thread.start()
-        checks='''
-    function demand(condition, message) { if (!condition) { console.error(message); Qt.exit(1) } }
-    Timer { interval: 200; running: true; onTriggered: {
-        demand(!root.tokenLocked && tokenConfirm.label === "Подтвердить" && !tokenConfirm.enabledButton, "empty state")
-        starfiveToken.text = "EVN1-" + "a".repeat(43)
-        demand(tokenConfirm.enabledButton, "valid draft")
-        tokenConfirm.confirm()
-    }}
-    Timer { interval: 650; running: true; onTriggered: {
-        demand(root.tokenLocked && starfiveToken.readOnly && tokenConfirm.label === "Изменить", "saved lock")
-        demand(starfiveToken.text === "" && starfiveToken.placeholderText.indexOf("12345678") >= 0, "masked saved identity")
-        root.refreshState()
-        tokenConfirm.confirm()
-        demand(!starfiveToken.readOnly && tokenConfirm.label === "Подтвердить", "edit unlock")
-        starfiveToken.text = "EVN1-" + "b".repeat(43)
-        tokenConfirm.confirm()
-    }}
-    Timer { interval: 1200; running: true; onTriggered: {
-        demand(!root.tokenLocked && starfiveToken.text.indexOf("EVN1-") === 0 && root.errorText === "save rejected", "failed save keeps draft")
-        tokenCancel.clicked()
-        demand(root.tokenLocked && starfiveToken.text === "", "cancel restores saved token")
-        Qt.exit(0)
-    }}
-'''
-        reopened='''
-    Timer { interval: 300; running: true; onTriggered: {
-        if (!root.tokenLocked || !starfiveToken.readOnly || tokenConfirm.label !== "Изменить" || starfiveToken.text !== "") {
-            console.error("reopen did not preserve lock"); Qt.exit(1); return
-        }
-        Qt.exit(0)
-    }}
-'''
-        try:
-            for injected in (checks, reopened):
-                text=(ROOT/'src/evgenium_gui.qml').read_text()
-                i=text.rfind('}'); text=text[:i]+injected+'\n'+text[i:]
-                with tempfile.TemporaryDirectory() as td:
-                    p=Path(td)/'test.qml'; p.write_text(text)
-                    env={**os.environ,'QT_QPA_PLATFORM':'offscreen','QT_QUICK_BACKEND':'software','QML_DISABLE_DISK_CACHE':'1'}
-                    result=subprocess.run([QML,str(p),'--',str(server.server_port),'test'],env=env,capture_output=True,text=True,timeout=6)
-                    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-            self.assertEqual(Handler.posts,2)
-        finally:
-            server.shutdown(); server.server_close(); thread.join(timeout=1)

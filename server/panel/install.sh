@@ -1,5 +1,5 @@
 #!/bin/bash
-# Native StarFive installation. No VPN service or global firewall reload.
+# Native server installation. No VPN service or global firewall reload.
 set -euo pipefail
 base=$(cd -- "$(dirname -- "$0")" && pwd)
 [[ $EUID -eq 0 ]] || { echo 'Run as root' >&2; exit 1; }
@@ -66,7 +66,7 @@ Requires=evgenium-panel-broker.service
 User=evg-panel
 Group=evg-panel
 WorkingDirectory=/opt/evgenium-panel
-ExecStart=/usr/bin/python3 -m gunicorn --bind 127.0.0.1:9081 --bind unix:/var/lib/evgenium-panel-http/panel.sock --umask 7 --workers 2 --threads 2 --timeout 30 --limit-request-line 4096 --limit-request-field_size 4096 wsgi:application
+ExecStart=/usr/bin/python3 -m gunicorn --bind 127.0.0.1:9081 --bind unix:/var/lib/evgenium-panel-http/panel.sock --umask 7 --workers 2 --threads 2 --timeout 120 --limit-request-line 4096 --limit-request-field_size 4096 wsgi:application
 Environment=EVG_PANEL_CONFIG=/etc/evgenium-panel/config.json
 UMask=0077
 Restart=on-failure
@@ -86,7 +86,14 @@ CPUQuota=40%
 [Install]
 WantedBy=multi-user.target
 EOF
+# The root issuer owns CA operations; the unprivileged web app never gains CA access.
+install -d -m 755 /etc/systemd/system/evgenium-enrollment.service.d
+cat > /etc/systemd/system/evgenium-enrollment.service.d/panel-revocation.conf <<'EOF'
+[Service]
+ReadWritePaths=/etc/swanctl/x509crl
+EOF
 systemctl daemon-reload
+systemctl restart evgenium-enrollment
 systemctl enable --now evgenium-panel-broker.service evgenium-panel.service
 # Subsequent installation updates only these two dedicated services.
 systemctl restart evgenium-panel-broker.service evgenium-panel.service

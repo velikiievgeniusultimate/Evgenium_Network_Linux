@@ -10,7 +10,10 @@ import os
 from pathlib import Path
 import re
 import secrets
+import socket
 import socketserver
+import ssl
+import struct
 import subprocess
 import time
 
@@ -19,6 +22,85 @@ PKI = Path('/root/evgenium-ikev2-pki')
 SOCKET = Path('/run/evgenium-enrollment/issuer.sock')
 MAX_REQUEST = 20000
 TOKEN_PATTERN = r'EVN1-[A-Za-z0-9_-]{43}'
+CRL = Path('/etc/swanctl/x509crl/devices.pem')
+
+
+def session_ids(raw, identities):
+    """Read only the IKE header, never a child-SA uniqueid."""
+    found=[]
+    for event in raw.split('list-sa event ')[1:]:
+        header=event.split('child-sas',1)[0]
+        remote=re.search(r'(?<![\w-])remote-id=([^\s{}]+)',header)
+        number=re.search(r'(?<![\w-])uniqueid=(\d+)(?=[\s}])',header)
+        if remote and remote[1] in identities:
+            if not number:raise RuntimeError('invalid_session_response')
+            found.append(number[1])
+    return found
+
+
+def delete_account(account_id):
+    """Fail closed, revoke all certificate generations, then close only this user's SAs.
+
+    Tombstones retain revocation history. A failed deletion stays visible and can
+    safely be retried; tokens are disabled before touching the CA or the network.
+    """
+    if not isinstance(account_id,str) or not re.fullmatch(r'[a-f0-9]{24}',account_id):
+        raise ValueError('invalid_account')
+    with locked():
+        data=accounts();account=data.get(account_id)
+        if not account:raise ValueError('account_missing')
+        if account.get('deleted'):return {'deleted':True}
+        identities={d['identity'] for d in account.get('devices',{}).values()}
+        if any(not re.fullmatch(r'device-[a-f0-9]{24}',i) for i in identities):
+            raise ValueError('invalid_device')
+        account['enabled']=False;account['delete_pending']=True
+        for device in account.get('devices',{}).values():device['disabled']=True
+        write_json(ROOT/'accounts.json',data)
+        if identities:
+            with (PKI/'ca.lock').open('a') as ca_lock:
+                fcntl.flock(ca_lock,fcntl.LOCK_EX)
+                seen=set()
+                for row in (PKI/'index.txt').read_text().splitlines():
+                    columns=row.split('\t')
+                    if len(columns)!=6:raise RuntimeError('invalid_ca_index')
+                    status,_,_,serial,_,subject=columns
+                    identity=subject.removeprefix('/CN=')
+                    if identity not in identities:continue
+                    seen.add(identity)
+                    if status=='R':continue
+                    if not re.fullmatch(r'[A-Fa-f0-9]+',serial):raise RuntimeError('invalid_serial')
+                    run(['openssl','ca','-batch','-config',str(PKI/'ca.conf'),'-revoke',str(PKI/(serial+'.pem'))])
+                if seen!=identities:raise RuntimeError('missing_certificate_history')
+                temporary=CRL.with_suffix('.new')
+                def issued_at(path):
+                    value=run(['openssl','crl','-in',str(path),'-noout','-lastupdate']).decode().strip()
+                    return ssl.cert_time_to_seconds(value.removeprefix('lastUpdate='))
+                previous=issued_at(CRL) if CRL.exists() else 0
+                # CRLs have second-resolution timestamps. Two rapid deletions must
+                # still publish a strictly newer list, including after a retry.
+                for _ in range(3):
+                    run(['openssl','ca','-batch','-config',str(PKI/'ca.conf'),'-gencrl','-out',str(temporary)])
+                    if issued_at(temporary)>previous:break
+                    time.sleep(1)
+                else:raise RuntimeError('crl_clock_not_advanced')
+                os.replace(temporary,CRL)
+            run(['swanctl','--load-creds','--noprompt'])
+            # Stop authenticated sessions after the new CRL prevents reconnection.
+            for _ in range(3):
+                raw=run(['swanctl','--list-sas','--raw']).decode()
+                if 'list-sas reply' not in raw:raise RuntimeError('invalid_session_response')
+                sessions=session_ids(raw,identities)
+                if not sessions:break
+                for number in sessions:
+                    # A concurrently closed SA is harmless; the next snapshot verifies it.
+                    subprocess.run(['swanctl','--terminate','--ike-id',number],capture_output=True,timeout=20)
+            else:raise RuntimeError('sessions_still_active')
+            for unit in ('evgenium-diagnostic-direct','evgenium-diagnostic-collector'):
+                active=subprocess.run(['systemctl','is-active','--quiet',unit],timeout=5).returncode==0
+                if active:run(['systemctl','restart',unit])
+        account['deleted']=int(time.time());account.pop('delete_pending',None)
+        write_json(ROOT/'accounts.json',data)
+        return {'deleted':True}
 
 
 def write_json(path, value):
@@ -77,6 +159,48 @@ def authenticate(data, token):
     raise PermissionError('invalid_token')
 
 
+def normalize_device_name(value):
+    import unicodedata
+    if not isinstance(value, str):raise ValueError('invalid_device_name')
+    value=unicodedata.normalize('NFC',value).strip()
+    if not 1<=len(value)<=64 or any(unicodedata.category(c).startswith('C') for c in value):
+        raise ValueError('invalid_device_name')
+    return value
+
+
+def ensure_device_names(account):
+    names=account.setdefault('device_names',{})
+    counter=max([int(account.get('next_device_number',1))-1]+[int(d.get('number',0)) for d in names.values()])
+    for device,record in sorted(account.get('devices',{}).items(),key=lambda item:(item[1].get('enrolled',0),item[0])):
+        if device not in names:
+            counter+=1;names[device]={'number':counter,'name':'Устройство-'+str(counter)}
+    account['next_device_number']=counter+1
+    return names
+
+
+def reserve_device_name(account,device):
+    names=ensure_device_names(account)
+    if device not in names:
+        if len(names)>=12:raise PermissionError('device_limit')
+        number=account['next_device_number'];account['next_device_number']=number+1
+        names[device]={'number':number,'name':'Устройство-'+str(number)}
+    return names[device]
+
+
+def device_info(body):
+    if not isinstance(body,dict):raise ValueError('invalid_request')
+    device=body.get('device','')
+    if not isinstance(device,str) or not re.fullmatch(r'[a-f0-9]{32}',device):raise ValueError('invalid_device')
+    name=normalize_device_name(body['name']) if 'name' in body else None
+    with locked():
+        data=accounts();_,account=authenticate(data,body.get('token'))
+        if account.get('devices',{}).get(device,{}).get('disabled'):raise PermissionError('device_disabled')
+        record=reserve_device_name(account,device)
+        if name is not None:record['name']=name
+        write_json(ROOT/'accounts.json',data)
+        return {'name':record['name'],'number':record['number']}
+
+
 def enroll(body):
     if not isinstance(body, dict):
         raise ValueError('invalid_request')
@@ -124,10 +248,11 @@ def enroll(body):
                 run(['openssl', 'ca', '-batch', '-notext', '-config', str(PKI/'ca.conf'),
                      '-subj', '/CN='+identity, '-extensions', 'client', '-extfile', str(extension),
                      '-in', str(request), '-out', str(certificate)])
-        records[device] = {'identity': identity, 'key_hash': key_hash, 'enrolled': int(time.time())}
+        records[device] = {**(previous or {}), 'identity': identity, 'key_hash': key_hash, 'enrolled': previous.get('enrolled',int(time.time())) if previous else int(time.time())}
+        device_name=reserve_device_name(account,device)
         write_json(ROOT/'accounts.json', data)
         return {'schema': 1, 'server': '195.209.211.163', 'identity': identity,
-                'account': account_id, 'certificate': certificate.read_text(), 'ca': (PKI/'ca.pem').read_text()}
+                'account': account_id, 'device_name':device_name['name'], 'device_number':device_name['number'], 'certificate': certificate.read_text(), 'ca': (PKI/'ca.pem').read_text()}
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -137,7 +262,14 @@ class Handler(socketserver.StreamRequestHandler):
             raw = self.rfile.readline(MAX_REQUEST+1)
             if len(raw) > MAX_REQUEST or not raw.endswith(b'\n'):
                 raise ValueError('request_size')
-            result = {'ok': True, 'profile': enroll(json.loads(raw))}
+            body=json.loads(raw)
+            if isinstance(body,dict) and body.get('operation')=='admin-delete-account':
+                uid=struct.unpack('3i',self.connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))[1]
+                if uid!=0:raise PermissionError('root_required')
+                result={'ok':True,'result':delete_account(body.get('id'))}
+            elif isinstance(body,dict) and body.get('operation')=='device':
+                result={'ok':True,'device':device_info(body)}
+            else:result = {'ok': True, 'profile': enroll(body)}
         except PermissionError:
             time.sleep(.3)
             result = {'ok': False, 'error': 'invalid_token_or_device'}
