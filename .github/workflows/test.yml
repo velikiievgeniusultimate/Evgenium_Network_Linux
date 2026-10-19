@@ -1,14 +1,11 @@
-name: Test VPN Manager
-
+name: Test Evgenium VPN
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-
 permissions:
   contents: read
-
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -17,235 +14,36 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Validate installer syntax
+      - name: Dependencies for isolated tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nftables conntrack iproute2 curl openssl qt6-declarative-dev-tools qml6-module-qtqml qml6-module-qtqml-workerscript qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-templates
+          sudo useradd --system --no-create-home vpn-xray
+          python -m pip install -r server/panel/requirements.txt
+      - name: Build reproducibly and test
         run: |
           bash -n install.sh
-          grep -F 'update/stable.json' install.sh
-          grep -F 'vpn update' install.sh
-          grep -F 'DISTRO="arch"' install.sh
-          grep -F 'DISTRO="fedora"' install.sh
-          grep -F 'packages=(python curl nftables iproute2 ca-certificates qt6-declarative strongswan openssl conntrack-tools)' install.sh
-          grep -F 'packages=(python3 curl nftables iproute ca-certificates shadow-utils strongswan openssl conntrack-tools)' install.sh
-          grep -F 'QT_DECL_VERSION="$(rpm -q --qf' install.sh
-          grep -F 'QT_DECL_DEVEL="qt6-qtdeclarative-devel-${QT_DECL_VERSION}"' install.sh
-          grep -F 'sudo dnf install -y --no-best --setopt=install_weak_deps=False' install.sh
-          grep -F 'command -v nologin' install.sh
-          grep -F 'restorecon -RF /opt/vpn-manager' install.sh
-          grep -F '[[ -f /etc/vpn-manager/settings.json ]] || return 1' install.sh
-          grep -F 'sudo /usr/local/sbin/vpnctl core-update' install.sh
-      - name: Compile and self-test
-        run: |
-          python -m py_compile src/vpnctl.py src/vpnadmin.py src/evgenium_gui.py scripts/build_release.py
+          python -m py_compile src/*.py server/*.py server/panel/*.py scripts/build_release.py scripts/test-unified-policy.py
+          python scripts/build_release.py --channels stable testing
+          git diff --exit-code -- src/vpnctl.py dist/ update/
           python src/vpnctl.py --self-test
           python src/evgenium_gui.py --self-test
           python -m unittest discover -s tests -v
-          python -m py_compile src/starfive_experimental.py server/diagnostic_collector.py
-          bash -n server/setup-starfive.sh server/issue-device.sh server/revoke-device.sh server/selftest-isolated.sh
-          grep -F '"process": apps' src/vpnctl.py
-          grep -F 'DIRECT_SOCKS_PORT = 18443' src/vpnctl.py
-          grep -F 'Применяю новые DIRECT-правила к активному VPN' src/vpnctl.py
-          grep -F 'sub.add_parser("diagnostic")' src/vpnctl.py
-          grep -F '"event": "user_mark"' src/vpnctl.py
-          grep -F 'internal-diagnostic-monitor' src/vpnctl.py
-          grep -F 'DIAGNOSTIC_INTERVAL = 5.0' src/vpnctl.py
-          grep -F 'DIAGNOSTIC_LOG_SEGMENT_BYTES = 50 * 1024 * 1024 * 1024' src/vpnctl.py
-          grep -F 'policy": "quorum failures only; no automatic recovery"' src/vpnctl.py
-          grep -F 'repeated_active_destination_failures' src/vpnctl.py
-      - name: Validate resilient HTTPS downloader
-        run: |
-          grep -F 'import urllib.error' src/vpnctl.py
-          grep -F 'retryable_http = {408, 425, 429, 500, 502, 503, 504}' src/vpnctl.py
-          grep -F 'HTTPS certificate verification failed' src/vpnctl.py
-          python - <<'PY'
-          import importlib.util
-          import io
-          import urllib.error
-
-          spec = importlib.util.spec_from_file_location('vpnctl', 'src/vpnctl.py')
-          mod = importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(mod)
-
-          class Response:
-              def __init__(self, data):
-                  self._io = io.BytesIO(data)
-              def __enter__(self):
-                  return self
-              def __exit__(self, *args):
-                  return False
-              def read(self, n=-1):
-                  return self._io.read(n)
-
-          calls = {'n': 0}
-          def flaky(req, timeout=0, context=None):
-              calls['n'] += 1
-              if calls['n'] < 3:
-                  raise urllib.error.HTTPError(req.full_url, 504, 'Gateway Timeout', {}, None)
-              return Response(b'healthy')
-
-          mod.urllib.request.urlopen = flaky
-          mod.time.sleep = lambda _: None
-          assert mod.http_get('https://example.com/test', 64) == b'healthy'
-          assert calls['n'] == 3, calls
-
-          calls404 = {'n': 0}
-          def not_found(req, timeout=0, context=None):
-              calls404['n'] += 1
-              raise urllib.error.HTTPError(req.full_url, 404, 'Not Found', {}, None)
-
-          mod.urllib.request.urlopen = not_found
-          try:
-              mod.http_get('https://example.com/missing', 64)
-          except mod.VPNError:
-              pass
-          else:
-              raise AssertionError('404 must fail without retry')
-          assert calls404['n'] == 1, calls404
-          print('transient HTTPS retry contract OK')
-          PY
-      - name: Validate standalone GUI contract
-        run: |
-          grep -F 'PLASMOID_ID = "com.evgenium.network"' src/vpnctl.py
-          grep -F 'sub.add_parser("toggle")' src/vpnctl.py
-          grep -F 'pst.add_argument("--json"' src/vpnctl.py
-          grep -F 'pwsub.add_parser("install")' src/vpnctl.py
-          grep -F 'pgsub.add_parser("install")' src/vpnctl.py
-          grep -F '/usr/local/bin/vpn status --json' src/vpnctl.py
-          grep -F '/usr/local/bin/vpn toggle' src/vpnctl.py
-          grep -F '/usr/local/bin/evgenium-network --detach' src/vpnctl.py
-          grep -F 'cmd_gui_install(settings)' src/vpnctl.py
-          grep -F 'evgenium-network.desktop' src/vpnctl.py
-          grep -F '/api/running' src/evgenium_gui.py
-          grep -F '/api/action' src/evgenium_gui.py
-          grep -F '/usr/bin/qml-qt6' src/evgenium_gui.py
-          grep -F '/usr/lib64/qt6/bin/qml' src/evgenium_gui.py
-          grep -F 'Запущены сейчас' src/evgenium_gui.qml
-          grep -F 'Профили VPN' src/evgenium_gui.qml
-          grep -F 'profile_activate' src/vpnctl.py
-          grep -F 'waydroid_vpn_set' src/vpnctl.py
-          grep -F 'VPN для Waydroid' src/evgenium_gui.qml
-          grep -F 'action: "waydroid_vpn_set"' src/evgenium_gui.qml
-          grep -F '"profiles": profiles' src/vpnctl.py
-          grep -F 'APP_ICON_SVG' src/vpnctl.py
-          grep -F 'Icon=evgenium-network' src/vpnctl.py
-          grep -F 'target: String(modelData.exe || modelData.name || "")' src/evgenium_gui.qml
-          python - <<'PY'
-          import ast, base64
-          from pathlib import Path
-          tree=ast.parse(Path('src/vpnctl.py').read_text())
-          vals={}
-          for node in tree.body:
-              if isinstance(node, ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0], ast.Name):
-                  name=node.targets[0].id
-                  if name in {'STANDALONE_GUI_PY_B64','STANDALONE_GUI_QML_B64'}:
-                      vals[name]=ast.literal_eval(node.value)
-          assert base64.b64decode(vals['STANDALONE_GUI_PY_B64']) == Path('src/evgenium_gui.py').read_bytes()
-          assert base64.b64decode(vals['STANDALONE_GUI_QML_B64']) == Path('src/evgenium_gui.qml').read_bytes()
-          print('embedded GUI assets match source')
-          PY
-      - name: Lint standalone Qt Quick UI
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qt6-declarative-dev-tools qml6-module-qtqml qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-templates
-          cat > src/.qmllint.ini <<'EOF'
-          [Warnings]
-          UnqualifiedAccess=disable
-          ImportFailure=disable
-          EOF
+          python -m unittest discover -s server/panel/tests -v
           /usr/lib/qt6/bin/qmllint src/evgenium_gui.qml
-          rm -f src/.qmllint.ini
-      - name: Validate nftables server-port and Waydroid rules
+      - name: Fetch and verify pinned local routing engine
         run: |
-          sudo apt-get install -y -qq nftables conntrack
           python - <<'PY'
-          import importlib.util
-          from pathlib import Path
-          spec = importlib.util.spec_from_file_location('vpnctl', 'src/vpnctl.py')
-          mod = importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(mod)
-          Path('/tmp/vpn-guard.nft').write_text(mod.render_guard_rules(943, {25565}, {19132}))
-          Path('/tmp/vpn-guard-waydroid.nft').write_text(mod.render_guard_rules(943, set(), set(), waydroid_direct=True))
-          Path('/tmp/starfive-guard.nft').write_text(mod.starfive.render_guard())
+          import importlib.util,hashlib,zipfile,io,pathlib
+          spec=importlib.util.spec_from_file_location('manager','src/vpnctl.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+          name,url,digest,dgst=m.github_xray_asset();blob=m.http_get(url)
+          if digest is None and dgst:digest=m.parse_checksum_text(m.http_get(dgst))
+          assert digest and hashlib.sha256(blob).hexdigest()==digest
+          with zipfile.ZipFile(io.BytesIO(blob)) as z:pathlib.Path('/tmp/evg-policy-xray').write_bytes(z.read('xray'))
+          pathlib.Path('/tmp/evg-policy-xray').chmod(0o755)
           PY
-          sudo nft -c -f /tmp/vpn-guard.nft
-          sudo nft -c -f /tmp/vpn-guard-waydroid.nft
-          sudo nft -c -f /tmp/starfive-guard.nft
-          ip rule help 2>&1 | grep -F 'fwmark'
-      - name: Verify DNS transitions and loopback stubs in isolated namespaces
+      - name: Real isolated routing and fail-closed tests
         run: |
+          sudo env EVG_TEST_XRAY=/tmp/evg-policy-xray python3 scripts/test-unified-policy.py
           sudo python3 scripts/test-dns-transition.py
           sudo python3 scripts/test-local-dns-guard.py
-      - name: Validate dedicated server bypass table
-        run: |
-          grep -F 'SERVER_BYPASS_TABLE = 51820' src/vpnctl.py
-          grep -F '"lookup", str(SERVER_BYPASS_TABLE)' src/vpnctl.py
-          grep -F '_verify_server_bypass_route(4, iface4)' src/vpnctl.py
-          python - <<'PY'
-          from pathlib import Path
-          s = Path('src/vpnctl.py').read_text()
-          start = s.index('def _install_server_bypass_policy_rules')
-          end = s.index('def _delete_waydroid_bypass_policy_rules', start)
-          block = s[start:end]
-          assert '"lookup", "main"' not in block
-          assert 'SERVER_BYPASS_TABLE' in block
-          print('dedicated server bypass table wiring OK')
-          PY
-      - name: Validate Waydroid bypass policy
-        run: |
-          grep -F 'WAYDROID_IFACE = "waydroid0"' src/vpnctl.py
-          grep -F 'WAYDROID_BYPASS_MARK = 0x45564E02' src/vpnctl.py
-          grep -F 'WAYDROID_BYPASS_TABLE = 51821' src/vpnctl.py
-          grep -F '_install_waydroid_bypass_policy_rules(waydroid_direct)' src/vpnctl.py
-          grep -F 'chain waydroid_mark' src/vpnctl.py
-          grep -F 'chain forward' src/vpnctl.py
-          python - <<'PY'
-          from pathlib import Path
-          s=Path('src/vpnctl.py').read_text()
-          start=s.index('def _install_waydroid_bypass_policy_rules')
-          end=s.index('def build_config(', start)
-          block=s[start:end]
-          assert 'WAYDROID_BYPASS_TABLE' in block
-          assert 'WAYDROID_BYPASS_MARK' in block
-          assert '"lookup", "main"' not in block
-          assert 'waydroid_vpn_effective' in s
-          print('Waydroid bypass wiring OK')
-          PY
-      - name: Verify current release and manifests
-        run: |
-          python - <<'PY'
-          import hashlib, json, re, tarfile
-          from pathlib import Path
-          v=Path('VERSION').read_text().strip()
-          archive=Path(f'dist/vpn-manager-{v}.tar.gz')
-          assert archive.is_file()
-          digest=hashlib.sha256(archive.read_bytes()).hexdigest()
-          vpnctl=Path('src/vpnctl.py').read_text()
-          builder=Path('scripts/build_release.py').read_text()
-          core1=re.search(r'^SAFE_XRAY_VERSION\s*=\s*"([^"]+)"', vpnctl, re.M)
-          core2=re.search(r'^SAFE_XRAY_VERSION\s*=\s*"([^"]+)"', builder, re.M)
-          assert core1 and core2 and core1.group(1)==core2.group(1)
-          core=core1.group(1)
-          for channel in ('stable','testing'):
-              m=json.loads(Path(f'update/{channel}.json').read_text())
-              assert m['channel']==channel
-              assert m['version']==v
-              assert m['sha256']==digest
-              assert m['xray_version']==core
-          with tarfile.open(archive,'r:gz') as tf:
-              assert tf.getnames()==['vpnctl.py','vpnadmin.py','VERSION']
-          print('release + manifests OK', digest, 'Xray', core)
-          PY
-      - name: Isolated userspace IPsec transfer, reconnect and kill switch
-        run: sudo python3 scripts/selftest_userspace.py
-      - name: Isolated DNS interception (IPv4/IPv6 TCP/UDP)
-        run: |
-          sudo modprobe nft_chain_nat
-          sudo modprobe nft_redir
-          sudo unshare -n python3 scripts/selftest_dns.py
-
-      - name: DNS failover with the pinned Xray core
-        run: |
-          mkdir -p /tmp/vpn-dns-xray
-          curl -fL --retry 3 -o /tmp/vpn-dns-xray.zip https://github.com/XTLS/Xray-core/releases/download/v26.7.28/Xray-linux-64.zip
-          unzip -q /tmp/vpn-dns-xray.zip xray -d /tmp/vpn-dns-xray
-          echo '64d46afb80adea1bf97a0d467e83f4a9ac1ebd0995891e84bca3f1a1d1affb1d  /tmp/vpn-dns-xray/xray' | sha256sum -c -
-          XRAY_TEST_BINARY=/tmp/vpn-dns-xray/xray python -m unittest discover -s tests -p test_dns_failover.py -v

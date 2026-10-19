@@ -90,9 +90,12 @@ class Accounts:
     def listing(self):
         with self.issuer.locked():
             data=self.issuer.accounts();vault=self.tokens()
+            before=json.dumps(data,sort_keys=True)
+            for a in data.values():self.issuer.ensure_device_names(a)
+            if json.dumps(data,sort_keys=True)!=before:atomic_json(self.issuer.ROOT/'accounts.json',data)
             return [{'id':key,'name':a['name'],'enabled':bool(a.get('enabled')),'created':a.get('created'),
                      'token_hint':a['token_hash'][:8],'token_available':key in vault,
-                     'devices':[{'id':device,'identity':d['identity'],'enrolled':d.get('enrolled'),
+                     'devices':[{'id':device,'identity':d['identity'],'name':a['device_names'][device]['name'],'number':a['device_names'][device]['number'],'enrolled':d.get('enrolled'),
                                  'disabled':bool(d.get('disabled'))} for device,d in a.get('devices',{}).items()]}
                     for key,a in data.items()]
 

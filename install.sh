@@ -70,8 +70,8 @@ p = pathlib.Path('/etc/vpn-manager/settings.json')
 if not p.exists():
     raise SystemExit('settings.json отсутствует; установка выглядит повреждённой')
 d = json.loads(p.read_text())
-if d.get('engine') != 'xray':
-    raise SystemExit('установленный manager не является Xray edition')
+if d.get('engine') not in ('xray','token-ipsec'):
+    raise SystemExit('установленный manager не распознан')
 d['manager_manifest_url'] = manifest
 fd, tmp = tempfile.mkstemp(prefix='settings.', suffix='.json', dir=str(p.parent))
 try:
@@ -105,10 +105,10 @@ PY
     fi
 
     sudo /usr/local/sbin/vpnctl update
-    # `core-update` is idempotent. Calling it explicitly also repairs a previous
+    # Dependency synchronization also repairs a previous
     # clean install that reached the manager/GUI stage but lost the Xray asset
     # download to a transient GitHub/CDN error.
-    sudo /usr/local/sbin/vpnctl core-update
+    sudo /usr/local/sbin/vpnctl internal-sync
     ok "${APP_NAME} уже установлен. Ничего заново не переустанавливалось."
     echo
     echo "Дальше достаточно: vpn update"
@@ -305,7 +305,7 @@ import json, sys
 user, home, configs, sites, networks, uid, gid, manifest = sys.argv[1:]
 print(json.dumps({
     "schema": 2,
-    "engine": "xray",
+    "engine": "token-ipsec",
     "owner_user": user,
     "owner_home": home,
     "config_dir": configs,
@@ -342,17 +342,17 @@ if command -v restorecon >/dev/null 2>&1; then
     done
 fi
 
-say "Устанавливаю совместимый Xray-core..."
-sudo /usr/local/sbin/vpnctl core-update
+say "Проверяю локальный обработчик исключений..."
+sudo /usr/local/sbin/vpnctl internal-sync
 
 ok "${APP_NAME} установлен на ${DISTRO}."
 echo
 echo "Команда: vpn"
 echo "Приложение KDE: Evgenium Network"
-echo "Конфиги: ${CONFIG_DIR}"
+echo "Вход: клиентский токен в приложении Evgenium Network"
 echo
 echo "Начать:"
-echo "  vpn list"
+echo "  evgenium-network"
 echo "  vpn on"
 echo
 echo "Обновление в будущем:"

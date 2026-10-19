@@ -77,6 +77,48 @@ def authenticate(data, token):
     raise PermissionError('invalid_token')
 
 
+def normalize_device_name(value):
+    import unicodedata
+    if not isinstance(value, str):raise ValueError('invalid_device_name')
+    value=unicodedata.normalize('NFC',value).strip()
+    if not 1<=len(value)<=64 or any(unicodedata.category(c).startswith('C') for c in value):
+        raise ValueError('invalid_device_name')
+    return value
+
+
+def ensure_device_names(account):
+    names=account.setdefault('device_names',{})
+    counter=max([int(account.get('next_device_number',1))-1]+[int(d.get('number',0)) for d in names.values()])
+    for device,record in sorted(account.get('devices',{}).items(),key=lambda item:(item[1].get('enrolled',0),item[0])):
+        if device not in names:
+            counter+=1;names[device]={'number':counter,'name':'Устройство-'+str(counter)}
+    account['next_device_number']=counter+1
+    return names
+
+
+def reserve_device_name(account,device):
+    names=ensure_device_names(account)
+    if device not in names:
+        if len(names)>=12:raise PermissionError('device_limit')
+        number=account['next_device_number'];account['next_device_number']=number+1
+        names[device]={'number':number,'name':'Устройство-'+str(number)}
+    return names[device]
+
+
+def device_info(body):
+    if not isinstance(body,dict):raise ValueError('invalid_request')
+    device=body.get('device','')
+    if not isinstance(device,str) or not re.fullmatch(r'[a-f0-9]{32}',device):raise ValueError('invalid_device')
+    name=normalize_device_name(body['name']) if 'name' in body else None
+    with locked():
+        data=accounts();_,account=authenticate(data,body.get('token'))
+        if account.get('devices',{}).get(device,{}).get('disabled'):raise PermissionError('device_disabled')
+        record=reserve_device_name(account,device)
+        if name is not None:record['name']=name
+        write_json(ROOT/'accounts.json',data)
+        return {'name':record['name'],'number':record['number']}
+
+
 def enroll(body):
     if not isinstance(body, dict):
         raise ValueError('invalid_request')
@@ -124,10 +166,11 @@ def enroll(body):
                 run(['openssl', 'ca', '-batch', '-notext', '-config', str(PKI/'ca.conf'),
                      '-subj', '/CN='+identity, '-extensions', 'client', '-extfile', str(extension),
                      '-in', str(request), '-out', str(certificate)])
-        records[device] = {'identity': identity, 'key_hash': key_hash, 'enrolled': int(time.time())}
+        records[device] = {**(previous or {}), 'identity': identity, 'key_hash': key_hash, 'enrolled': previous.get('enrolled',int(time.time())) if previous else int(time.time())}
+        device_name=reserve_device_name(account,device)
         write_json(ROOT/'accounts.json', data)
         return {'schema': 1, 'server': '195.209.211.163', 'identity': identity,
-                'account': account_id, 'certificate': certificate.read_text(), 'ca': (PKI/'ca.pem').read_text()}
+                'account': account_id, 'device_name':device_name['name'], 'device_number':device_name['number'], 'certificate': certificate.read_text(), 'ca': (PKI/'ca.pem').read_text()}
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -137,7 +180,10 @@ class Handler(socketserver.StreamRequestHandler):
             raw = self.rfile.readline(MAX_REQUEST+1)
             if len(raw) > MAX_REQUEST or not raw.endswith(b'\n'):
                 raise ValueError('request_size')
-            result = {'ok': True, 'profile': enroll(json.loads(raw))}
+            body=json.loads(raw)
+            if isinstance(body,dict) and body.get('operation')=='device':
+                result={'ok':True,'device':device_info(body)}
+            else:result = {'ok': True, 'profile': enroll(body)}
         except PermissionError:
             time.sleep(.3)
             result = {'ok': False, 'error': 'invalid_token_or_device'}

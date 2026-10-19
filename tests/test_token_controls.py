@@ -23,6 +23,10 @@ OTHER = 'EVN1-' + 'b' * 43
 
 
 class TokenControlTests(unittest.TestCase):
+    def setUp(self):
+        stub=patch.object(tunnel,'sync_device_name',return_value={'device_name':'Устройство-1','device_number':1,'device_name_pending':False})
+        stub.start();self.addCleanup(stub.stop)
+
     def test_confirmation_persists_without_starting_tunnel_and_status_masks_secret(self):
         with tempfile.TemporaryDirectory() as td, patch.object(tunnel, 'ROOT', Path(td)), \
                 patch.object(tunnel, 'STATE', Path(td) / 'state.json'), \

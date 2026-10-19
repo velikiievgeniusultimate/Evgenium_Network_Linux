@@ -32,9 +32,13 @@ C.ApplicationWindow {
     property var state: ({})
     property var runningApps: []
     property bool tokenEditing: false
-    readonly property bool tokenSaved: Boolean((root.experiment.tunnel || {}).has_token)
+    property bool deviceEditing: false
+    readonly property bool tokenSaved: Boolean(root.tunnel.has_token)
     readonly property bool tokenLocked: tokenSaved && !tokenEditing
-    readonly property var experiment: root.state.experimental || ({})
+    readonly property var tunnel: root.state.tunnel || ({})
+    readonly property var policy: root.state.policy || ({})
+    readonly property string category: ["", "applications", "networks", "ports", "dns", ""][pageIndex]
+    property bool showBase: false
 
     readonly property var args: Qt.application.arguments
     readonly property string apiToken: args.length >= 2 ? String(args[args.length - 1]) : ""
@@ -111,7 +115,7 @@ C.ApplicationWindow {
     }
 
     function action(payload, onSuccess) {
-        if (busy || Boolean(state.connecting))
+        if (busy || (Boolean(state.connecting) && payload.action !== "disconnect"))
             return
         busy = true
         api("POST", "/api/action", payload, function(_reply) {
@@ -209,8 +213,8 @@ C.ApplicationWindow {
             anchors.rightMargin: 12
             spacing: 11
             Rectangle {
-                width: 28
-                height: 28
+                implicitWidth: 28
+                implicitHeight: 28
                 radius: 8
                 color: root.pageIndex === nav.index ? root.accent : "#273449"
                 C.Label {
@@ -251,958 +255,191 @@ C.ApplicationWindow {
     RowLayout {
         anchors.fill: parent
         spacing: 0
-
         Rectangle {
             Layout.preferredWidth: 222
             Layout.fillHeight: true
             color: root.sidebar
-
             ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: 18
-                spacing: 7
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    Layout.bottomMargin: 24
-                    spacing: 11
-                    Rectangle {
-                        width: 40
-                        height: 40
-                        radius: 12
-                        color: root.accent
+                spacing: 8
+                C.Label { text: "Evgenium"; color: "white"; font.pixelSize: 23; font.bold: true; Layout.topMargin: 12 }
+                C.Label { text: "Network"; color: "#94a3b8"; Layout.bottomMargin: 28 }
+                NavButton { label: "VPN"; shortLabel: "VPN"; index: 0 }
+                NavButton { label: "Приложения"; shortLabel: "APP"; index: 1; onClicked: root.refreshRunning() }
+                NavButton { label: "Сайты и IP"; shortLabel: "NET"; index: 2 }
+                NavButton { label: "Порты"; shortLabel: "PRT"; index: 3 }
+                NavButton { label: "DNS"; shortLabel: "DNS"; index: 4 }
+                NavButton { label: "Waydroid"; shortLabel: "WAY"; index: 5 }
+                Item { Layout.fillHeight: true }
+                C.Label { text: root.state.active ? "● Подключено" : (root.state.guard ? "● Защита включена" : "○ Отключено"); color: root.state.active ? "#4ade80" : "#cbd5e1" }
+                C.Label { text: "Версия " + (root.state.manager_version || "…"); color: "#94a3b8"; font.pixelSize: 12 }
+            }
+        }
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.margins: 28
+            spacing: 16
+            C.Label { text: ["Ваш VPN", "Исключения приложений", "Сайты и IP", "Исключения портов", "DNS", "Waydroid"][root.pageIndex]; color: root.textMain; font.pixelSize: 27; font.bold: true }
+            C.Label {
+                Layout.fillWidth: true
+                visible: Boolean(root.errorText || root.pollErrorText)
+                text: root.errorText || root.pollErrorText
+                color: root.bad
+                wrapMode: Text.Wrap
+            }
+            C.BusyIndicator { running: root.busy; visible: running; Layout.preferredHeight: 28 }
+            C.ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                contentWidth: availableWidth
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 18
+                    ColumnLayout {
+                        visible: root.pageIndex === 0
+                        Layout.fillWidth: true
+                        spacing: 18
+                        Card {
+                            visible: root.tokenSaved
+                            Layout.fillWidth: true
+                            implicitHeight: deviceBody.implicitHeight + 32
+                            ColumnLayout {
+                                id: deviceBody
+                                anchors.fill: parent; anchors.margins: 16
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    C.Label { visible: !root.deviceEditing; text: root.tunnel.device_name || "Получаю имя устройства…"; font.pixelSize: 18; font.bold: true; color: root.textMain; Layout.fillWidth: true; elide: Text.ElideRight }
+                                    C.TextField { id: deviceNameInput; visible: root.deviceEditing; Layout.fillWidth: true; maximumLength: 64; placeholderText: "Имя устройства"; selectByMouse: true }
+                                    FlatButton { label: root.deviceEditing ? "Сохранить" : "Изменить имя"; enabledButton: !root.busy && !root.state.connecting && (!root.deviceEditing || deviceNameInput.text.trim().length > 0); onClicked: {
+                                        if (!root.deviceEditing) { deviceNameInput.text=root.tunnel.device_name || ""; root.deviceEditing=true; deviceNameInput.forceActiveFocus() }
+                                        else root.action({action:"device-name",name:deviceNameInput.text.trim()},function(){root.deviceEditing=false})
+                                    } }
+                                    FlatButton { visible: root.deviceEditing; label: "Отмена"; onClicked: root.deviceEditing=false }
+                                }
+                                C.Label { text: root.tunnel.device_name_pending ? "Имя сохранено на компьютере и будет отправлено при подключении." : "Это имя видно в веб-панели среди ваших подключений."; Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMuted }
+                            }
+                        }
+                        Card {
+                            Layout.fillWidth: true
+                            implicitHeight: connectionBody.implicitHeight + 40
+                            ColumnLayout {
+                                id: connectionBody
+                                anchors.fill: parent
+                                anchors.margins: 20
+                                spacing: 15
+                                C.Label { text: root.state.active ? "Подключено через Эстонию" : (root.tunnel.running ? "Подключение…" : "Готов к подключению"); color: root.state.active ? root.good : root.textMain; font.pixelSize: 21; font.bold: true }
+                                C.Label { text: root.tunnel.message || "Введите токен клиента"; Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMuted }
+                                C.ProgressBar { Layout.fillWidth: true; visible: Boolean(root.tunnel.running) && !root.state.active; from: 0; to: 100; value: Number(root.tunnel.progress || 0) }
+                                RowLayout {
+                                    FlatButton { label: root.tunnel.running || root.state.guard ? "Отключить" : "Подключить"; primary: true; enabledButton: !root.busy && (root.tokenSaved || root.state.guard); onClicked: root.action({action: root.tunnel.running || root.state.guard ? "disconnect" : "connect"}) }
+                                    FlatButton { label: "Восстановить"; enabledButton: !root.busy && !root.state.connecting && root.tokenSaved; onClicked: root.action({action: "repair"}) }
+                                }
+                                C.Label { text: "Весь трафик идёт через VPN, кроме включённых исключений. При обрыве защищённые подключения блокируются."; Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMuted }
+                            }
+                        }
+                        Card {
+                            Layout.fillWidth: true
+                            implicitHeight: tokenBody.implicitHeight + 40
+                            ColumnLayout {
+                                id: tokenBody
+                                anchors.fill: parent
+                                anchors.margins: 20
+                                spacing: 12
+                                C.Label { text: "Токен клиента"; font.pixelSize: 17; font.bold: true; color: root.textMain }
+                                C.Label { visible: root.tokenLocked; text: root.tunnel.token_hint || "Токен сохранён"; color: root.textMuted }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    C.TextField { id: tokenInput; visible: !root.tokenLocked; Layout.fillWidth: true; placeholderText: "EVN1-…"; echoMode: TextInput.Password; selectByMouse: true; enabled: !root.busy && !root.tunnel.running }
+                                    FlatButton { label: root.tokenLocked ? "Изменить" : "Подтвердить"; enabledButton: !root.busy && !root.tunnel.running && (root.tokenLocked || /^EVN1-[A-Za-z0-9_-]{43}$/.test(tokenInput.text.trim())); onClicked: {
+                                        if (root.tokenLocked) root.tokenEditing = true
+                                        else root.action({action: "token-save", token: tokenInput.text.trim()}, function() { tokenInput.clear(); root.tokenEditing = false })
+                                    } }
+                                    FlatButton { visible: root.tokenEditing; label: "Отмена"; onClicked: { tokenInput.clear(); root.tokenEditing = false } }
+                                }
+                                C.Label { text: "Один токен на человека — для всех его устройств."; color: root.textMuted }
+                            }
+                        }
+                        FlatButton { label: "Проверить обновления"; enabledButton: !root.busy; onClicked: root.action({action: "update"}) }
+                    }
+                    ColumnLayout {
+                        visible: root.pageIndex >= 1 && root.pageIndex <= 4
+                        Layout.fillWidth: true
+                        spacing: 16
                         C.Label {
-                            anchors.centerIn: parent
-                            text: "E"
-                            color: "white"
-                            font.pixelSize: 20
-                            font.weight: Font.Black
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: root.textMuted
+                            text: root.pageIndex === 1 ? "Выбранные приложения подключаются напрямую. Остальные используют VPN." : root.pageIndex === 2 ? "Добавьте домен, адрес или подсеть. Домены включают поддомены; знак = задаёт точное совпадение. При общем IP лучше указывать домен." : root.pageIndex === 3 ? "Исходящие — подключения к указанному порту. Входящие — прямые ответы вашего сервера. Оба — оба направления." : "Обычный DNS остаётся в VPN. Добавленные здесь DNS-серверы получают запросы напрямую и могут видеть запрашиваемые имена. Это не список сайтов."
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            C.ComboBox { id: portProtocol; visible: root.pageIndex === 3; model: ["TCP", "UDP", "BOTH"]; Layout.preferredWidth: 100 }
+                            C.TextField { id: exceptionInput; Layout.fillWidth: true; selectByMouse: true; placeholderText: root.pageIndex === 1 ? "Имя процесса или /полный/путь" : root.pageIndex === 2 ? "example.com или 192.168.1.20" : root.pageIndex === 3 ? "25565" : "Адрес DNS, например 192.168.1.1" }
+                            C.ComboBox { id: portDirection; visible: root.pageIndex === 3; model: ["Исходящие", "Входящие", "Оба"]; Layout.preferredWidth: 140 }
+                            FlatButton { label: "Добавить"; primary: true; enabledButton: !root.busy && exceptionInput.text.trim().length > 0; onClicked: {
+                                const value = root.pageIndex === 3 ? portProtocol.currentText.toLowerCase() + ":" + exceptionInput.text.trim() + ":" + ["out", "in", "both"][portDirection.currentIndex] : exceptionInput.text.trim()
+                                root.action({action: "add", category: root.category, value: value}, function() { exceptionInput.clear() })
+                            } }
+                        }
+                        Repeater {
+                            model: root.policy[root.category] || []
+                            delegate: RowLayout {
+                                required property string modelData
+                                Layout.fillWidth: true
+                                C.Label { text: modelData; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; color: root.textMain }
+                                FlatButton { label: "Удалить"; danger: true; enabledButton: !root.busy; onClicked: root.action({action: "remove", category: root.category, value: modelData}) }
+                            }
+                        }
+                        C.Label { visible: !(root.policy[root.category] || []).length; text: "Ваших исключений пока нет"; color: root.textMuted }
+                        C.Switch { text: "Отобразить базовые исключения"; checked: root.showBase; onToggled: root.showBase = checked }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: root.showBase
+                            Repeater {
+                                model: (root.policy.base || {})[root.category] || []
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    C.Label { text: modelData.label; Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMain }
+                                    C.Switch { checked: Boolean(modelData.enabled); enabled: !root.busy; onToggled: root.action({action: "base", category: root.category, value: modelData.id, enabled: checked}) }
+                                }
+                            }
+                            C.Label { Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMuted; text: "Вы можете выключить любое базовое правило. Скрытие списка не меняет его состояние." }
+                        }
+                        ColumnLayout {
+                            visible: root.pageIndex === 1
+                            Layout.fillWidth: true
+                            C.Label { text: "Запущены сейчас"; font.pixelSize: 18; font.bold: true; color: root.textMain }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                C.TextField { id: appSearch; Layout.fillWidth: true; placeholderText: "Поиск приложения" }
+                                FlatButton { label: "Обновить список"; enabledButton: !root.runningPending; onClicked: root.refreshRunning() }
+                            }
+                            Repeater {
+                                model: root.pageIndex === 1 ? root.filteredRunning() : []
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        C.Label { text: modelData.name; color: root.textMain }
+                                        C.Label { text: modelData.exe; Layout.fillWidth: true; elide: Text.ElideMiddle; color: root.textMuted; font.pixelSize: 11 }
+                                    }
+                                    FlatButton { label: modelData.excluded ? "Добавлено" : "В обход"; enabledButton: !root.busy && !modelData.excluded; onClicked: root.action({action: "add", category: "applications", value: String(modelData.exe || modelData.name || "")}) }
+                                }
+                            }
                         }
                     }
                     ColumnLayout {
-                        spacing: 0
-                        C.Label {
-                            text: "Evgenium"
-                            color: "white"
-                            font.pixelSize: 16
-                            font.weight: Font.Bold
-                        }
-                        C.Label {
-                            text: "Network"
-                            color: "#94a3b8"
-                            font.pixelSize: 12
-                        }
-                    }
-                }
-
-                NavButton { label: "VPN"; shortLabel: "VPN"; index: 0 }
-                NavButton { label: "Профили VPN"; shortLabel: "PRF"; index: 1 }
-                NavButton {
-                    label: "Приложения"; shortLabel: "APP"; index: 2
-                    onClicked: root.refreshRunning()
-                }
-                NavButton { label: "Сайты и IP"; shortLabel: "NET"; index: 3 }
-                NavButton { label: "Порты"; shortLabel: "PRT"; index: 4 }
-                NavButton { label: "Диагностика"; shortLabel: "SYS"; index: 5 }
-                NavButton { label: "Эксперимент"; shortLabel: "EXP"; index: 6 }
-
-                Item { Layout.fillHeight: true }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 64
-                    radius: 12
-                    color: "#172033"
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        Rectangle {
-                            width: 10
-                            height: 10
-                            radius: 5
-                            color: Boolean(root.state.active) ? root.good : "#64748b"
-                        }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 1
-                            C.Label {
-                                text: root.state.connecting ? "Выполняется операция VPN…" : (Boolean(root.state.active) ? "VPN включён" : "VPN выключен")
-                                color: "white"
-                                font.pixelSize: 12
-                                font.weight: Font.DemiBold
-                            }
-                            C.Label {
-                                Layout.fillWidth: true
-                                text: String(root.state.profile || root.state.last_profile || "Нет профиля")
-                                color: "#94a3b8"
-                                font.pixelSize: 11
-                                elide: Text.ElideRight
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Item {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 28
-                spacing: 18
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    C.Label {
+                        visible: root.pageIndex === 5
                         Layout.fillWidth: true
-                        text: ["VPN", "Профили VPN", "Приложения без VPN", "Сайты и IP без VPN", "Входящие порты", "Диагностика", "Экспериментальное"][root.pageIndex]
-                        color: root.textMain
-                        font.pixelSize: 25
-                        font.weight: Font.Bold
-                    }
-                    C.BusyIndicator {
-                        running: root.busy
-                        visible: running
-                        implicitWidth: 28
-                        implicitHeight: 28
-                    }
-                    FlatButton {
-                        label: "Обновить"
-                        enabledButton: !root.busy && !Boolean(root.state.connecting)
-                        onClicked: {
-                            root.refreshState()
-                            if (root.pageIndex === 2)
-                                root.refreshRunning()
-                        }
-                    }
-                }
-
-                Rectangle {
-                    visible: root.errorText.length > 0 || root.pollErrorText.length > 0
-                    Layout.fillWidth: true
-                    implicitHeight: errorLabel.implicitHeight + 22
-                    radius: 10
-                    color: "#fff1f2"
-                    border.width: 1
-                    border.color: "#fecdd3"
-                    C.Label {
-                        id: errorLabel
-                        anchors.fill: parent
-                        anchors.margins: 11
-                        text: root.errorText || root.pollErrorText
-                        color: root.bad
-                        wrapMode: Text.WordWrap
-                        font.pixelSize: 12
-                    }
-                }
-
-                StackLayout {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    currentIndex: root.pageIndex
-
-                    // VPN
-                    Item {
-                        Card {
-                            anchors.fill: parent
-                            ColumnLayout {
-                                anchors.fill: parent
-                                anchors.margins: 28
-                                spacing: 20
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 18
-                                    Rectangle {
-                                        width: 72
-                                        height: 72
-                                        radius: 22
-                                        color: Boolean(root.state.active) ? root.accentSoft : "#eef2f7"
-                                        C.Label {
-                                            anchors.centerIn: parent
-                                            text: Boolean(root.state.active) ? "ON" : "OFF"
-                                            color: Boolean(root.state.active) ? root.accent : root.textMuted
-                                            font.pixelSize: 18
-                                            font.weight: Font.Bold
-                                        }
-                                    }
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 5
-                                        C.Label {
-                                            text: Boolean(root.state.active) ? "Защищённое соединение активно" : "VPN сейчас выключен"
-                                            color: root.textMain
-                                            font.pixelSize: 20
-                                            font.weight: Font.Bold
-                                        }
-                                        C.Label {
-                                            Layout.fillWidth: true
-                                            text: Boolean(root.state.active)
-                                                ? (root.state.backend === "ikev2" ? "Весь IPv4-трафик идёт через HSVDS в Эстонию. IPv6 и DIRECT-исключения отключены." : "Весь обычный трафик идёт через VPN, кроме настроенных исключений.")
-                                                : "Включи VPN одним нажатием. Будет использован последний выбранный профиль."
-                                            color: root.textMuted
-                                            wrapMode: Text.WordWrap
-                                            font.pixelSize: 13
-                                        }
-                                    }
-                                    FlatButton {
-                                        label: Boolean(root.state.active) ? "Выключить VPN" : "Включить VPN"
-                                        primary: !Boolean(root.state.active)
-                                        danger: Boolean(root.state.active)
-                                        enabledButton: !root.busy && !Boolean(root.state.connecting)
-                                        onClicked: root.toggleVpn()
-                                    }
-                                }
-
-                                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.border }
-
-                                GridLayout {
-                                    Layout.fillWidth: true
-                                    columns: 2
-                                    columnSpacing: 24
-                                    rowSpacing: 14
-
-                                    C.Label { text: "Профиль"; color: root.textMuted }
-                                    C.Label {
-                                        text: String(root.state.profile || root.state.last_profile || "—")
-                                        color: root.textMain
-                                        font.weight: Font.DemiBold
-                                    }
-                                    C.Label { text: "IPv6"; color: root.textMuted }
-                                    C.Label {
-                                        text: String(root.state.ipv6_mode || "unknown")
-                                        color: root.textMain
-                                        font.weight: Font.DemiBold
-                                    }
-                                    C.Label { text: "Kill switch"; color: root.textMuted }
-                                    C.Label {
-                                        text: Boolean(root.state.kill_switch) ? "Активен" : "Выключен"
-                                        color: Boolean(root.state.kill_switch) ? root.good : root.textMuted
-                                        font.weight: Font.DemiBold
-                                    }
-                                    C.Label { text: "Версия manager"; color: root.textMuted }
-                                    C.Label {
-                                        text: String(root.state.manager || "—")
-                                        color: root.textMain
-                                        font.weight: Font.DemiBold
-                                    }
-                                }
-
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    implicitHeight: 92
-                                    radius: 14
-                                    color: "#f8fafc"
-                                    border.width: 1
-                                    border.color: root.border
-
-                                    RowLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: 16
-                                        spacing: 14
-
-                                        Rectangle {
-                                            width: 46
-                                            height: 46
-                                            radius: 13
-                                            color: Boolean(root.state.waydroid_vpn_effective) ? root.accentSoft : "#eef2f7"
-                                            C.Label {
-                                                anchors.centerIn: parent
-                                                text: "WD"
-                                                color: Boolean(root.state.waydroid_vpn_effective) ? root.accent : root.textMuted
-                                                font.pixelSize: 13
-                                                font.weight: Font.Bold
-                                            }
-                                        }
-
-                                        ColumnLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 4
-                                            C.Label {
-                                                text: "VPN для Waydroid"
-                                                color: root.textMain
-                                                font.pixelSize: 15
-                                                font.weight: Font.DemiBold
-                                            }
-                                            C.Label {
-                                                Layout.fillWidth: true
-                                                text: !Boolean(root.state.active)
-                                                    ? "Общий VPN выключен — Waydroid тоже работает без VPN."
-                                                    : (Boolean(root.state.waydroid_vpn_effective)
-                                                        ? "Трафик Waydroid идёт через E-VPN."
-                                                        : "Waydroid использует прямой интернет в обход E-VPN.")
-                                                color: root.textMuted
-                                                font.pixelSize: 12
-                                                wrapMode: Text.WordWrap
-                                            }
-                                        }
-
-                                        Item {
-                                            id: waydroidSwitch
-                                            Layout.preferredWidth: 48
-                                            Layout.preferredHeight: 26
-                                            opacity: Boolean(root.state.active) && !root.busy ? 1.0 : 0.45
-
-                                            Rectangle {
-                                                anchors.fill: parent
-                                                radius: height / 2
-                                                color: Boolean(root.state.waydroid_vpn_effective) ? root.accent : "#cbd5e1"
-                                            }
-                                            Rectangle {
-                                                width: 20
-                                                height: 20
-                                                radius: 10
-                                                y: 3
-                                                x: Boolean(root.state.waydroid_vpn_effective) ? waydroidSwitch.width - width - 3 : 3
-                                                color: "white"
-                                                Behavior on x { NumberAnimation { duration: 120 } }
-                                            }
-                                            MouseArea {
-                                                anchors.fill: parent
-                                                enabled: Boolean(root.state.active) && !root.busy
-                                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                                onClicked: root.action({
-                                                    action: "waydroid_vpn_set",
-                                                    target: Boolean(root.state.waydroid_vpn_effective) ? "off" : "on"
-                                                })
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Item { Layout.fillHeight: true }
-                            }
-                        }
-                    }
-
-
-                    // VPN profiles
-                    Item {
-                        ColumnLayout {
-                            anchors.fill: parent
-                            spacing: 14
-
-                            Card {
-                                Layout.fillWidth: true
-                                height: 78
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 16
-                                    spacing: 12
-                                    Rectangle {
-                                        width: 42
-                                        height: 42
-                                        radius: 12
-                                        color: root.accentSoft
-                                        C.Label {
-                                            anchors.centerIn: parent
-                                            text: "PRF"
-                                            color: root.accent
-                                            font.pixelSize: 11
-                                            font.weight: Font.Bold
-                                        }
-                                    }
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 2
-                                        C.Label {
-                                            text: "VPN-профили"
-                                            color: root.textMain
-                                            font.pixelSize: 16
-                                            font.weight: Font.Bold
-                                        }
-                                        C.Label {
-                                            Layout.fillWidth: true
-                                            text: String(root.state.config_dir || "")
-                                            color: root.textMuted
-                                            font.pixelSize: 11
-                                            elide: Text.ElideMiddle
-                                        }
-                                    }
-                                    C.Label {
-                                        text: String((root.state.profiles || []).length) + " шт."
-                                        color: root.textMuted
-                                        font.pixelSize: 12
-                                    }
-                                }
-                            }
-
-                            Card {
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                ListView {
-                                    anchors.fill: parent
-                                    anchors.margins: 10
-                                    clip: true
-                                    spacing: 7
-                                    model: root.state.profiles || []
-                                    delegate: Rectangle {
-                                        id: profileRow
-                                        required property var modelData
-                                        width: ListView.view.width
-                                        height: 66
-                                        radius: 12
-                                        color: Boolean(profileRow.modelData.active) ? root.accentSoft : "#f8fafc"
-                                        border.width: Boolean(profileRow.modelData.active) ? 1 : 0
-                                        border.color: root.accent
-
-                                        RowLayout {
-                                            anchors.fill: parent
-                                            anchors.leftMargin: 14
-                                            anchors.rightMargin: 10
-                                            spacing: 12
-
-                                            Rectangle {
-                                                width: 12
-                                                height: 12
-                                                radius: 6
-                                                color: Boolean(profileRow.modelData.active)
-                                                    ? root.good
-                                                    : (Boolean(profileRow.modelData.last) ? root.accent : "#cbd5e1")
-                                            }
-
-                                            ColumnLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 2
-                                                C.Label {
-                                                    Layout.fillWidth: true
-                                                    text: String(profileRow.modelData.stem || profileRow.modelData.name || "")
-                                                    color: root.textMain
-                                                    font.pixelSize: 14
-                                                    font.weight: Font.DemiBold
-                                                    elide: Text.ElideRight
-                                                }
-                                                C.Label {
-                                                    Layout.fillWidth: true
-                                                    text: Boolean(profileRow.modelData.active)
-                                                        ? "Активный профиль"
-                                                        : (Boolean(profileRow.modelData.last) ? "Последний использованный" : String(profileRow.modelData.name || ""))
-                                                    color: Boolean(profileRow.modelData.active) ? root.good : root.textMuted
-                                                    font.pixelSize: 11
-                                                    elide: Text.ElideMiddle
-                                                }
-                                            }
-
-                                            FlatButton {
-                                                label: Boolean(profileRow.modelData.active) ? "Активен" : "Подключить"
-                                                primary: !Boolean(profileRow.modelData.active)
-                                                enabledButton: !root.busy && !Boolean(root.state.connecting) && !Boolean(profileRow.modelData.active)
-                                                onClicked: root.action({
-                                                    action: "profile_activate",
-                                                    target: String(profileRow.modelData.name || "")
-                                                })
-                                            }
-                                        }
-                                    }
-                                    C.ScrollBar.vertical: C.ScrollBar {}
-                                    C.Label {
-                                        anchors.centerIn: parent
-                                        visible: (root.state.profiles || []).length === 0
-                                        text: "В папке VPN configs пока нет профилей"
-                                        color: root.textMuted
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Applications
-                    Item {
-                        ColumnLayout {
-                            anchors.fill: parent
-                            spacing: 14
-
-                            Card {
-                                Layout.fillWidth: true
-                                height: 82
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 16
-                                    spacing: 10
-                                    C.TextField {
-                                        id: manualApp
-                                        Layout.fillWidth: true
-                                        placeholderText: "Имя процесса, /полный/путь или /папка/"
-                                        selectByMouse: true
-                                        background: Rectangle { radius: 10; color: "#f8fafc"; border.color: root.border }
-                                        onAccepted: if (text.trim().length) root.action({action: "app_add", target: text.trim()})
-                                    }
-                                    FlatButton {
-                                        label: "Добавить вручную"
-                                        primary: true
-                                        enabledButton: !root.busy && !Boolean(root.state.connecting) && manualApp.text.trim().length > 0
-                                        onClicked: {
-                                            root.action({action: "app_add", target: manualApp.text.trim()})
-                                            manualApp.clear()
-                                        }
-                                    }
-                                }
-                            }
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                C.Label { text: "Уже исключены"; color: root.textMain; font.pixelSize: 15; font.weight: Font.Bold; Layout.fillWidth: true }
-                                C.Label { text: String((root.state.applications || []).length); color: root.textMuted }
-                            }
-
-                            Card {
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 145
-                                ListView {
-                                    anchors.fill: parent
-                                    anchors.margins: 8
-                                    clip: true
-                                    spacing: 5
-                                    model: root.state.applications || []
-                                    delegate: Rectangle {
-                                        required property var modelData
-                                        width: ListView.view.width
-                                        height: 46
-                                        radius: 9
-                                        color: "#f8fafc"
-                                        RowLayout {
-                                            anchors.fill: parent
-                                            anchors.leftMargin: 12
-                                            anchors.rightMargin: 8
-                                            C.Label { Layout.fillWidth: true; text: String(modelData); color: root.textMain; elide: Text.ElideMiddle }
-                                            FlatButton {
-                                                label: "Удалить"
-                                                danger: true
-                                                enabledButton: !root.busy && !Boolean(root.state.connecting)
-                                                onClicked: root.action({action: "app_remove", target: String(modelData)})
-                                            }
-                                        }
-                                    }
-                                    C.ScrollBar.vertical: C.ScrollBar {}
-                                    C.Label {
-                                        anchors.centerIn: parent
-                                        visible: (root.state.applications || []).length === 0
-                                        text: "Пока нет приложений-исключений"
-                                        color: root.textMuted
-                                    }
-                                }
-                            }
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                C.Label { text: "Запущены сейчас"; color: root.textMain; font.pixelSize: 15; font.weight: Font.Bold; Layout.fillWidth: true }
-                                FlatButton { label: "Обновить список"; enabledButton: !root.busy && !Boolean(root.state.connecting); onClicked: root.refreshRunning() }
-                            }
-
-                            C.TextField {
-                                id: appSearch
-                                Layout.fillWidth: true
-                                placeholderText: "Найти запущенное приложение по имени или пути…"
-                                selectByMouse: true
-                                background: Rectangle { radius: 10; color: root.surface; border.color: root.border }
-                            }
-
-                            Card {
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                ListView {
-                                    anchors.fill: parent
-                                    anchors.margins: 8
-                                    clip: true
-                                    spacing: 6
-                                    model: root.filteredRunning()
-                                    delegate: Rectangle {
-                                        required property var modelData
-                                        width: ListView.view.width
-                                        height: 64
-                                        radius: 11
-                                        color: "#f8fafc"
-                                        RowLayout {
-                                            anchors.fill: parent
-                                            anchors.margins: 9
-                                            spacing: 10
-                                            Rectangle {
-                                                width: 40; height: 40; radius: 12
-                                                color: Boolean(modelData.excluded) ? "#dcfce7" : root.accentSoft
-                                                C.Label {
-                                                    anchors.centerIn: parent
-                                                    text: String(modelData.name || "?").slice(0, 1).toUpperCase()
-                                                    color: Boolean(modelData.excluded) ? root.good : root.accent
-                                                    font.weight: Font.Bold
-                                                    font.pixelSize: 16
-                                                }
-                                            }
-                                            ColumnLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 1
-                                                C.Label { Layout.fillWidth: true; text: String(modelData.name || ""); color: root.textMain; font.weight: Font.DemiBold; elide: Text.ElideRight }
-                                                C.Label { Layout.fillWidth: true; text: String(modelData.exe || ""); color: root.textMuted; font.pixelSize: 11; elide: Text.ElideMiddle }
-                                            }
-                                            C.Label {
-                                                visible: Number(modelData.count || 1) > 1
-                                                text: "×" + String(modelData.count)
-                                                color: root.textMuted
-                                            }
-                                            FlatButton {
-                                                label: Boolean(modelData.excluded) ? "Уже исключено" : "Исключить"
-                                                primary: !Boolean(modelData.excluded)
-                                                enabledButton: !root.busy && !Boolean(root.state.connecting) && !Boolean(modelData.excluded)
-                                                onClicked: root.action({action: "app_add", target: String(modelData.exe || modelData.name || "")})
-                                            }
-                                        }
-                                    }
-                                    C.ScrollBar.vertical: C.ScrollBar {}
-                                }
-                            }
-                        }
-                    }
-
-                    // Sites/IP
-                    Item {
-                        ColumnLayout {
-                            anchors.fill: parent
-                            spacing: 14
-                            Card {
-                                Layout.fillWidth: true
-                                height: 82
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 16
-                                    spacing: 10
-                                    C.TextField {
-                                        id: directTarget
-                                        Layout.fillWidth: true
-                                        placeholderText: "example.com, 203.0.113.10 или 203.0.113.0/24"
-                                        selectByMouse: true
-                                        background: Rectangle { radius: 10; color: "#f8fafc"; border.color: root.border }
-                                        onAccepted: if (text.trim().length) root.action({action: "direct_add", target: text.trim()})
-                                    }
-                                    FlatButton {
-                                        label: "Добавить исключение"
-                                        primary: true
-                                        enabledButton: !root.busy && !Boolean(root.state.connecting) && directTarget.text.trim().length > 0
-                                        onClicked: {
-                                            root.action({action: "direct_add", target: directTarget.text.trim()})
-                                            directTarget.clear()
-                                        }
-                                    }
-                                }
-                            }
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: 14
-                                Card {
-                                    Layout.fillWidth: true
-                                    Layout.fillHeight: true
-                                    ColumnLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: 14
-                                        C.Label { text: "Домены"; color: root.textMain; font.weight: Font.Bold; font.pixelSize: 15 }
-                                        ListView {
-                                            Layout.fillWidth: true
-                                            Layout.fillHeight: true
-                                            clip: true
-                                            spacing: 5
-                                            model: root.state.domains || []
-                                            delegate: Rectangle {
-                                                required property var modelData
-                                                width: ListView.view.width
-                                                height: 46
-                                                radius: 9
-                                                color: "#f8fafc"
-                                                RowLayout {
-                                                    anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 7
-                                                    C.Label { Layout.fillWidth: true; text: String(modelData); color: root.textMain; elide: Text.ElideRight }
-                                                    FlatButton { label: "Удалить"; danger: true; enabledButton: !root.busy && !Boolean(root.state.connecting); onClicked: root.action({action: "direct_remove", target: String(modelData)}) }
-                                                }
-                                            }
-                                            C.ScrollBar.vertical: C.ScrollBar {}
-                                        }
-                                    }
-                                }
-                                Card {
-                                    Layout.fillWidth: true
-                                    Layout.fillHeight: true
-                                    ColumnLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: 14
-                                        C.Label { text: "IP и сети"; color: root.textMain; font.weight: Font.Bold; font.pixelSize: 15 }
-                                        ListView {
-                                            Layout.fillWidth: true
-                                            Layout.fillHeight: true
-                                            clip: true
-                                            spacing: 5
-                                            model: root.state.networks || []
-                                            delegate: Rectangle {
-                                                required property var modelData
-                                                width: ListView.view.width
-                                                height: 46
-                                                radius: 9
-                                                color: "#f8fafc"
-                                                RowLayout {
-                                                    anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 7
-                                                    C.Label { Layout.fillWidth: true; text: String(modelData); color: root.textMain; elide: Text.ElideMiddle }
-                                                    FlatButton { label: "Удалить"; danger: true; enabledButton: !root.busy && !Boolean(root.state.connecting); onClicked: root.action({action: "direct_remove", target: String(modelData)}) }
-                                                }
-                                            }
-                                            C.ScrollBar.vertical: C.ScrollBar {}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Ports
-                    Item {
-                        ColumnLayout {
-                            anchors.fill: parent
-                            spacing: 14
-                            Card {
-                                Layout.fillWidth: true
-                                height: 105
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 15
-                                    spacing: 8
-                                    C.Label {
-                                        Layout.fillWidth: true
-                                        text: "Для локальных серверов: ответы на входящие подключения к этим портам идут напрямую через физическую сеть."
-                                        color: root.textMuted
-                                        wrapMode: Text.WordWrap
-                                        font.pixelSize: 12
-                                    }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        C.TextField {
-                                            id: portField
-                                            Layout.fillWidth: true
-                                            placeholderText: "25565"
-                                            inputMethodHints: Qt.ImhDigitsOnly
-                                            background: Rectangle { radius: 10; color: "#f8fafc"; border.color: root.border }
-                                        }
-                                        C.ComboBox {
-                                            id: protoBox
-                                            model: ["TCP", "UDP", "BOTH"]
-                                            implicitWidth: 110
-                                        }
-                                        FlatButton {
-                                            label: "Добавить"
-                                            primary: true
-                                            enabledButton: !root.busy && !Boolean(root.state.connecting) && portField.text.length > 0
-                                            onClicked: {
-                                                const p = Number(portField.text)
-                                                if (p >= 1 && p <= 65535 && p === Math.floor(p)) {
-                                                    root.action({action: "port_add", port: p, proto: protoBox.currentText.toLowerCase()})
-                                                    portField.clear()
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            Card {
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                ListView {
-                                    anchors.fill: parent
-                                    anchors.margins: 10
-                                    clip: true
-                                    spacing: 7
-                                    model: root.state.server_ports || []
-                                    delegate: Rectangle {
-                                        required property var modelData
-                                        width: ListView.view.width
-                                        height: 54
-                                        radius: 10
-                                        color: "#f8fafc"
-                                        RowLayout {
-                                            anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 8
-                                            Rectangle {
-                                                width: 54; height: 30; radius: 8; color: root.accentSoft
-                                                C.Label { anchors.centerIn: parent; text: String(modelData.proto || "").toUpperCase(); color: root.accent; font.weight: Font.Bold; font.pixelSize: 11 }
-                                            }
-                                            C.Label { Layout.fillWidth: true; text: String(modelData.port || ""); color: root.textMain; font.pixelSize: 16; font.weight: Font.DemiBold }
-                                            FlatButton {
-                                                label: "Удалить"; danger: true; enabledButton: !root.busy && !Boolean(root.state.connecting)
-                                                onClicked: root.action({action: "port_remove", port: Number(modelData.port), proto: String(modelData.proto)})
-                                            }
-                                        }
-                                    }
-                                    C.ScrollBar.vertical: C.ScrollBar {}
-                                    C.Label { anchors.centerIn: parent; visible: (root.state.server_ports || []).length === 0; text: "Нет серверных портов"; color: root.textMuted }
-                                }
-                            }
-                        }
-                    }
-
-                    // Diagnostics
-                    Item {
-                        Card {
-                            anchors.fill: parent
-                            ColumnLayout {
-                                anchors.fill: parent
-                                anchors.margins: 24
-                                spacing: 14
-                                C.Label { text: "Текущее состояние"; color: root.textMain; font.pixelSize: 18; font.weight: Font.Bold }
-                                GridLayout {
-                                    Layout.fillWidth: true
-                                    columns: 2
-                                    columnSpacing: 28
-                                    rowSpacing: 13
-                                    C.Label { text: "VPN"; color: root.textMuted }
-                                    C.Label { text: Boolean(root.state.active) ? "Включён" : "Выключен"; color: Boolean(root.state.active) ? root.good : root.textMuted; font.weight: Font.DemiBold }
-                                    C.Label { text: "Профиль"; color: root.textMuted }
-                                    C.Label { text: String(root.state.profile || root.state.last_profile || "—"); color: root.textMain; font.weight: Font.DemiBold }
-                                    C.Label { text: "TUN"; color: root.textMuted }
-                                    C.Label { text: Boolean(root.state.tun) ? "xraytun поднят" : "Нет"; color: root.textMain; font.weight: Font.DemiBold }
-                                    C.Label { text: "Kill switch"; color: root.textMuted }
-                                    C.Label { text: Boolean(root.state.kill_switch) ? "Активен" : "Выключен"; color: Boolean(root.state.kill_switch) ? root.good : root.textMuted; font.weight: Font.DemiBold }
-                                    C.Label { text: "IPv6"; color: root.textMuted }
-                                    C.Label { text: String(root.state.ipv6_mode || "unknown"); color: root.textMain; font.weight: Font.DemiBold }
-                                    C.Label { text: "DIRECT приложения"; color: root.textMuted }
-                                    C.Label { text: String(root.state.direct_applications || 0); color: root.textMain; font.weight: Font.DemiBold }
-                                    C.Label { text: "DIRECT домены"; color: root.textMuted }
-                                    C.Label { text: String(root.state.direct_domains || 0); color: root.textMain; font.weight: Font.DemiBold }
-                                    C.Label { text: "DIRECT IP/сети"; color: root.textMuted }
-                                    C.Label { text: String(root.state.direct_networks || 0); color: root.textMain; font.weight: Font.DemiBold }
-                                    C.Label { text: "Manager"; color: root.textMuted }
-                                    C.Label { text: String(root.state.manager || "—"); color: root.textMain; font.weight: Font.DemiBold }
-                                }
-                                Item { Layout.fillHeight: true }
-                                C.Label {
-                                    Layout.fillWidth: true
-                                    text: "Окно настроек работает отдельно от Plasma. KDE используется только для маленького виджета на рабочем столе."
-                                    color: root.textMuted
-                                    wrapMode: Text.WordWrap
-                                    font.pixelSize: 12
-                                }
-                            }
-                        }
-                    }
-
-                    // Isolated experimental tunnel: the ordinary VPN/browser remain untouched.
-                    Item {
-                        Card {
-                            anchors.fill: parent
-                            C.ScrollView {
-                                id: starfiveScroll
-                                anchors.fill: parent
-                                anchors.margins: 24
-                                contentWidth: availableWidth
-                                ColumnLayout {
-                                    width: starfiveScroll.availableWidth
-                                    spacing: 20
-                                    C.Label {
-                                        text: "Экспериментальный VPN"
-                                        color: root.textMain; font.pixelSize: 22; font.weight: Font.Bold
-                                    }
-                                    C.Label {
-                                        Layout.fillWidth: true
-                                        text: "Весь интернет через HSVDS в Москве и Эстонию. Зависимости установятся автоматически."
-                                        color: root.textMuted; wrapMode: Text.WordWrap
-                                    }
-                                    C.Label { text: "Токен клиента"; color: root.textMain; font.weight: Font.DemiBold }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 12
-                                        C.TextField {
-                                            id: starfiveToken
-                                            Layout.fillWidth: true
-                                            implicitHeight: 42
-                                            leftPadding: 12
-                                            rightPadding: 12
-                                            font.pixelSize: 14
-                                            color: root.textMain
-                                            background: Rectangle {
-                                                radius: 10
-                                                color: root.tokenLocked ? "#f0f8fc" : root.surface
-                                                border.width: 1
-                                                border.color: starfiveToken.activeFocus ? root.accent : root.border
-                                            }
-                                            placeholderText: root.tokenLocked ? String((root.experiment.tunnel || {}).token_hint || "Токен сохранён") : "Вставьте токен EVN1-…"
-                                            echoMode: TextInput.Password
-                                            readOnly: root.tokenLocked
-                                            selectByMouse: !root.tokenLocked
-                                            enabled: !root.busy && !Boolean((root.experiment.tunnel || {}).running)
-                                            maximumLength: 64
-                                            Accessible.name: "Токен клиента"
-                                            onAccepted: tokenConfirm.confirm()
-                                        }
-                                        FlatButton {
-                                            id: tokenConfirm
-                                            label: root.tokenLocked ? "Изменить" : "Подтвердить"
-                                            primary: !root.tokenLocked
-                                            enabledButton: !root.busy && !Boolean((root.experiment.tunnel || {}).running)
-                                                && (root.tokenLocked || /^EVN1-[A-Za-z0-9_-]{43}$/.test(starfiveToken.text.trim()))
-                                            function confirm() {
-                                                if (!enabledButton) return
-                                                if (root.tokenLocked) {
-                                                    root.tokenEditing = true
-                                                    starfiveToken.forceActiveFocus()
-                                                } else {
-                                                    root.action({action: "experimental_token-save", target: starfiveToken.text.trim()}, function() {
-                                                        starfiveToken.clear()
-                                                        root.tokenEditing = false
-                                                    })
-                                                }
-                                            }
-                                            onClicked: confirm()
-                                        }
-                                        FlatButton {
-                                            id: tokenCancel
-                                            label: "Отмена"
-                                            visible: root.tokenEditing && root.tokenSaved
-                                            enabledButton: !root.busy
-                                            onClicked: { starfiveToken.clear(); root.tokenEditing = false }
-                                        }
-                                    }
-                                    C.Label {
-                                        Layout.fillWidth: true
-                                        wrapMode: Text.WordWrap
-                                        text: root.tokenLocked ? "Токен сохранён на устройстве. Проверка на сервере — при подключении."
-                                            : root.tokenEditing ? "Вставьте новый токен и нажмите «Подтвердить». До сохранения действует прежний токен."
-                                            : "Токен ещё не сохранён. Вставьте его и нажмите «Подтвердить»."
-                                        color: root.tokenLocked ? root.good : root.textMuted
-                                    }
-                                    RowLayout {
-                                        spacing: 12
-                                        FlatButton {
-                                            label: Boolean((root.experiment.tunnel || {}).running) ? "Отключить" : "Подключить"
-                                            primary: !Boolean((root.experiment.tunnel || {}).running)
-                                            enabledButton: !root.busy && (Boolean((root.experiment.tunnel || {}).running) || root.tokenLocked)
-                                            onClicked: root.action({action: Boolean((root.experiment.tunnel || {}).running) ? "experimental_disconnect" : "experimental_connect"})
-                                        }
-                                        FlatButton {
-                                            label: "Починить"
-                                            enabledButton: !root.busy && root.tokenLocked
-                                            onClicked: root.action({action: "experimental_repair"})
-                                        }
-                                    }
-                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.border }
-                                    C.Label { text: "Строка состояния"; color: root.textMain; font.weight: Font.DemiBold }
-                                    C.TextArea {
-                                        Layout.fillWidth: true
-                                        Layout.minimumHeight: 120
-                                        readOnly: true
-                                        selectByMouse: true
-                                        wrapMode: TextEdit.Wrap
-                                        text: String((root.experiment.tunnel || {}).message || "Сохраните токен клиента. Подключение переключит весь интернет на экспериментальный VPN.")
-                                            + (String((root.experiment.tunnel || {}).scope || "") === "lan" ? "\nПроверка в домашней сети; внешний путь через провайдера ещё не проверен." : "")
-                                            + (Boolean(((root.experiment.tunnel || {}).metrics || {}).integrity) ? "\nПередача данных: целостность подтверждена." : "")
-                                            + ((((root.experiment.tunnel || {}).metrics || {}).reference || {}).estimated_mbps ? "\nЯндекс: оценка прямой скорости " + Number((((root.experiment.tunnel || {}).metrics || {}).reference || {}).estimated_mbps).toFixed(1) + " Мбит/с (короткий замер)." : "")
-                                            + ((((root.experiment.tunnel || {}).metrics || {}).reference || {}).available === false ? "\nЯндекс: ориентир скорости сейчас недоступен." : "")
-                                        color: Boolean((root.experiment.tunnel || {}).active) ? root.good : root.textMain
-                                        Accessible.name: "Строка состояния"
-                                    }
-                                    C.ProgressBar {
-                                        Layout.fillWidth: true
-                                        from: 0; to: 100
-                                        value: Number((root.experiment.tunnel || {}).progress || 0)
-                                        visible: Boolean((root.experiment.tunnel || {}).running) && !Boolean((root.experiment.tunnel || {}).active)
-                                    }
-                                    Item { Layout.fillHeight: true }
-                                }
-                            }
-                        }
+                        spacing: 18
+                        C.Label { Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMuted; text: "Waydroid управляется отдельно от приложений компьютера. По умолчанию весь его трафик, включая DNS, идёт напрямую." }
+                        C.Switch { text: "Waydroid в обход VPN"; checked: root.policy.waydroid_direct !== false; enabled: !root.busy; onToggled: root.action({action: "waydroid", enabled: checked}) }
+                        C.Label { Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMuted; text: root.policy.waydroid_direct !== false ? "Прямое подключение: Waydroid использует адрес вашего провайдера. Общие исключения не ограничивают этот режим." : "Waydroid использует VPN. При обрыве туннеля его внешние подключения блокируются." }
                     }
                 }
             }

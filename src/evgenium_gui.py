@@ -164,7 +164,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 token = encode_ui_payload(payload)
                 output = run_vpn(["ui", "action", "-"], secret_input=token)
                 reply = {"ok": True, "output": output}
-                if payload.get("action") == "experimental_token-save":
+                if payload.get("action") == "token-save":
                     reply["state"] = run_vpn_json(["ui", "state"])
                 self._json(reply)
                 return

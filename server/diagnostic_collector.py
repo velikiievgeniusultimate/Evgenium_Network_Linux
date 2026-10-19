@@ -248,13 +248,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             for chunk in blob_chunks(count,offset): self.wfile.write(chunk)
         else:
             self.reply(404, {})
-    def enroll(self):
+    def enroll(self, operation="enroll"):
         # The first device has no certificate yet. Only this route accepts a token.
         try:
             size = int(self.headers.get('Content-Length', '0'))
             if not 0 < size <= 20000 or self.headers.get('Transfer-Encoding'):
                 raise ValueError('size')
             body = json.loads(self.rfile.read(size))
+            if not isinstance(body,dict):raise ValueError('body')
+            body['operation']=operation
             raw = json.dumps(body, separators=(',', ':')).encode()+b'\n'
             if len(raw) > 20000:
                 raise ValueError('size')
@@ -269,8 +271,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(503, {'ok': False, 'error': 'enrollment_unavailable'})
 
     def do_POST(self):
-        if getattr(self.server, 'enrollment', False) and self.path == '/enroll':
-            self.enroll(); return
+        if getattr(self.server, 'enrollment', False) and self.path in ('/enroll','/device'):
+            self.enroll('device' if self.path=='/device' else 'enroll'); return
         # Enrollment never turns report/upload APIs into anonymous endpoints.
         if not self.connection.getpeercert(binary_form=True):
             self.reply(403, {'accepted': False}); return

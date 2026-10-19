@@ -72,7 +72,7 @@ def sync_embedded_sources() -> None:
     import base64
     p = SRC / "vpnctl.py"
     text = p.read_text()
-    for constant, filename in (("STARFIVE_TUNNEL_PY_B64", "starfive_tunnel.py"), ("STANDALONE_GUI_PY_B64", "evgenium_gui.py"), ("STANDALONE_GUI_QML_B64", "evgenium_gui.qml"), ("STARFIVE_EXPERIMENTAL_PY_B64", "starfive_experimental.py")):
+    for constant, filename in (("STARFIVE_TUNNEL_PY_B64", "starfive_tunnel.py"), ("STANDALONE_GUI_PY_B64", "evgenium_gui.py"), ("STANDALONE_GUI_QML_B64", "evgenium_gui.qml"), ("NETWORK_POLICY_PY_B64", "network_policy.py")):
         value = base64.b64encode((SRC / filename).read_bytes()).decode()
         replacement = constant + " = (\n" + "".join("    " + repr(value[i:i+96]) + "\n" for i in range(0, len(value), 96)) + ")\n"
         text, count = re.subn(r"^" + constant + r" = (?:\(.*?\)|[^\n]+)\n", lambda _: replacement, text, count=1, flags=re.M | re.S)
