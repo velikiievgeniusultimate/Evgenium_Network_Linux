@@ -58,6 +58,38 @@ case "${1:-}" in
 esac
 [[ $# -le 1 ]] || die "Слишком много параметров."
 
+# BEGIN ARCH DEPENDENCY INSTALL
+arch_install_dependencies() (
+    # pacman refuses every -S transaction if any configured sync DB is absent.
+    # Resolve Includes with pacman's own parser; retain options and usable repos.
+    # Never edit pacman.conf, weaken signatures, or refresh only part of the DBs.
+    command -v pacman-conf >/dev/null 2>&1 || die "Не найден pacman-conf из пакета pacman."
+    dep_tmp="$(mktemp -d)"
+    trap 'rm -rf "$dep_tmp"' EXIT
+    pacman-conf > "$dep_tmp/resolved.conf" || die "Не удалось прочитать настройки pacman."
+    db_path="$(pacman-conf DBPath)" || die "Не удалось определить каталог баз pacman."
+    [[ -n "$db_path" && "$db_path" = /* ]] || die "Некорректный DBPath pacman."
+    keep_section=1
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^\[([^]]+)\]$ ]]; then
+            repo="${BASH_REMATCH[1]}"
+            keep_section=1
+            if [[ "$repo" != options && ! -f "${db_path%/}/sync/${repo}.db" ]]; then
+                case "$repo" in
+                    core|extra|multilib|community|core-testing|extra-testing|multilib-testing|community-testing|core-staging|extra-staging|multilib-staging|testing|staging|alarm)
+                        die "Нет базы официального репозитория ${repo}. Сначала исправьте репозитории и выполните полное обновление Arch (sudo pacman -Syu), затем повторите --repair." ;;
+                    *)
+                        warn "Нет базы стороннего репозитория ${repo}: пропускаю его только для установки зависимостей VPN."
+                        keep_section=0 ;;
+                esac
+            fi
+        fi
+        if ((keep_section)); then printf '%s\n' "$line"; fi
+    done < "$dep_tmp/resolved.conf" > "$dep_tmp/pacman.conf"
+    sudo pacman --config "$dep_tmp/pacman.conf" -S --needed --noconfirm "$@"
+)
+# END ARCH DEPENDENCY INSTALL
+
 say "Обнаружена система: ${DISTRO}. Получаю sudo для установки/восстановления..."
 sudo -v
 
@@ -71,7 +103,7 @@ if [[ "$DISTRO" == "arch" ]]; then
     done
     if ((${#missing[@]})); then
         say "Устанавливаю официальные Arch-пакеты: ${missing[*]}"
-        sudo pacman -S --needed --noconfirm "${missing[@]}"
+        arch_install_dependencies "${missing[@]}"
     else
         ok "Зависимости Arch уже установлены."
     fi
