@@ -3,3 +3,7 @@
 .user-top{flex-wrap:wrap}.user-info{min-width:180px}.user-name,.device-name{overflow-wrap:anywhere}.device-row{grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) auto auto}.danger{color:#ffc2b6;border-color:#88584e}.primary.danger{background:#873e32;color:#fff}.primary.danger:hover{background:#a54b3c}#delete-error{color:#ffc2b6}@media(max-width:850px){.device-row{grid-template-columns:minmax(0,1fr) auto}.device-row .quiet{grid-column:2}.user-top .quiet{margin-left:0}}@media(max-width:550px){.header-actions{flex-wrap:wrap;justify-content:flex-end}.breadcrumb{min-width:90px}#forget-browser{font-size:10px}}
 
 .form-error{color:#ffc2b6}
+
+.password-entry{margin:20px 0}.password-entry>label{margin:0}.password-field{position:relative;margin-top:9px}.password-field input{margin:0;padding-right:52px}.password-toggle{position:absolute;right:3px;top:3px;bottom:3px;width:44px;display:grid;place-items:center;border:0;border-radius:5px;background:transparent;color:var(--muted);padding:9px}.password-toggle:hover,.password-toggle:focus-visible{color:var(--green);background:#23331e}.password-toggle:focus-visible{outline:2px solid var(--green);outline-offset:1px}.password-toggle svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.password-toggle[aria-pressed=false] .eye-slash{display:none}
+
+.token-note{display:block;max-width:340px;margin-top:9px;color:var(--muted);font-size:10px;line-height:1.5}.user-top button:disabled{cursor:not-allowed}
