@@ -98,7 +98,7 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.HTTPServer(('0.0.0.0',18080),H).serve_forever()
 '''
 
-DNS_SERVER=r''' 
+DNS_SERVER=r'''
 import socket,struct,sys,threading
 answer=bytes([203,0,113,int(sys.argv[1])])
 def reply(q):
