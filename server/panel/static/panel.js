@@ -35,5 +35,21 @@ $('#search').addEventListener('input',renderUsers);
 for(const [id,name] of [['users-nav','dashboard'],['network-nav','network'],['audit-nav','audit']])$('#'+id).addEventListener('click',()=>perform($('#'+id),async()=>{if(!snapshot)return;showView(name);if(name==='audit')await loadAudit();else await loadDashboard();}));
 $('#refresh-network').addEventListener('click',()=>perform($('#refresh-network'),loadDashboard));
 $('#logout').addEventListener('click',()=>perform($('#logout'),async()=>{await api('/api/logout',{});snapshot=null;$('#accounts').replaceChildren();$('#token-dialog').close();await initialize();}));
+for(const button of document.querySelectorAll('[data-password-target]')){
+    const input=document.getElementById(button.dataset.passwordTarget);
+    function visibility(shown){
+        input.type=shown?'text':'password';
+        button.setAttribute('aria-pressed',String(shown));
+        const label=shown?'Скрыть пароль':'Показать пароль';
+        button.setAttribute('aria-label',label);button.title=label;
+    }
+    button.addEventListener('click',()=>{
+        const start=input.selectionStart,end=input.selectionEnd;
+        visibility(input.type==='password');input.focus();
+        if(start!==null&&end!==null)input.setSelectionRange(start,end);
+    });
+    input.form.addEventListener('submit',()=>visibility(false));
+    input.form.addEventListener('reset',()=>visibility(false));
+}
 initialize().catch(e=>notice(e.message,true));
 setInterval(()=>{if(snapshot&&!document.hidden)loadDashboard().catch(e=>notice(e.message,true));},30000);
