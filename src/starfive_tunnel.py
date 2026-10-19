@@ -29,8 +29,11 @@ GATEWAY = '172.29.246.1'
 TABLE = 51824
 PRIORITY = 75
 NFT = 'evgenium_starfive_lab_host'
-SERVER = '109.194.67.159'
-SERVER_LAN = '192.168.0.163'
+SERVER = '195.209.211.163'
+IKE_PORT = 24550
+ENDPOINTS = (SERVER,)
+# Kept only for removing routes installed by pre-migration versions.
+LEGACY_ENDPOINTS = ('109.194.67.159', '192.168.0.163')
 HEALTH = '10.77.0.1'
 REQID = 177
 TOKEN_PATTERN = r'EVN1-[A-Za-z0-9_-]{43}'
@@ -110,13 +113,26 @@ def full_firewall():
   ip daddr 255.255.255.255 udp sport 68 udp dport 67 accept
  }}
  chain forward {{ type filter hook forward priority -30; policy drop;
-  iifname "{HOST}" ip saddr {CLIENT} ip daddr {{ {SERVER}, {SERVER_LAN} }} udp dport {{500,4500}} accept
-  iifname "{HOST}" ip saddr {CLIENT} ip daddr {{ {SERVER}, {SERVER_LAN} }} tcp dport 8443 accept
+  iifname "{HOST}" ip saddr {CLIENT} ip daddr {{ {SERVER} }} udp dport {IKE_PORT} accept
+  iifname "{HOST}" ip saddr {CLIENT} ip daddr {{ {SERVER} }} tcp dport 8443 accept
   oifname "{HOST}" ip daddr {CLIENT} ct state established,related accept
   meta nfproto ipv4 oifname "{FULL_HOST}" accept
   meta nfproto ipv4 iifname "{FULL_HOST}" ct state established,related accept
  }}
 }}'''
+
+
+
+def refresh_retained_guard():
+    """Move only the VPN transport exception when an ingress endpoint changes."""
+    if not full_guard_active():
+        return
+    rules = full_firewall()
+    replacement = 'delete table inet '+FULL_GUARD+'\n'+rules
+    command(['nft','-c','-f','-'],data=replacement)
+    # Persist the closed guard before changing the active exception; a crash stays closed.
+    write(ROOT/'full-guard.nft',rules)
+    command(['nft','-f','-'],data=replacement)
 
 
 def virtual_ip():
@@ -157,7 +173,7 @@ def full_namespace(address):
 table netdev evn_full_wire {{
  chain egress {{ type filter hook egress device "{PEER}" priority 0; policy drop;
   ether type arp accept
-  ip daddr {address} udp dport {{500,4500}} accept
+  ip daddr {address} udp dport {IKE_PORT} accept
   ip daddr {address} tcp dport 8443 accept
  }}
 }}'''
@@ -304,7 +320,7 @@ def cleanup_full(release=False):
     command(['ip','rule','del','priority','79','to',CLIENT+'/32','lookup','main'],check=False)
     command(['ip','rule','del','priority','79','iif',FULL_HOST,'lookup','main'],check=False)
     command(['ip','route','flush','table',FULL_TABLE],check=False)
-    for server in (SERVER_LAN, '38.180.164.67'):
+    for server in ('192.168.0.163', '38.180.164.67'):
         command(['ip','rule','del','priority','79','to',server,'ipproto','tcp','dport','22','lookup',ADMIN_TABLE],check=False)
     command(['systemctl','disable','--now','evgenium-starfive-full-guard.service'],check=False)
     command(['nft','delete','table','inet',FULL_GUARD],check=False)
@@ -389,15 +405,15 @@ def physical_route():
 
 
 def host_rules(iface, previous_forward=True):
-    # Scope every new forwarding/NAT rule to our one interface and two server addresses.
+    # Scope every new forwarding/NAT rule to our one interface and the configured ingress address.
     preserve_disabled = '' if previous_forward else '  meta nfproto ipv4 drop'
     return f'''table inet {NFT} {{
  chain forward {{
   type filter hook forward priority -20; policy accept;
-  iifname "{HOST}" ip daddr {{ {SERVER}, {SERVER_LAN} }} udp dport {{ 500, 4500 }} accept
-  iifname "{HOST}" ip daddr {{ {SERVER}, {SERVER_LAN} }} tcp dport 8443 accept
+  iifname "{HOST}" ip daddr {{ {SERVER} }} udp dport {IKE_PORT} accept
+  iifname "{HOST}" ip daddr {{ {SERVER} }} tcp dport 8443 accept
   iifname "{HOST}" drop
-  oifname "{HOST}" ip saddr {{ {SERVER}, {SERVER_LAN} }} ct state established,related accept
+  oifname "{HOST}" ip saddr {{ {SERVER} }} ct state established,related accept
   oifname "{HOST}" drop
 {preserve_disabled}
  }}
@@ -436,7 +452,7 @@ def setup_network():
     inside(['ip', 'link', 'set', 'lo', 'up'])
     inside(['ip', 'route', 'add', 'default', 'via', GATEWAY])
     command(['ip', 'route', 'add', 'table', str(TABLE), 'default', 'via', route['gateway'], 'dev', route['dev']])
-    for address in (SERVER, SERVER_LAN):
+    for address in ENDPOINTS:
         command(['ip', 'rule', 'add', 'priority', str(PRIORITY), 'from', CLIENT+'/32',
                  'to', address+'/32', 'lookup', str(TABLE)])
     rules = host_rules(route['dev'], previous_forward=old_forward == '1')
@@ -454,7 +470,7 @@ def cleanup():
         return
     data = json.loads((ROOT/'network.json').read_text())
     command(['nft', 'delete', 'table', 'inet', NFT], check=False)
-    for address in (SERVER, SERVER_LAN):
+    for address in (*ENDPOINTS, *LEGACY_ENDPOINTS):
         command(['ip', 'rule', 'del', 'priority', str(PRIORITY), 'from', CLIENT+'/32',
                  'to', address+'/32', 'lookup', str(TABLE)], check=False)
     for address in data.get('measurement_ips', []):
@@ -479,7 +495,7 @@ def cleanup():
 @contextlib.contextmanager
 def measurement_route(address):
     """A short-lived direct route for a verified Yandex HTTPS measurement, lab only."""
-    if not ipaddress.ip_address(address).is_global or address in (SERVER, SERVER_LAN):
+    if not ipaddress.ip_address(address).is_global or address in ENDPOINTS:
         raise ValueError('invalid_measurement_address')
     label = 'evn-measure-'+secrets.token_hex(8)
     data = json.loads((ROOT/'network.json').read_text())
@@ -618,7 +634,7 @@ def enroll():
         cached = json.loads((ROOT/'profile.json').read_text())
         if (cached.get('ca') == PINNED_CA and cached.get('server') == SERVER and
             re.fullmatch(r'device-[a-f0-9]{24}', cached.get('identity', '')) and
-            cached.get('endpoint') in (SERVER, SERVER_LAN) and cached.get('physical_network') and
+            cached.get('endpoint') in ENDPOINTS and cached.get('physical_network') and
             command(['openssl', 'x509', '-in', ROOT/'client.pem', '-checkend', str(7*86400), '-noout'], check=False).returncode == 0):
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.load_cert_chain(str(ROOT/'client.pem'), str(ROOT/'client-key.pem'))
@@ -639,7 +655,7 @@ def enroll():
              '-out', ROOT/'request.pem'])
     payload = {'token': token, 'device': (ROOT/'device').read_text().strip(), 'csr': (ROOT/'request.pem').read_text()}
     last = None
-    for address in (SERVER, SERVER_LAN):
+    for address in ENDPOINTS:
         try:
             with namespace():
                 reply = tls_request(address, '/enroll', payload, timeout=6)
@@ -688,6 +704,8 @@ charon-systemd {{ journal {{ default = 0; ike = 1 }} }}
  starfive {{
   version = 2
   remote_addrs = {address}
+  remote_port = {IKE_PORT}
+  local_port = 4500
   vips = 0.0.0.0
   proposals = aes256gcm16-prfsha384-ecp384
   encap = yes
@@ -718,7 +736,7 @@ secrets {{ private-client {{ file = {ROOT}/client-key.pem }} }}
  chain output {{
   type filter hook output priority -10; policy drop;
   oifname "lo" accept
-  ip daddr {address} udp dport {{ 500, 4500 }} accept
+  ip daddr {address} udp dport {IKE_PORT} accept
   meta skuid 0 ip daddr {address} tcp dport 8443 accept
   meta nfproto ipv4 ipsec out reqid {REQID} accept
  }}
@@ -814,7 +832,7 @@ def connect(token='', repair=False):
     if repair:
         write(ROOT/'recalibrate', '1')
     unit = f'''[Unit]
-Description=Evgenium StarFive full-device Estonia VPN
+Description=Evgenium HSVDS full-device Estonia VPN
 After=network.target
 [Service]
 Type=simple
@@ -841,7 +859,7 @@ WantedBy=multi-user.target
 """)
     command(['systemctl', 'daemon-reload'])
     command(['systemctl', 'enable', recovery])
-    stage('starting' , 'Готовлю подключение через StarFive в Эстонию.', 2, active=False, retry=0, error_code='')
+    stage('starting' , 'Готовлю подключение через HSVDS в Эстонию.', 2, active=False, retry=0, error_code='')
     command(['systemctl', 'restart' if repair else 'start', UNIT])
     print('Экспериментальный VPN запускается. Этапы видны в строке состояния.')
 
@@ -879,7 +897,8 @@ def worker():
     daemon = None
     try:
         cleanup()
-        stage('prepare', 'Готовлю защищённое соединение со StarFive.', 8, active=False)
+        refresh_retained_guard()
+        stage('prepare', 'Готовлю защищённое соединение с HSVDS.', 8, active=False)
         setup_network()
         try:
             reference = ({'skipped': 'guard_active'} if full_guard_active() else reference_sample(force=(ROOT/'recalibrate').exists()))
@@ -888,13 +907,13 @@ def worker():
         (ROOT/'recalibrate').unlink(missing_ok=True)
         stage('token', 'Проверяю токен и сохранённое подключение этого устройства.', 20)
         identity, address = enroll()
-        scope = 'lan' if address == SERVER_LAN else 'public-address'
+        scope = 'public-address'
         stage('daemon', 'Запускаю туннель IKEv2 Россия → Россия.', 40, scope=scope)
         daemon_configs(identity, address)
         env = {**os.environ, 'STRONGSWAN_CONF': str(ROOT/'strongswan.conf')}
         env.pop('NOTIFY_SOCKET', None)
         daemon = start_daemon(env)
-        stage('handshake', 'Устанавливаю защищённое соединение со StarFive.', 60)
+        stage('handshake', 'Устанавливаю защищённое соединение с HSVDS.', 60)
         swan('--initiate', '--child', 'starfive-net', timeout=35)
         if not installed():
             raise RuntimeError('sa_not_installed')
@@ -906,7 +925,7 @@ def worker():
         metrics['reference'] = reference
         stage('routing', 'Подключаю весь трафик компьютера к выходу в Эстонии.', 92)
         activate_full(address)
-        stage('connected', 'Подключено: компьютер → StarFive → Эстония. IPv6 заблокирован.', 100,
+        stage('connected', 'Подключено: компьютер → HSVDS → Эстония. IPv6 заблокирован.', 100,
               active=True, metrics=metrics, since=int(time.time()))
         failures = 0
         while not STOP:
@@ -919,16 +938,16 @@ def worker():
             try:
                 ok = daemon.poll() is None and installed() and health()
                 if ok and not egress_health():
-                    stage('egress_wait', 'StarFive доступен; ожидаю восстановления выхода в Эстонии.', 90, active=False)
+                    stage('egress_wait', 'HSVDS доступен; ожидаю восстановления выхода в Эстонии.', 90, active=False)
                     continue
             except (OSError, RuntimeError, subprocess.TimeoutExpired):
                 ok = False
             failures = 0 if ok else failures+1
             if failures == 1:
-                stage('checking', 'Ответ StarFive задерживается. Проверяю тестовое соединение.', 90, active=False)
+                stage('checking', 'Ответ HSVDS задерживается. Проверяю тестовое соединение.', 90, active=False)
                 continue
             if failures >= 2:
-                stage('repairing', 'Связь со StarFive потеряна. Восстанавливаю тестовый туннель.', 60, active=False)
+                stage('repairing', 'Связь с HSVDS потеряна. Восстанавливаю тестовый туннель.', 60, active=False)
                 if daemon.poll() is not None:
                     inside(['ip', 'xfrm', 'state', 'flush'])
                     inside(['ip', 'xfrm', 'policy', 'flush'])
@@ -942,12 +961,12 @@ def worker():
                 if not egress_health():
                     raise RuntimeError('estonia_egress_failed')
                 failures = 0
-            stage('connected', 'Подключено: компьютер → StarFive → Эстония. IPv6 заблокирован.', 100, active=True)
+            stage('connected', 'Подключено: компьютер → HSVDS → Эстония. IPv6 заблокирован.', 100, active=True)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         code = str(exc) if re.fullmatch(r"[a-z_]{1,64}", str(exc)) else type(exc).__name__
         current = saved().get('phase', 'prepare')
-        message = {'token': 'Не удалось подтвердить токен или получить сертификат StarFive.',
-                   'handshake': 'StarFive не подтвердил подключение IKEv2.',
+        message = {'token': 'Не удалось подтвердить токен или получить сертификат HSVDS.',
+                   'handshake': 'HSVDS не подтвердил подключение IKEv2.',
                    'measure': 'Проверка передачи данных не прошла.',
                    'repairing': 'Автовосстановление не удалось. Нажмите «Починить».'}.get(current, 'Тестовый туннель не запустился. Нажмите «Починить».')
         stage('failed', message+(' Интернет заблокирован до отключения режима.' if full_guard_active() else ' Маршрутизация компьютера не переключена.'), 0, active=False, error_code=code, metrics={})

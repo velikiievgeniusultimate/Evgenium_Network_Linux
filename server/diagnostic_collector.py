@@ -45,7 +45,7 @@ def server_metrics():
     for line in Path('/proc/meminfo').read_text().splitlines():
         if line.startswith('MemAvailable:'): result['memory_available_kb'] = int(line.split()[1])
     for line in Path('/proc/net/dev').read_text().splitlines():
-        if line.strip().startswith('eth0:'):
+        if line.strip().startswith(os.environ.get('EVG_UPLINK', 'enp3s0')+':'):
             values = [int(x) for x in line.split(':',1)[1].split()]
             result.update(rx_bytes=values[0], rx_errors=values[2], rx_dropped=values[3],
                           tx_bytes=values[8], tx_errors=values[10], tx_dropped=values[11])
@@ -220,7 +220,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(404,{}); return
         path=urllib.parse.urlsplit(self.path)
         if path.path == '/health':
-            self.reply(200, {'service': 'evgenium-starfive', 'egress': 'RU-test', 'test_api':1})
+            self.reply(200, {'service': 'evgenium-starfive', 'egress': 'EE-relay', 'test_api':1})
         elif path.path == '/control':
             self.reply(200, control_probes())
         elif path.path == '/blob':

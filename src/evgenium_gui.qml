@@ -440,7 +440,7 @@ C.ApplicationWindow {
                                         C.Label {
                                             Layout.fillWidth: true
                                             text: Boolean(root.state.active)
-                                                ? (root.state.backend === "ikev2" ? "Весь IPv4-трафик идёт через StarFive в России. IPv6 и DIRECT-исключения отключены." : "Весь обычный трафик идёт через VPN, кроме настроенных исключений.")
+                                                ? (root.state.backend === "ikev2" ? "Весь IPv4-трафик идёт через HSVDS в Эстонию. IPv6 и DIRECT-исключения отключены." : "Весь обычный трафик идёт через VPN, кроме настроенных исключений.")
                                                 : "Включи VPN одним нажатием. Будет использован последний выбранный профиль."
                                             color: root.textMuted
                                             wrapMode: Text.WordWrap
@@ -1097,7 +1097,7 @@ C.ApplicationWindow {
                                     }
                                     C.Label {
                                         Layout.fillWidth: true
-                                        text: "Весь интернет через StarFive и Эстонию. Зависимости установятся автоматически."
+                                        text: "Весь интернет через HSVDS в Москве и Эстонию. Зависимости установятся автоматически."
                                         color: root.textMuted; wrapMode: Text.WordWrap
                                     }
                                     C.Label { text: "Токен клиента"; color: root.textMain; font.weight: Font.DemiBold }

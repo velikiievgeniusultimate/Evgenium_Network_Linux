@@ -126,7 +126,7 @@ def enroll(body):
                      '-in', str(request), '-out', str(certificate)])
         records[device] = {'identity': identity, 'key_hash': key_hash, 'enrolled': int(time.time())}
         write_json(ROOT/'accounts.json', data)
-        return {'schema': 1, 'server': '109.194.67.159', 'identity': identity,
+        return {'schema': 1, 'server': '195.209.211.163', 'identity': identity,
                 'account': account_id, 'certificate': certificate.read_text(), 'ca': (PKI/'ca.pem').read_text()}
 
 

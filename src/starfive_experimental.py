@@ -29,7 +29,8 @@ MONITOR = "evgenium-ikev2-diagnostic.service"
 GUARD = "evgenium-ikev2-guard.service"
 TABLE = "evgenium_ikev2_guard"
 URI = "unix:///run/evgenium-ikev2/charon.vici"
-SERVER = "109.194.67.159"
+SERVER = "195.209.211.163"
+IKE_PORT = 24550
 HEALTH = "https://10.77.0.1:8443"
 REQID = 77
 DIRECT_PORT = 8443
@@ -325,7 +326,7 @@ def status():
             "active": live, "guard": guard,
             "telemetry": bool(state.get("telemetry", False)),
             "phase": "connected" if live else ("blocked" if guard else "off"),
-            "server": SERVER, "egress": "Эстония через StarFive",
+            "server": SERVER, "egress": "Эстония через HSVDS",
             "last_report": state.get("last_report", ""),
             "last_error": state.get("last_error", ""),
             "delivery": {"status":state.get('delivery_status','idle'),
@@ -411,7 +412,7 @@ def render_guard():
  chain output {{
   type filter hook output priority -10; policy drop;
   oifname "lo" accept
-  ip daddr {SERVER} udp dport {{ 500, 4500 }} accept
+  ip daddr {SERVER} udp dport {IKE_PORT} accept
   meta skuid 0 meta mark {DIRECT_MARK} ip daddr {SERVER} tcp dport {DIRECT_PORT} accept
   meta nfproto ipv4 udp sport 68 udp dport 67 accept
 {transport}
@@ -428,6 +429,8 @@ def render_connection(p):
  starfive {{
   version = 2
   remote_addrs = {SERVER}
+  remote_port = {IKE_PORT}
+  local_port = 4500
   vips = 0.0.0.0
   proposals = aes256gcm16-prfsha384-ecp384,aes256-sha256-modp2048
   encap = yes
