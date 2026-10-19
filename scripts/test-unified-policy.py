@@ -37,7 +37,10 @@ def child(directory):
   print(name,actual,flush=True)
  try:
   run(['ip','route','add','unreachable','default','metric','32760','table',t.FULL_TABLE]);run(['ip','rule','add','priority','80','lookup',t.FULL_TABLE])
+  run(['ip','link','set','waydroid0','name','wd-dormant'])
   base=p.defaults();apply(base)
+  # Exercise both host filters, including forwarding initially disabled.
+  run(['nft','-f','-'],input=t.host_rules('wan',previous_forward=False))
   check('default',curl(),'VPN')
   sample=p.defaults();sample['networks']=['203.0.113.10/32'];apply(sample);check('IP exception',curl(),'DIRECT')
   sample=p.defaults();sample['networks']=['example.test'];apply(sample);check('domain exception',curl('example.test',resolve='example.test:18080:203.0.113.10'),'DIRECT');check('other domain',curl('other.test',resolve='other.test:18080:203.0.113.10'),'VPN')
@@ -54,8 +57,35 @@ def child(directory):
   apply(base)
   wd=os.environ.get('EVG_TEST_WAYDROID')
   def wdget():return run(['ip','netns','exec',wd,'curl','-4','--noproxy','*','-fsS','--max-time','4','http://203.0.113.10:18080/']).stdout.strip()
-  check('Waydroid default',wdget(),'DIRECT')
+  run(['ip','link','set','wd-dormant','name','waydroid0'])
+  p.sync_waydroid_network()
+  check('Waydroid started after VPN',wdget(),'DIRECT')
+  def wddns(tcp=False):
+   script='''import socket
+q=b'\\x12\\x34\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00'+b'\\x04test\\x07example\\x00\\x00\\x01\\x00\\x01'
+s=socket.socket(socket.AF_INET,TYPE);s.settimeout(3)
+if TYPE==socket.SOCK_STREAM:
+ s.connect(('10.244.0.1',53));s.sendall(len(q).to_bytes(2,'big')+q);n=int.from_bytes(s.recv(2),'big');data=s.recv(n)
+else:s.sendto(q,('10.244.0.1',53));data=s.recv(1024)
+print(socket.inet_ntoa(data[-4:]))
+'''.replace('TYPE','socket.SOCK_STREAM' if tcp else 'socket.SOCK_DGRAM')
+   return run(['ip','netns','exec',wd,sys.executable,'-c',script]).stdout.strip()
+  check('Waydroid direct UDP DNS via bridge',wddns(),'203.0.113.11')
+  check('Waydroid direct TCP DNS via bridge',wddns(True),'203.0.113.11')
+  # A DHCP server bound to the bridge must be able to broadcast its offer.
+  listener=subprocess.Popen(['ip','netns','exec',wd,sys.executable,'-u','-c',"import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(3); s.bind(('',68)); print('ready',flush=True); print(s.recv(128).decode())"],stdout=subprocess.PIPE,text=True)
+  assert listener.stdout.readline().strip()=='ready'
+  with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as offer:
+   offer.setsockopt(socket.SOL_SOCKET,socket.SO_BINDTODEVICE,b'waydroid0\0');offer.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1);offer.bind(('',67));offer.sendto(b'dhcp-offer',('255.255.255.255',68))
+  check('Waydroid DHCP broadcast',listener.communicate(timeout=5)[0].strip(),'dhcp-offer')
+  # Interface address loss/reappearance without restarting the classifier.
+  run(['ip','addr','del','10.244.0.1/24','dev','waydroid0']);p.sync_waydroid_network()
+  assert '10.244.0.0/24' not in run(['ip','route','show','table',p.PHYSICAL_TABLE]).stdout
+  run(['ip','addr','add','10.244.0.1/24','dev','waydroid0']);p.sync_waydroid_network()
+  check('Waydroid network recreated',wdget(),'DIRECT')
   sample=p.defaults();sample['waydroid_direct']=False;apply(sample);check('Waydroid VPN switch',wdget(),'VPN')
+  check('Waydroid VPN UDP DNS via bridge',wddns(),'203.0.113.12')
+  check('Waydroid VPN TCP DNS via bridge',wddns(True),'203.0.113.12')
   def dns(address,tcp=False,qtype=1,bind=None):
    q=b'\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00'+b'\x04test\x07example\x00\x00\x01\x00\x01'
    q=q[:-4]+bytes([0,qtype])+q[-2:]
@@ -115,7 +145,7 @@ def tcp():
    if len(h)==2:
     q=c.recv(struct.unpack('!H',h)[0]);r=reply(q);c.sendall(struct.pack('!H',len(r))+r)
 threading.Thread(target=tcp,daemon=True).start()
-s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind(('0.0.0.0',53))
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind(('1.1.1.1',53))
 while True:
  q,a=s.recvfrom(1024);s.sendto(reply(q),a)
 '''

@@ -419,7 +419,9 @@ def physical_route():
 
 def host_rules(iface, previous_forward=True):
     # Scope every new forwarding/NAT rule to our one interface and the configured ingress address.
-    preserve_disabled = '' if previous_forward else '  iifname != "waydroid0" meta nfproto ipv4 drop'
+    preserve_disabled = '' if previous_forward else '''  iifname "waydroid0" meta nfproto ipv4 accept
+  oifname "waydroid0" meta nfproto ipv4 ct state established,related accept
+  meta nfproto ipv4 drop'''
     return f'''table inet {NFT} {{
  chain forward {{
   type filter hook forward priority -20; policy accept;
