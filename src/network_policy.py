@@ -1,4 +1,5 @@
 """Local traffic selection for the token tunnel. No remote proxy protocol."""
+import fcntl
 import ipaddress
 import json
 import os
@@ -11,6 +12,7 @@ tunnel = None
 PATH = Path('/etc/vpn-manager/policy.json')
 RUN = Path('/run/vpn-manager')
 SERVICE = 'evgenium-policy.service'
+WAYDROID_SERVICE = 'evgenium-waydroid-network.service'
 TUN = 'evn-policy'
 DIRECT = 0x45564E31
 VPN = 0x45564E32
@@ -176,9 +178,9 @@ def firewall(p,lan,uid):
  dns+=['ip daddr 127.0.0.0/8 meta l4proto { tcp, udp } th dport 53 redirect to :'+str(DNS_PORT),
        'meta nfproto ipv4 meta l4proto { tcp, udp } th dport 53 dnat ip to 1.1.1.1']
  mark+=['meta l4proto { tcp, udp } th dport 53 meta mark set '+str(VPN)+' return']
- if Path('/sys/class/net/waydroid0').exists():
-  waynets=local_networks({'dev':'waydroid0'})
-  if waynets:mark.append(f'ip daddr {nft_set(waynets)} meta mark set {DIRECT} return')
+ waynets=waydroid_network()['networks']
+ mark.append(f'ip daddr @waydroid_networks meta mark set {DIRECT} return')
+ mark.append(f'oifname "waydroid0" udp sport 67 udp dport 68 meta mark set {DIRECT} return')
  nets=direct_networks(p,lan)
  if nets:mark.append(f'ip daddr {nft_set(nets)} meta mark set {DIRECT} return')
  if enabled(p,'ports','discovery'):
@@ -191,6 +193,7 @@ def firewall(p,lan,uid):
 
  def lines(items):return '\n'.join('  '+x for x in items)
  return f'''table inet {tunnel.FULL_GUARD} {{
+ set waydroid_networks {{ type ipv4_addr; flags interval; {('elements = '+nft_set(waynets)+';') if waynets else ''} }}
  chain route {{ type route hook output priority -150; policy accept;
   meta skuid {uid} return
   meta mark set 0
@@ -203,6 +206,9 @@ def firewall(p,lan,uid):
  }}
  chain preroute {{ type filter hook prerouting priority -150; policy accept;
 {lines(forward)}
+ }}
+ chain waydroid_dns {{ type nat hook prerouting priority -101; policy accept;
+  iifname "waydroid0" meta nfproto ipv4 meta l4proto {{ tcp, udp }} th dport 53 dnat ip to 1.1.1.1
  }}
  chain source {{ type nat hook postrouting priority srcnat; policy accept;
   meta nfproto ipv4 oifname "{tunnel.FULL_HOST}" snat ip to 172.29.247.1
@@ -232,6 +238,7 @@ def firewall(p,lan,uid):
 UNIT='''[Unit]
 Description=Evgenium local application and domain routing
 After=network.target
+Wants=evgenium-waydroid-network.service
 [Service]
 User=vpn-xray
 Group=vpn-xray
@@ -248,8 +255,61 @@ DeviceAllow=/dev/net/tun rw
 UMask=0077
 '''
 
+WAYDROID_UNIT='''[Unit]
+Description=Evgenium Waydroid network lifecycle
+After=evgenium-policy.service
+PartOf=evgenium-policy.service
+[Service]
+ExecStart=/usr/local/sbin/vpnctl internal-waydroid-watch
+Restart=on-failure
+RestartSec=2
+UMask=0077
+'''
+
+def waydroid_network():
+ result=tunnel.command(['ip','-j','-4','addr','show','dev','waydroid0'],check=False)
+ if result.returncode:return {'index':None,'networks':[]}
+ links=json.loads(result.stdout)
+ networks=sorted({str(ipaddress.ip_network(f"{a['local']}/{a['prefixlen']}",strict=False)) for link in links if 'UP' in link.get('flags',[]) for a in link.get('addr_info',[]) if a.get('scope')=='global'})
+ return {'index':links[0].get('ifindex') if links else None,'networks':networks}
+
+def sync_waydroid_network(force=False):
+ # Caller holds operation.lock. Only this VPN's set/table are modified.
+ state=waydroid_network();cache=RUN/'waydroid-network.json'
+ try:previous=json.loads(cache.read_text())
+ except (OSError,ValueError):previous=None
+ if not force and state==previous:return
+ routes=json.loads(tunnel.command(['ip','-j','-4','route','show','table',PHYSICAL_TABLE]).stdout)
+ stale={r['dst'] for r in routes if r.get('dev')=='waydroid0' and r.get('dst') not in state['networks']}
+ for network in state['networks']:
+  tunnel.command(['ip','route','replace',network,'dev','waydroid0','scope','link','table',PHYSICAL_TABLE])
+ rules='flush set inet '+tunnel.FULL_GUARD+' waydroid_networks\n'
+ if state['networks']:rules+='add element inet '+tunnel.FULL_GUARD+' waydroid_networks '+nft_set(state['networks'])+'\n'
+ tunnel.command(['nft','-f','-'],data=rules)
+ for network in stale:tunnel.command(['ip','route','del',network,'dev','waydroid0','table',PHYSICAL_TABLE],check=False)
+ cache.write_text(json.dumps(state));cache.chmod(0o600)
+
+def watch_waydroid():
+ import sys
+ last_error=None
+ while True:
+  try:
+   RUN.mkdir(parents=True,exist_ok=True)
+   with (RUN/'operation.lock').open('a+') as lock:
+    try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except BlockingIOError:pass
+    else:
+     if tunnel.full_guard_active() and Path('/sys/class/net/'+TUN).exists():sync_waydroid_network()
+   last_error=None
+  except Exception as exc:
+   message=str(exc)
+   if message!=last_error:print('Waydroid network sync: '+message,file=sys.stderr,flush=True)
+   last_error=message
+  time.sleep(1)
+
 def install():
  Path('/etc/systemd/system/'+SERVICE).write_text(UNIT)
+ Path('/etc/systemd/system/'+WAYDROID_SERVICE).write_text(WAYDROID_UNIT)
  tunnel.command(['systemctl','daemon-reload'])
 
 def apply():
@@ -282,14 +342,11 @@ def apply():
  # Replies to a forwarded container return through its connected main route.
  tunnel.command(['ip','rule','del','priority','78','iif',TUN,'lookup','main'],check=False)
  tunnel.command(['ip','rule','add','priority','78','iif',TUN,'lookup','main'])
- if Path('/sys/class/net/waydroid0').exists():
-  for net in local_networks({'dev':'waydroid0'}):
-   tunnel.command(['ip','route','replace',net,'dev','waydroid0','scope','link','table',PHYSICAL_TABLE])
-  # Restore direct conntrack replies to the physical routing table as well.
  # A temporary closed state is acceptable; an unguarded state is not.
  os.replace(tmp,cfg)
  tunnel.write(tunnel.ROOT/'full-guard.nft',rules)
  tunnel.command(['nft','-f','-'],data=replacement)
+ sync_waydroid_network(force=True)
  install()
  tunnel.command(['systemctl','restart',SERVICE])
  for _ in range(80):
