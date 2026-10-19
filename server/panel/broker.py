@@ -63,7 +63,7 @@ class Accounts:
         name,key=name_key(name)
         with self.issuer.locked():
             data=self.issuer.accounts()
-            if any(name_key(a['name'])[1]==key for a in data.values()):raise ValueError('person_exists')
+            if any(not a.get('deleted') and name_key(a['name'])[1]==key for a in data.values()):raise ValueError('person_exists')
             token='EVN1-'+secrets.token_urlsafe(32);account_id=secrets.token_hex(12)
             vault=self.tokens();vault[account_id]=self.cipher.encrypt(token.encode()).decode()
             # Save the encrypted secret first. A crash can leave only an unreferenced vault entry.
@@ -76,7 +76,7 @@ class Accounts:
         if not isinstance(account_id,str) or not re.fullmatch('[a-f0-9]{24}',account_id):raise ValueError('invalid_account')
         with self.issuer.locked():
             account=self.issuer.accounts().get(account_id)
-            if not account:raise ValueError('account_missing')
+            if not account or account.get('deleted') or account.get('delete_pending'):raise ValueError('account_missing')
             vault=self.tokens()
             if existing is not None:
                 if not isinstance(existing,str) or not re.fullmatch(self.issuer.TOKEN_PATTERN,existing):raise ValueError('token_mismatch')
@@ -87,6 +87,35 @@ class Accounts:
             token=self.cipher.decrypt(vault[account_id].encode()).decode()
             if not hmac.compare_digest(account['token_hash'],hashlib.sha256(token.encode()).hexdigest()):raise ValueError('token_changed_outside_panel')
             return {'token':token}
+    def rename(self,account_id,name,device=None):
+        if not isinstance(account_id,str) or not re.fullmatch('[a-f0-9]{24}',account_id):raise ValueError('invalid_account')
+        with self.issuer.locked():
+            data=self.issuer.accounts();account=data.get(account_id)
+            if not account or account.get('deleted') or account.get('delete_pending'):raise ValueError('account_missing')
+            if device is None:
+                name,key=name_key(name)
+                if any(i!=account_id and not a.get('deleted') and name_key(a['name'])[1]==key for i,a in data.items()):raise ValueError('person_exists')
+                account['name']=name
+            else:
+                if not isinstance(device,str) or not re.fullmatch('[a-f0-9]{32}',device) or device not in account.get('devices',{}):raise ValueError('device_missing')
+                name=self.issuer.normalize_device_name(name)
+                self.issuer.ensure_device_names(account)[device]['name']=name
+            atomic_json(self.issuer.ROOT/'accounts.json',data)
+            return {'name':name}
+    def delete(self,account_id):
+        if not isinstance(account_id,str) or not re.fullmatch('[a-f0-9]{24}',account_id):raise ValueError('invalid_account')
+        try:
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(90);client.connect(str(self.issuer.SOCKET))
+                client.sendall(json.dumps({'operation':'admin-delete-account','id':account_id}).encode()+b'\n')
+                with client.makefile('rb') as reader:raw=reader.readline(4097)
+            if len(raw)>4096 or not raw.endswith(b'\n') or not json.loads(raw).get('ok'):raise ValueError('delete_incomplete')
+        except (OSError,ValueError):raise ValueError('delete_incomplete') from None
+        with self.issuer.locked():
+            account=self.issuer.accounts().get(account_id)
+            if not account or not account.get('deleted'):raise ValueError('delete_incomplete')
+            vault=self.tokens();vault.pop(account_id,None);atomic_json(self.vault/'tokens.json',vault)
+        return {'deleted':True}
     def listing(self):
         with self.issuer.locked():
             data=self.issuer.accounts();vault=self.tokens()
@@ -94,10 +123,10 @@ class Accounts:
             for a in data.values():self.issuer.ensure_device_names(a)
             if json.dumps(data,sort_keys=True)!=before:atomic_json(self.issuer.ROOT/'accounts.json',data)
             return [{'id':key,'name':a['name'],'enabled':bool(a.get('enabled')),'created':a.get('created'),
-                     'token_hint':a['token_hash'][:8],'token_available':key in vault,
+                     'token_hint':a['token_hash'][:8],'token_available':key in vault,'delete_pending':bool(a.get('delete_pending')),
                      'devices':[{'id':device,'identity':d['identity'],'name':a['device_names'][device]['name'],'number':a['device_names'][device]['number'],'enrolled':d.get('enrolled'),
                                  'disabled':bool(d.get('disabled'))} for device,d in a.get('devices',{}).items()]}
-                    for key,a in data.items()]
+                    for key,a in data.items() if not a.get('deleted')]
 
 
 def text(value):
@@ -171,10 +200,13 @@ class Handler(socketserver.StreamRequestHandler):
             elif op=='issue':result=accounts.issue(data.get('name'))
             elif op=='reveal':result=accounts.token(data.get('id'))
             elif op=='import':result=accounts.token(data.get('id'),data.get('token',''))
+            elif op=='rename':result=accounts.rename(data.get('id'),data.get('name'))
+            elif op=='rename-device':result=accounts.rename(data.get('id'),data.get('name'),data.get('device',''))
+            elif op=='delete':result=accounts.delete(data.get('id'))
             else:raise ValueError('operation_not_allowed')
             response={'ok':True,'data':result}
         except ValueError as error:
-            allowed={'invalid_name','person_exists','invalid_account','account_missing','token_mismatch','legacy_token_unavailable','token_changed_outside_panel','operation_not_allowed','request_size'}
+            allowed={'invalid_name','invalid_device_name','device_missing','delete_incomplete','person_exists','invalid_account','account_missing','token_mismatch','legacy_token_unavailable','token_changed_outside_panel','operation_not_allowed','request_size'}
             response={'ok':False,'error':str(error) if str(error) in allowed else 'invalid_request'}
         except Exception:response={'ok':False,'error':'broker_unavailable'}
         self.wfile.write(json.dumps(response,separators=(',',':')).encode()+b'\n')
