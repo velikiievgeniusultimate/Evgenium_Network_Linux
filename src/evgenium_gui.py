@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import http.server
 import json
 import os
@@ -11,12 +12,14 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 
 APP_NAME = "Evgenium Network"
 VPN = "/usr/local/bin/vpn"
 HERE = pathlib.Path(__file__).resolve().parent
 QML_FILE = HERE / "evgenium_gui.qml"
+WIDGET_FILE = HERE / "evgenium_widget.qml"
 MAX_BODY = 64 * 1024
 
 
@@ -160,6 +163,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         try:
             payload = self._read_json()
+            if self.path == "/api/settings":
+                subprocess.Popen([sys.executable, str(HERE / "evgenium_gui.py"), "--detach"], stdin=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+                self._json({"ok": True})
+                return
             if self.path == "/api/action":
                 token = encode_ui_payload(payload)
                 output = run_vpn(["ui", "action", "-"], secret_input=token)
@@ -179,14 +186,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def state_log_path() -> pathlib.Path:
     root = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local" / "state"))
-    path = root / "evgenium-network" / "gui.log"
+    path = root / "evgenium-network" / ("widget.log" if "--widget" in sys.argv else "gui.log")
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def launch_detached() -> int:
-    if not QML_FILE.is_file():
-        print(f"Не найден интерфейс: {QML_FILE}", file=sys.stderr)
+    qml_file = WIDGET_FILE if "--widget" in sys.argv else QML_FILE
+    if not qml_file.is_file():
+        print(f"Не найден интерфейс: {qml_file}", file=sys.stderr)
         return 1
     if not find_qml_runtime():
         print("Не найден Qt 6 QML runtime (Arch: qt6-declarative; Fedora: qt6-qtdeclarative-devel).", file=sys.stderr)
@@ -194,7 +202,7 @@ def launch_detached() -> int:
     log_path = state_log_path()
     with log_path.open("ab", buffering=0) as log:
         subprocess.Popen(
-            [sys.executable, str(pathlib.Path(__file__).resolve())],
+            [sys.executable, str(pathlib.Path(__file__).resolve()), *[arg for arg in sys.argv[1:] if arg != "--detach"]],
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=log,
@@ -209,8 +217,9 @@ def run_gui() -> int:
     if not qml:
         print("Не найден Qt 6 QML runtime (Arch: qt6-declarative; Fedora: qt6-qtdeclarative-devel).", file=sys.stderr)
         return 1
-    if not QML_FILE.is_file():
-        print(f"Не найден интерфейс: {QML_FILE}", file=sys.stderr)
+    qml_file = WIDGET_FILE if "--widget" in sys.argv else QML_FILE
+    if not qml_file.is_file():
+        print(f"Не найден интерфейс: {qml_file}", file=sys.stderr)
         return 1
 
     token = secrets.token_urlsafe(32)
@@ -222,14 +231,47 @@ def run_gui() -> int:
     env = os.environ.copy()
     env.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
     env.setdefault("QML_DISABLE_DISK_CACHE", "0")
+    env.setdefault("QT_FORCE_STDERR_LOGGING", "1")
 
     try:
-        cp = subprocess.run(
-            [qml, str(QML_FILE), "--", str(port), token],
-            env=env,
-            check=False,
-        )
-        return int(cp.returncode)
+        widget = "--widget" in sys.argv
+        # Keep one tray icon per user/session; the lock is released on exec/exit.
+        lock = None
+        if widget:
+            lock = state_log_path().with_name("widget.lock").open("a+")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                lock.close()
+                return 0
+        command = [qml, "--apptype", "widget" if widget else "gui", str(qml_file), "--"]
+        command += [arg for arg in ("--show", "--preview") if arg in sys.argv]
+        command += [str(port), token]
+        if not widget:
+            return subprocess.run(command, env=env, check=False).returncode
+        def assets():
+            return tuple((p.stat().st_mtime_ns, p.stat().st_size) for p in (HERE / "evgenium_gui.py", WIDGET_FILE))
+        before = assets()
+        child = subprocess.Popen(command, env=env)
+        reload_widget = False
+        try:
+            while child.poll() is None:
+                time.sleep(1)
+                if assets() != before:
+                    # Let internal-after-update finish replacing the asset set.
+                    time.sleep(2)
+                    reload_widget = True
+                    break
+        finally:
+            if child.poll() is None:
+                child.terminate()
+                try: child.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    child.kill(); child.wait()
+            lock.close()
+        if reload_widget:
+            os.execv(sys.executable, [sys.executable, str(HERE / "evgenium_gui.py"), "--widget"])
+        return child.returncode
     finally:
         server.shutdown()
         server.server_close()
