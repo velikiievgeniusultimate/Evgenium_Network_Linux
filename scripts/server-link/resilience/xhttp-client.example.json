@@ -44,7 +44,7 @@
         },
         "xhttpSettings": {
           "path": "/replace-private-path",
-          "mode": "packet-up"
+          "mode": "stream-one"
         }
       },
       "mux": {
