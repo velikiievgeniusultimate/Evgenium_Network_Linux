@@ -37,3 +37,27 @@ VPN, отказы и нагрузочные тесты на рабочем ко�
 Скорость StarFive ограничена его CPU и не является оценкой потолка x86-клиента.
 
 Проверка логики: `python -m unittest discover -s tests -p test_server_resilience.py`.
+
+## VLESS + REALITY и XHTTP
+
+Дополнительные независимые службы: `evgenium-link-reality` и
+`evgenium-link-xhttp` на RU; `evgenium-carrier-reality` и
+`evgenium-carrier-xhttp` на EE. Они передают зашифрованные WG-пакеты,
+не возвращают старый клиентский интерфейс профилей VLESS.
+Отдельный бинарник и конфигурации EE находятся в `/opt/evgenium-carriers`
+и `/etc/evgenium-carriers`; рабочий 3X-UI не перезапускается.
+
+Примеры `reality-*.example.json` и `xhttp-*.example.json` требуют новых UUID,
+ключей REALITY, short ID и пути XHTTP. Это шаблоны, не готовые секреты.
+EE TCP 24575/24576 ограничены firewall источником RU; RU слушает только
+127.0.0.1 UDP 24555/24557. Выход Xray разрешает только UDP 127.0.0.1:24547
+через точный `finalRules`, остальные назначения блокируются. Разрешение
+нужно и в routing, и в freedom: новые Xray блокируют частные адреса по умолчанию.
+
+Проверки: `evg-probe-reality` / `evg-probe-xhttp`, отдельные WG-ключи,
+адреса 10.203.90.5/.6. Перед добавлением в выбор нужно расширить `probes.json`
+на обоих серверах и `/opt/evgenium-link/transport.py` соответствующими
+localhost-портами. Предпочтительный маршрут задаётся отдельно; наличие
+REALITY/XHTTP само по себе не доказывает преимущество по скорости.
+Первый handshake может занять несколько секунд. Не включайте `realitySettings.show`
+на постоянной основе: отладочный вывод содержит материал рукопожатия.

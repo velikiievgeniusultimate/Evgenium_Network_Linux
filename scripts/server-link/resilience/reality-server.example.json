@@ -1,0 +1,76 @@
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "none"
+  },
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": 24575,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "00000000-0000-4000-8000-000000000000",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "target": "www.cloudflare.com:443",
+          "serverNames": [
+            "www.cloudflare.com"
+          ],
+          "privateKey": "REPLACE_WITH_SEPARATE_KEY",
+          "shortIds": [
+            "REPLACE_SHORT_ID"
+          ],
+          "show": false
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "blackhole",
+      "tag": "block"
+    },
+    {
+      "protocol": "freedom",
+      "tag": "wg",
+      "settings": {
+        "finalRules": [
+          {
+            "action": "allow",
+            "network": "udp",
+            "ip": [
+              "127.0.0.1/32"
+            ],
+            "port": "24547"
+          },
+          {
+            "action": "block",
+            "blockDelay": "0"
+          }
+        ]
+      }
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "ip": [
+          "127.0.0.1/32"
+        ],
+        "port": "24547",
+        "network": "udp",
+        "outboundTag": "wg"
+      }
+    ]
+  }
+}

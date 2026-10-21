@@ -7,6 +7,10 @@ class Selection(unittest.TestCase):
  def test_dead_main_requires_proven_backup(self):
   self.assertIsNone(s.choose('tcp',{'hy':1,'home':0},2,20))
   self.assertEqual(s.choose('tcp',{'hy':2,'home':3},2,20),'hy')
+ def test_reality_xhttp_are_verified_last_resorts(self):
+  self.assertEqual(s.choose('hy',{'reality':2,'xhttp':2},2,20),'reality')
+  self.assertEqual(s.choose('reality',{'xhttp':2},2,20),'xhttp')
+  self.assertIsNone(s.choose('hy',{'reality':1,'xhttp':1},2,20))
  def test_no_flapping(self):
   self.assertIsNone(s.choose('tcp',{'hy':5},5,5))
   self.assertIsNone(s.choose('hy',{'tcp':89},0,180))

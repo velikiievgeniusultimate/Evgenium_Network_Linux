@@ -9,8 +9,8 @@ import signal
 import subprocess
 import time
 
-ORDER = ('tcp', 'hy', 'home')
-PORTS = {'tcp': 24549, 'hy': 24545, 'home': 24553}
+ORDER = ('tcp', 'hy', 'home', 'reality', 'xhttp')
+PORTS = {'tcp': 24549, 'hy': 24545, 'home': 24553, 'reality': 24555, 'xhttp': 24557}
 BASE = Path('/var/lib/evgenium-link')
 LOG = Path('/var/log/evgenium-link/health.jsonl')
 STOP = False
@@ -65,7 +65,7 @@ def main():
     last_switch = time.monotonic()-180
     last_egress = 0
     egress_ok = None
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         while not STOP:
             start = time.monotonic()
             if (BASE/'maintenance').exists() or (BASE/'resource-hold').exists():
