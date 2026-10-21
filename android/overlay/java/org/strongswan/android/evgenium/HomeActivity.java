@@ -224,6 +224,7 @@ public class HomeActivity extends Activity {
           .putBoolean("lab-forward", i.getBooleanExtra("lab-forward", false))
           .commit();
     String cmd = i.getStringExtra("lab");
+    i.removeExtra("lab"); // Do not repeat an ADB command when Android recreates the screen.
     if (cmd == null)
       return;
     if ("fault".equals(cmd)) {
