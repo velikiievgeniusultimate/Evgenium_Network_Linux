@@ -145,9 +145,12 @@ def tcp():
    if len(h)==2:
     q=c.recv(struct.unpack('!H',h)[0]);r=reply(q);c.sendall(struct.pack('!H',len(r))+r)
 threading.Thread(target=tcp,daemon=True).start()
-s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind(('0.0.0.0',53))
-while True:
- q,a=s.recvfrom(1024);s.sendto(reply(q),a)
+def udp(address):
+ s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind((address,53))
+ while True:
+  q,a=s.recvfrom(1024);s.sendto(reply(q),a)
+if sys.argv[1]=='12':threading.Thread(target=udp,args=('172.29.247.2',),daemon=True).start()
+udp('1.1.1.1')
 '''
 
 def main():
