@@ -168,7 +168,8 @@ C.ApplicationWindow {
         anchors.centerIn: parent
         width: Math.min(root.width-60,760)
         height: Math.min(root.height-50,620)
-        contentItem: ColumnLayout {
+        ColumnLayout {
+            anchors.fill: parent
             spacing: 12
             C.Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: "Версия, этапы подключения, ошибки и замеры. Без токенов, ключей, истории сайтов и списка приложений. Отправка добровольная; сервер хранит отчёт до 7 дней." }
             C.ScrollView { Layout.fillWidth: true; Layout.fillHeight: true
