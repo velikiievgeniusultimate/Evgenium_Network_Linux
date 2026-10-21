@@ -38,7 +38,7 @@ table inet evg_direct {
   iifname "evg-dir-host" drop
   oifname "evg-dir-host" ip daddr != @permit drop
   oifname "evg-dir-host" ip daddr 10.203.93.2 udp dport 4500 accept
-  oifname "evg-dir-host" ip daddr 10.203.93.2 tcp dport 24571 accept
+  oifname "evg-dir-host" ip daddr 10.203.93.2 tcp dport {24571,24578} accept
   oifname "evg-dir-host" ct state established,related accept
   oifname "evg-dir-host" drop
  }
@@ -46,7 +46,7 @@ table inet evg_direct {
 table ip evg_direct_nat {
  chain pre { type nat hook prerouting priority dstnat; policy accept;
   iifname "eth0" udp dport { 443, 24570 } dnat to 10.203.93.2:4500
-  iifname "eth0" tcp dport 24571 dnat to 10.203.93.2:24571
+  iifname "eth0" tcp dport {24571,24578} dnat to 10.203.93.2
  }
  chain post { type nat hook postrouting priority srcnat; policy accept;
   ip saddr 10.203.93.2 oifname "eth0" masquerade
@@ -59,7 +59,7 @@ table inet evg_direct_inside {
   iifname "lo" accept
   ct state established,related accept
   udp dport 4500 accept
-  tcp dport 24571 accept
+  tcp dport {24571,24578} accept
   ip saddr 10.77.0.0/24 ip daddr 10.77.0.1 tcp dport 8443 ipsec in reqid 271 accept
   ip protocol icmp accept
  }

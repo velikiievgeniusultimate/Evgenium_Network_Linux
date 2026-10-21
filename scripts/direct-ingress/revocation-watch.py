@@ -18,7 +18,7 @@ while True:
   if fresh and digest!=last:
    result=swan('--load-creds','--noprompt','--file',str(ROOT/'connection.conf'))
    if result.returncode or 'failed' in (result.stdout+result.stderr).lower():raise RuntimeError('crl_load_failed')
-   for unit in ['evgenium-direct-tls','evgenium-direct-health']:
+   for unit in ['evgenium-direct-tls','evgenium-direct-health','evgenium-direct-evgt']:
     if call(['systemctl','try-restart',unit]).returncode:raise RuntimeError('crl_reload_failed')
    last=digest
   disabled=set(state['disabled'])

@@ -1,0 +1,43 @@
+Evgenium Network0.5.1 / EvgeniumTunnel0.2.0, 22 October2026 MSK
+
+New public device candidate: ee-evgt, Estonia TCP24578, existing per-device
+certificate and CA, fresh signed CRL, local IKE4500 forwarding. Existing tokens
+remain valid. Interserver lab listener24577 and lab CA are not reused for users.
+
+Real StarFive client, isolated comparisons, 2MiB per direction:
+route     download Mbps  upload Mbps  latency ms  score
+ru-udp    30.76          11.52        84.2        11.796
+ee-udp    handshake timeout; not a successful measurement
+ ee-tls   13.70          12.94        122.8        8.246
+ee-evgt   23.95          12.99        78.9        12.079
+Order: ee-evgt, ru-udp, ee-tls, ee-udp. The first two scores are close; this single
+short run does not predict desktop ranking or establish a general speed winner.
+A preceding separate evgt-only series measured32–35Mbps down and30–36Mbps up.
+All successful candidate integrity probes passed.
+
+New candidate: Discord API200, Discord CDN200, exit IP38.180.164.67.
+SIGSTOP of only the new transport caused an external HTTPS request in the
+isolated VPN namespace to time out without returning an IP. SIGCONT restored
+internal and external checks. Full-device CLI on StarFive then selected ee-evgt
+with the measured ranking. Killing only its carrier process triggered automatic
+fallback to ru-udp in27.3s, recorded one loss for ee-evgt and retained Estonia exit.
+The lab was explicitly disconnected and systemd-resolved restored afterward.
+No desktop VPN/routes/DNS were changed for these tests.
+
+Initial lab failures retained: first handshake attempts timed out because the
+StarFive's separate base firewall allowed only older lab ports. Added a scoped
+TCP24578 exception for the lab namespace. Another test harness tried to decode a
+PNG as UTF-8 after successful transport tests; corrected the harness to count
+bytes and HTTP status, then reran service checks successfully.
+
+Anonymous external TLS connection to the new ingress was rejected with
+TLSV13_ALERT_CERTIFICATE_REQUIRED. Unit tests cover valid/revoked/expired/future/
+foreign/missing CRLs, non-device identities, unverified chains and per-device
+session limits. Go race tests and vet passed.95 Python unit tests passed.
+Tests also cover pinned automatic binary download, rejection of a bad checksum,
+cache reuse, four-path report filtering and old-rating invalidation.
+
+Known limits: TCP head-of-line blocking, short ranking samples, no independent
+security audit. This is one automatically ranked option, not a forced route.
+The old small-socket laboratory failure remains in EXPERIMENT-2026-10-22.txt;
+client/default socket buffers are4MiB and the ranking can move to another route.

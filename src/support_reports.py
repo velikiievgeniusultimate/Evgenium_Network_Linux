@@ -3,7 +3,7 @@ import json,math,platform,re,secrets,time,subprocess
 from pathlib import Path
 PHASES={'off','prepare','token','daemon','handshake','health','measure','routing','connected','checking','repairing','failed','ranking','reference','starting','interrupted','egress_wait'}
 CODES={'','none','other','connection_failed','path_health_failed','confirmed_speed_drop','ranking_exhausted','system_dns_failed','private_dns_stopped','private_dns_not_ready','handshake_failed','estonia_egress_failed','host_egress_failed','enrollment_unavailable','integrity_failed','sa_not_installed','health_failed','command_failed','tls_carrier_stopped','tls_carrier_not_ready'}
-PATHS={'ru-udp','ee-udp','ee-tls',''}
+PATHS={'ru-udp','ee-udp','ee-tls','ee-evgt',''}
 XFRM={'XfrmInError','XfrmInNoStates','XfrmInStateProtoError','XfrmInStateSeqError','XfrmInStateExpired','XfrmInStateMismatch','XfrmInTmplMismatch','XfrmInNoPols','XfrmInPolBlock','XfrmOutError','XfrmOutNoStates','XfrmOutStateExpired','XfrmOutPolBlock'}
 NUMBERS=XFRM|{'download_mbps','upload_mbps','latency_ms','score','losses','sample_bytes','rx_bytes','tx_bytes','rx_packets','tx_packets','rx_errors','tx_errors','rx_dropped','tx_dropped'}
 def number(v):
@@ -30,7 +30,7 @@ def clean_bundle(body):
  result['state']={k:state.get(k) is True for k in ('active','guard','namespace','dns_fallback')}
  result['paths']={}
  paths=body.get('paths',{})
- if not isinstance(paths,dict) or len(paths)>3:raise ValueError('paths')
+ if not isinstance(paths,dict) or len(paths)>len(PATHS)-1:raise ValueError('paths')
  for name,values in paths.items():
   if name not in PATHS-{''}:raise ValueError('path')
   if not isinstance(values,dict):raise ValueError('path')

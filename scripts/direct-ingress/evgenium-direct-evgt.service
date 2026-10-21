@@ -1,0 +1,22 @@
+[Unit]
+Description=EvgeniumTunnel authenticated device ingress
+After=evgenium-direct-network.service evgenium-direct-ike.service
+Requires=evgenium-direct-network.service
+[Service]
+NetworkNamespacePath=/run/netns/evg-direct
+ExecStart=/opt/evgenium-direct/evgenium-tunnel -mode server -listen 0.0.0.0:24578 -udp-peer 127.0.0.1:4500 -ca /etc/evgenium-direct/ca.pem -cert /etc/evgenium-direct/server.pem -key /etc/evgenium-direct/server-key.pem -crl /etc/evgenium-direct/devices.pem -max-sessions 32
+Restart=on-failure
+RestartSec=3
+MemoryMax=512M
+TasksMax=128
+CPUQuota=200%
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0077
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+[Install]
+WantedBy=multi-user.target

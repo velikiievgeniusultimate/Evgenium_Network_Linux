@@ -30,6 +30,9 @@ def setup(legacy=True):
     Path('/etc/group').write_text('fixture:x:0:\n')
     Path('/opt/vpn-manager/bin/xray').write_text('#!/bin/sh\necho Xray 26.7.28\n')
     Path('/opt/vpn-manager/bin/xray').chmod(0o755)
+    private=Path('/etc/vpn-manager/starfive-tunnel');private.mkdir(mode=0o700,exist_ok=True)
+    binary_name=json.loads((ROOT/'fixture-evgt.json').read_text())['name']
+    (private/binary_name).write_bytes((ROOT/'fixture-evgt').read_bytes());(private/binary_name).chmod(0o700)
     if not legacy:return
     data={'engine':'xray','owner_user':'fixture','owner_home':'/home/fixture',
           'config_dir':'/home/fixture/Vpn/VPN configs','direct_sites':'/home/fixture/Vpn/DIRECT sites.txt',
@@ -136,6 +139,17 @@ if __name__=='__main__':
                          f'dist/vpn-manager-{VERSION}.tar.gz','scripts/test-upgrade-sandbox.py'):
                 target=snapshot/name;target.parent.mkdir(parents=True,exist_ok=True)
                 shutil.copy2(ROOT/name,target)
+            # Download and verify the pinned dependency before entering offline namespaces.
+            manager=load(ROOT/'src/vpnctl.py')
+            manager.starfive_tunnel.ROOT=fake/'transport-cache'
+            supplied=os.environ.get('EVG_TEST_TUNNEL')
+            if supplied:
+                manager.starfive_tunnel.ROOT.mkdir()
+                target=manager.starfive_tunnel.ROOT/('evgenium-tunnel-'+manager.starfive_tunnel.EVGT_VERSION)
+                shutil.copy2(supplied,target)
+            binary=manager.starfive_tunnel.ensure_evgt_binary()
+            shutil.copy2(binary,snapshot/'fixture-evgt')
+            (snapshot/'fixture-evgt.json').write_text(json.dumps({'name':binary.name}))
             stub=fake/'systemctl';stub.write_text('#!/bin/sh\ncase "$*" in *is-active*) exit 3;; esac\nexit 0\n');stub.chmod(0o755)
             ip=fake/'ip';ip.write_text('#!/bin/sh\nexit 1\n');ip.chmod(0o755)
             args=['bwrap','--die-with-parent','--unshare-all','--uid','0','--gid','0','--ro-bind','/','/',

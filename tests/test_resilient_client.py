@@ -76,7 +76,7 @@ class Recovery(unittest.TestCase):
    tunnel.restore_resolver_file(data,path);self.assertEqual(path.read_text(),'changed by network manager')
  def test_measurement_refuses_unowned_routing_table(self):
   import subprocess
-  with tempfile.TemporaryDirectory() as directory,patch.object(tunnel,'ROOT',Path(directory)),patch.object(tunnel,'command',return_value=subprocess.CompletedProcess([],0,'default via 192.0.2.1','')):
+  with tempfile.TemporaryDirectory() as directory,patch.object(tunnel,'ROOT',Path(directory)),patch.object(tunnel,'command',return_value=subprocess.CompletedProcess([],0,'default via 192.0.2.1','')),patch.object(Path,'exists',return_value=False):
    with self.assertRaisesRegex(RuntimeError,'full_table_collision'):tunnel.prepare_data_plane('192.0.2.2')
    self.assertFalse(tunnel.full_state().exists())
 
