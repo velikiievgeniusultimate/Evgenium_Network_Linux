@@ -212,6 +212,56 @@ def launch_detached() -> int:
     return 0
 
 
+def pin_desktop_window(pid: int, env: dict) -> bool:
+    """Set the EWMH desktop role on our own X11 window (also on XWayland).
+
+    QQuickWindow does not export Qt.Desktop as _NET_WM_WINDOW_TYPE_DESKTOP.
+    The desktop role makes XFWM/KWin keep it on all workspaces, below apps,
+    outside the task switcher and visible when Show Desktop is used.
+    """
+    if not env.get("DISPLAY") or env.get("QT_QPA_PLATFORM") in {"offscreen", "minimal", "wayland"}:
+        return True
+    import ctypes as c
+    import ctypes.util
+    try:
+        lib = c.CDLL(ctypes.util.find_library("X11") or "libX11.so.6")
+    except OSError:
+        return True
+    ulong = c.c_ulong
+    lib.XOpenDisplay.argtypes = [c.c_char_p]; lib.XOpenDisplay.restype = c.c_void_p
+    lib.XDefaultRootWindow.argtypes = [c.c_void_p]; lib.XDefaultRootWindow.restype = ulong
+    lib.XInternAtom.argtypes = [c.c_void_p, c.c_char_p, c.c_int]; lib.XInternAtom.restype = ulong
+    lib.XGetWindowProperty.argtypes = [c.c_void_p, ulong, ulong, c.c_long, c.c_long, c.c_int, ulong, c.POINTER(ulong), c.POINTER(c.c_int), c.POINTER(ulong), c.POINTER(ulong), c.POINTER(c.c_void_p)]
+    lib.XChangeProperty.argtypes = [c.c_void_p, ulong, ulong, ulong, c.c_int, c.c_int, c.c_void_p, c.c_int]
+    lib.XRaiseWindow.argtypes = [c.c_void_p, ulong]
+    lib.XFree.argtypes = [c.c_void_p]
+    lib.XCloseDisplay.argtypes = [c.c_void_p]
+    display = lib.XOpenDisplay(env["DISPLAY"].encode())
+    if not display:
+        return False
+    try:
+        def atom(name):
+            return lib.XInternAtom(display, name.encode(), 0)
+        def values(window, name):
+            actual, count, after = ulong(), ulong(), ulong()
+            fmt, data = c.c_int(), c.c_void_p()
+            result = lib.XGetWindowProperty(display, window, atom(name), 0, 65536, 0, 0, c.byref(actual), c.byref(fmt), c.byref(count), c.byref(after), c.byref(data))
+            try:
+                return list(c.cast(data, c.POINTER(ulong))[:count.value]) if result == 0 and fmt.value == 32 and data.value else []
+            finally:
+                if data.value: lib.XFree(data)
+        for window in values(lib.XDefaultRootWindow(display), "_NET_CLIENT_LIST"):
+            if values(window, "_NET_WM_PID") != [pid]:
+                continue
+            role = (ulong * 1)(atom("_NET_WM_WINDOW_TYPE_DESKTOP"))
+            lib.XChangeProperty(display, window, atom("_NET_WM_WINDOW_TYPE"), 4, 32, 0, c.cast(role, c.c_void_p), 1)
+            lib.XRaiseWindow(display, window)
+            return True
+        return False
+    finally:
+        lib.XCloseDisplay(display)
+
+
 def run_gui() -> int:
     qml = find_qml_runtime()
     if not qml:
@@ -235,7 +285,7 @@ def run_gui() -> int:
 
     try:
         widget = "--widget" in sys.argv
-        # Keep one tray icon per user/session; the lock is released on exec/exit.
+        # Keep one desktop widget per user/session; the lock is released on exec/exit.
         lock = None
         if widget:
             lock = state_log_path().with_name("widget.lock").open("a+")
@@ -244,18 +294,24 @@ def run_gui() -> int:
             except BlockingIOError:
                 lock.close()
                 return 0
-        command = [qml, "--apptype", "widget" if widget else "gui", str(qml_file), "--"]
+        command = [qml, "--apptype", "gui", str(qml_file), "--"]
         command += [arg for arg in ("--show", "--preview") if arg in sys.argv]
+        if widget: command.append(str(state_log_path().with_name("widget.ini")))
         command += [str(port), token]
         if not widget:
             return subprocess.run(command, env=env, check=False).returncode
         def assets():
             return tuple((p.stat().st_mtime_ns, p.stat().st_size) for p in (HERE / "evgenium_gui.py", WIDGET_FILE))
         before = assets()
+        if env.get("DISPLAY"):
+            env.setdefault("QT_QPA_PLATFORM", "xcb")
         child = subprocess.Popen(command, env=env)
+        pinned = False
         reload_widget = False
         try:
             while child.poll() is None:
+                if not pinned:
+                    pinned = pin_desktop_window(child.pid, env)
                 time.sleep(1)
                 if assets() != before:
                     # Let internal-after-update finish replacing the asset set.

@@ -20,7 +20,7 @@ class RecoveryTests(unittest.TestCase):
         for name in ('sync_system_files','cmd_gui_install','retire_legacy','core_update','ensure_gui_dependencies'):
             stack.enter_context(patch.object(m,name,side_effect=lambda *args,n=name:events.append(n)))
         stack.enter_context(patch.object(m,'_widget_package_dir',return_value=folder/'absent-widget'))
-        stack.enter_context(patch.object(m,'_tray_autostart_path',return_value=folder/'absent-tray'))
+        stack.enter_context(patch.object(m,'_desktop_autostart_path',return_value=folder/'absent-tray'))
         stack.enter_context(patch.object(m.policy,'migration',side_effect=lambda _:events.append('migration')))
         stack.enter_context(patch.object(m.starfive_tunnel,'status',return_value={'running':False}))
         stack.enter_context(patch.object(m.starfive_tunnel,'token_status',return_value={'has_token':False}))

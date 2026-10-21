@@ -1,4 +1,4 @@
-"""Exercise the shipped tray QML against an authenticated disposable API."""
+"""Exercise the shipped desktop QML against an authenticated disposable API."""
 import base64
 import contextlib
 import http.server
@@ -16,23 +16,23 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).parents[1]
 QML = shutil.which('qml6') or shutil.which('qml-qt6') or shutil.which('qml')
-spec = importlib.util.spec_from_file_location('tray_manager', ROOT/'src/vpnctl.py')
+spec = importlib.util.spec_from_file_location('desktop_manager', ROOT/'src/vpnctl.py')
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 class WidgetInstallTests(unittest.TestCase):
     def test_release_installs_and_refreshes_widget_without_changing_payload_format(self):
         with tempfile.TemporaryDirectory() as td, patch.object(m.shutil, 'which', return_value=None):
             settings = {'owner_user': pwd.getpwuid(os.getuid()).pw_name, 'owner_home': td}
-            m.cmd_tray_install(settings)
+            m.cmd_desktop_install(settings)
             package = m._gui_package_dir(settings)
             self.assertEqual((package/'evgenium_widget.qml').read_bytes(), (ROOT/'src/evgenium_widget.qml').read_bytes())
             self.assertEqual(base64.b64decode(m.DESKTOP_WIDGET_QML_B64), (ROOT/'src/evgenium_widget.qml').read_bytes())
-            self.assertIn('--widget --detach', m._tray_autostart_path(settings).read_text())
+            self.assertIn('--widget --detach', m._desktop_autostart_path(settings).read_text())
             (package/'evgenium_widget.qml').write_text('old version')
             m.cmd_gui_install(settings)  # This runs unconditionally from vpn update.
             self.assertEqual((package/'evgenium_widget.qml').read_bytes(), (ROOT/'src/evgenium_widget.qml').read_bytes())
-            m.cmd_tray_remove(settings)
-            self.assertFalse(m._tray_autostart_path(settings).exists())
+            m.cmd_desktop_remove(settings)
+            self.assertFalse(m._desktop_autostart_path(settings).exists())
             self.assertTrue((package/'evgenium_gui.qml').exists())
 
 @unittest.skipUnless(QML, 'Qt QML runtime not installed')
@@ -65,8 +65,8 @@ class WidgetQmlTests(unittest.TestCase):
                 text=(ROOT/'src/evgenium_widget.qml').read_text()
                 i=text.rfind('}');text=text[:i]+checks+'\nTimer { interval: 4500; running: true; onTriggered: { console.error("test timeout"); Qt.exit(3) } }\n'+text[i:]
                 qml.write_text(text)
-                # Qt labs platform is provided by qt6-declarative on Arch.
-                result=subprocess.run([QML,'--apptype','widget',str(qml),'--','--preview',str(server.server_port),'test-token'],env={**os.environ,'QT_QPA_PLATFORM':'offscreen','QT_QUICK_BACKEND':'software','QML_DISABLE_DISK_CACHE':'1','QT_FORCE_STDERR_LOGGING':'1'},capture_output=True,text=True,timeout=7)
+                # Test UI actions only against this fake HTTP server.
+                result=subprocess.run([QML,'--apptype','widget',str(qml),'--','--preview',str(Path(td)/'widget.ini'),str(server.server_port),'test-token'],env={**os.environ,'QT_QPA_PLATFORM':'offscreen','QT_QUICK_BACKEND':'software','QML_DISABLE_DISK_CACHE':'1','QT_FORCE_STDERR_LOGGING':'1'},capture_output=True,text=True,timeout=7)
                 self.assertEqual(result.returncode,0,result.stdout+result.stderr)
                 self.assertIn('WIDGET PASSED',result.stdout+result.stderr)
                 self.assertNotIn('TypeError',result.stderr)
@@ -78,6 +78,7 @@ class WidgetQmlTests(unittest.TestCase):
         posts=self.exercise('''
 property int step: 0
 Timer { interval: 50; running: true; repeat: true; onTriggered: {
+    if (!root.visible || root.width!==164 || root.height!==48) { console.error("desktop widget disappeared or changed size"); Qt.exit(1); return }
     if (!root.ready || root.busy || root.statePending) return
     if (root.step===0) { root.step=1; root.action("connect") }
     else if (root.step===1 && root.connected) { root.step=2; root.action("disconnect") }
@@ -120,7 +121,7 @@ class WidgetLifecycleTests(unittest.TestCase):
             source=(ROOT/'src/evgenium_gui.py').read_text().replace('qml = find_qml_runtime()', 'qml = '+repr(str(runner)))
             script=folder/'evgenium_gui.py';script.write_text(source)
             asset=folder/'evgenium_widget.qml';asset.write_text('old asset')
-            env={**os.environ,'XDG_STATE_HOME':str(folder/'state')}
+            env={**os.environ,'XDG_STATE_HOME':str(folder/'state'),'QT_QPA_PLATFORM':'offscreen'}
             proc=subprocess.Popen([sys.executable,str(script),'--widget'],env=env,start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
             def count():return len(launches.read_text().splitlines()) if launches.exists() else 0
             def await_count(n):
@@ -134,7 +135,7 @@ class WidgetLifecycleTests(unittest.TestCase):
                 await_count(1)
                 second=subprocess.run([sys.executable,str(script),'--widget'],env=env,capture_output=True,timeout=3)
                 self.assertEqual(second.returncode,0,second.stderr)
-                self.assertEqual(count(),1,'second launch created a duplicate tray')
+                self.assertEqual(count(),1,'second launch created a duplicate widget')
                 asset.write_text('updated asset from vpn update')
                 await_count(2)
                 self.assertEqual(count(),2)
