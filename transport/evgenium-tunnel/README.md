@@ -1,0 +1,62 @@
+# EvgeniumTunnel — experimental UDP transport
+
+Independent Go implementation of a bounded UDP carrier over mutually authenticated TLS 1.3. Designed to carry an existing encrypted WireGuard session between two controlled hosts. This is a working research prototype, **not a production VPN release or a claim of censorship resistance**. The VPN client installer and `vpn update` do not select this transport yet.
+
+## Build and test
+
+Linux, Go 1.24 or newer; standard library only.
+
+```sh
+go test -race ./...
+go vet ./...
+go test -run '^$' -fuzz FuzzFrames -fuzztime 10s
+CGO_ENABLED=0 go build -trimpath -o evgenium-tunnel .
+GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 go build -trimpath -o evgenium-tunnel-riscv64 .
+```
+
+Builds also support Linux amd64 and arm64. The executable never changes routes, DNS, firewall rules or global kernel settings. Both UDP endpoints must be loopback IPv4 addresses. Bind each WireGuard UDP socket in the same network namespace as the carrier; its interface can subsequently be moved into an isolated namespace.
+
+## Authentication and operation
+
+Use a dedicated private CA and distinct server/client certificates. The server certificate must have the server DNS name/IP in its SAN and serverAuth usage. The client certificate needs clientAuth usage and a CN equal to `-peer-name`. The CA private key is not required by the running transport. Keep private keys mode 0600; do not commit them.
+
+Example (documentation addresses; substitute your own):
+
+```sh
+# Server: only forwards authenticated traffic to a fixed local WireGuard socket.
+./evgenium-tunnel -mode server -listen 0.0.0.0:24577 \
+  -udp-peer 127.0.0.1:24547 -peer-name evgenium-client \
+  -ca ca.pem -cert server.pem -key server-key.pem
+
+# Client: WireGuard sends to 127.0.0.1:24561 from its fixed port 24567.
+./evgenium-tunnel -mode client -server 192.0.2.10:24577 \
+  -server-name 192.0.2.10 -udp-listen 127.0.0.1:24561 \
+  -udp-peer 127.0.0.1:24567 \
+  -ca ca.pem -cert client.pem -key client-key.pem
+```
+
+Restrict the server TCP port to intended source addresses with your firewall **before** starting it. The server permits up to eight concurrent sessions including unfinished handshakes (`-max-sessions`, hard limit 32). Each session gets a separate connected UDP socket. It does not accept remote destination addresses and cannot be used as an arbitrary proxy.
+
+Default datagram queue: 1024 packets, bounded at 4096. Default requested UDP receive buffer: 4 MiB. Linux may cap this; startup logs report the actual value. If granted CAP_NET_ADMIN, the process attempts SO_RCVBUFFORCE on its own socket only. Linux reports doubled accounting sizes. Do not interpret a successful setsockopt as proof of loss-free delivery.
+
+Packets queued for more than 500 ms are discarded and counted, preventing a long replay of obsolete traffic. The writer batches at most 32 already queued frames and immediately flushes sparse traffic. Optional `-pace-mbps` limits local UDP delivery; this option has not been benchmarked. It is not adaptive congestion control.
+
+TLS handshake timeout: 6 seconds; heartbeat interval: 5 seconds; read timeout: 20 seconds; write timeout: 10 seconds. The client reconnects after one second following a session failure. Local UDP binding errors are logged and retried after three seconds. A supervisor should restart the server after a crash. Certificate expiry is enforced; automatic certificate rotation is **not implemented**.
+
+## Wire format v1
+
+TLS 1.3, mutual certificate authentication, ALPN `evgenium/1`, no TLS session tickets. After authentication, each peer sends the eight-byte preamble `EVGT 00 01 00 00` (hex bytes after ASCII EVGT). All integers below are unsigned big endian.
+
+Each frame has an 11-byte header: type (1 byte), payload length (2 bytes), sequence (8 bytes). DATA type 1 has 1–4096 payload bytes and a strictly increasing sequence, starting at 1 per session. PING type 2 and PONG type 3 have an 8-byte timestamp payload; the sequence field is unused. A PONG echoes the timestamp. Incoming lengths/types are validated before payload allocation. Repeated/out-of-order DATA sequence values terminate the session. Sequence gaps count datagrams discarded before transmission; the protocol does not retransmit them itself.
+
+TLS supplies cryptographic confidentiality, integrity and peer authentication. No custom encryption is used. This wire protocol is deliberately identifiable; it does **not** imitate browser HTTPS, REALITY or XHTTP. TCP head-of-line blocking remains a limitation, especially with loss on the outer connection.
+
+## Diagnostics
+
+Every five seconds and on SIGUSR1, logs contain a cumulative JSON `metrics` snapshot with UTC milliseconds. Counters include received/delivered datagrams and bytes, application queue drops, stale drops, kernel socket overflow, sequence gaps, protocol errors, stream read errors, UDP delivery errors, reconnections, active sessions and latest heartbeat RTT. No payloads or credentials are logged. Compare deltas within one process lifetime; process restart resets counters. Kernel SO_RXQ_OVFL is reported with a subsequent received packet, so absence of a fresh sample is not proof of no loss. Metrics are process-wide across sessions.
+
+## Measured scope and limitations
+
+See `EXPERIMENT-2026-10-22.txt` for interleaved RU–Estonia measurements and a controlled queue-size experiment. These are short synthetic inner-TCP transfers, not desktop Internet benchmarks, long-term uptime measurements or evidence that an ISP filters a protocol. A small-socket failure remains unresolved and is explicitly included in the report.
+
+Not yet implemented/validated: independent security review, long-duration and many-client load tests, automatic certificate renewal/revocation, adaptive multipath scheduling, UDP congestion control, browser camouflage, production controller integration. No promise of uninterrupted connectivity or superiority to VLESS in general.
