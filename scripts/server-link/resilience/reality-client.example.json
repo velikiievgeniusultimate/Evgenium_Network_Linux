@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "none"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 24555,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "127.0.0.1",
+        "port": 24547,
+        "network": "udp"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "38.180.164.67",
+            "port": 24575,
+            "users": [
+              {
+                "id": "00000000-0000-4000-8000-000000000000",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "www.cloudflare.com",
+          "shortId": "REPLACE_SHORT_ID",
+          "fingerprint": "chrome",
+          "publicKey": "REPLACE_WITH_SEPARATE_KEY"
+        }
+      },
+      "mux": {
+        "enabled": false
+      }
+    }
+  ]
+}

@@ -63,12 +63,10 @@ class FullRelayTests(unittest.TestCase):
             self.assertEqual([c.args[0] for c in cmd.call_args_list],[['nft','-c','-f','-'],['nft','-f','-']])
             self.assertTrue(cmd.call_args.kwargs['data'].startswith('delete table inet '+t.FULL_GUARD+'\n'))
 
-    def test_retirement_is_scoped_to_previous_addresses(self):
+    def test_switch_does_not_destroy_exempt_sockets(self):
         with patch.object(t,'command') as cmd:
-            t.retire_previous_connections(['172.31.255.1'])
-            self.assertEqual(cmd.call_args_list[0].args[0],['ss','-K','src','172.31.255.1'])
-            self.assertEqual(len(cmd.call_args_list),3)
-            self.assertFalse(any('-F' in call.args[0] for call in cmd.call_args_list))
+            t.retire_previous_connections(['192.168.0.163','172.31.255.1'])
+            cmd.assert_not_called()
 
     def test_cleanup_is_idempotent_without_new_objects(self):
         with tempfile.TemporaryDirectory() as d,patch.object(t,'ROOT',Path(d)),patch.object(t,'command') as cmd:

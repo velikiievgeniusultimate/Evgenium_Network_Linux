@@ -25,6 +25,8 @@ C.ApplicationWindow {
     readonly property color good: "#16a34a"
     readonly property color bad: "#dc2626"
 
+    property string reportText: ""
+    property string reportId: ""
     property int pageIndex: 0
     property bool busy: false
     property string errorText: ""
@@ -121,7 +123,7 @@ C.ApplicationWindow {
         api("POST", "/api/action", payload, function(_reply) {
             root.busy = false
             if (_reply.state) root.state = _reply.state
-            if (onSuccess) onSuccess()
+            if (onSuccess) onSuccess(_reply)
             root.refreshState()
             root.refreshRunning()
         }, true)
@@ -157,6 +159,29 @@ C.ApplicationWindow {
         repeat: true
         running: true
         onTriggered: root.refreshState()
+    }
+
+    C.Dialog {
+        id: supportDialog
+        title: "Отчёт для поддержки"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(root.width-60,760)
+        height: Math.min(root.height-50,620)
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 12
+            C.Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: "Версия, этапы подключения, ошибки и замеры. Без токенов, ключей, истории сайтов и списка приложений. Отправка добровольная; сервер хранит отчёт до 7 дней." }
+            C.ScrollView { Layout.fillWidth: true; Layout.fillHeight: true
+                C.TextArea { text: root.reportText; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "monospace"; font.pixelSize: 11 }
+            }
+            C.CheckBox { id: reportConsent; text: "Разрешаю отправить показанный отчёт владельцу VPN" }
+            RowLayout {
+                FlatButton { label: "Отправить"; primary: true; enabledButton: reportConsent.checked && !root.busy; onClicked: root.action({action:"report-send",report_id:root.reportId,consent:true},function(){supportDialog.close();root.errorText="Отчёт отправлен. ID: "+root.reportId}) }
+                FlatButton { label: "Закрыть"; onClicked: supportDialog.close() }
+            }
+            C.Label { visible: !root.state.active; Layout.fillWidth: true; wrapMode: Text.Wrap; text: "Если защита блокирует сеть, отчёт останется локально до восстановления или явного отключения VPN."; color: root.textMuted }
+        }
     }
 
     component FlatButton: Rectangle {
@@ -362,6 +387,9 @@ C.ApplicationWindow {
                                 C.Label { text: "Один токен на человека — для всех его устройств."; color: root.textMuted }
                             }
                         }
+                        FlatButton { label: "Отчёт для поддержки"; enabledButton: !root.busy && !root.state.connecting; onClicked: root.action({action:"report-preview"},function(reply){
+                            var report=JSON.parse(reply.output);root.reportId=report.report_id;root.reportText=JSON.stringify(report,null,2);reportConsent.checked=false;supportDialog.open()
+                        }) }
                         FlatButton { label: "Проверить обновления"; enabledButton: !root.busy; onClicked: root.action({action: "update"}) }
                     }
                     ColumnLayout {

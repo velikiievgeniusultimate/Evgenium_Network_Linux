@@ -16,7 +16,8 @@ import argparse
 
 LOG = Path('/var/log/evgenium-experimental')
 LOCK = threading.Lock()
-MAX_SIZE = 8 * 1024 * 1024
+SUPPORT_LIMITS = {}  # certificate fingerprint -> (hour, accepted report IDs)
+MAX_SIZE = 32 * 1024 * 1024
 MAX_AGE = 7 * 86400
 RU_DOMAINS = ('yandex.ru', 'mail.ru', 'www.rt.ru')
 BLOCK = hashlib.shake_256(b'evgenium-starfive-integrity-v1').digest(65536)
@@ -75,6 +76,9 @@ def control_probes():
 def clean_report(body):
     if not isinstance(body, dict) or body.get('schema') != 1:
         raise ValueError('schema')
+    if body.get('event') == 'support_bundle':
+        from support_reports import clean_bundle
+        return clean_bundle(body)
     if body.get('event') == 'global_test':
         return clean_global_report(body)
     if body.get('event') == 'connection_diagnostic':
@@ -191,12 +195,24 @@ def store_report(cert, body):
     record['received'] = int(time.time())
     with LOCK:
         prune()
+        if record['event'] == 'support_bundle':
+            hour = int(time.time()) // 3600
+            for device in list(SUPPORT_LIMITS):
+                if SUPPORT_LIMITS[device][0] != hour: del SUPPORT_LIMITS[device]
+            device = record['device']
+            if device not in SUPPORT_LIMITS:
+                if len(SUPPORT_LIMITS) >= 8192: raise ValueError('report_capacity')
+                SUPPORT_LIMITS[device] = (hour, set())
+            ids = SUPPORT_LIMITS[device][1]
+            if record['report_id'] in ids: return
+            if len(ids) >= 6: raise ValueError('hourly_limit')
         path = LOG / (time.strftime('%Y-%m-%d', time.gmtime()) + '.jsonl')
         if path.exists() and path.stat().st_size >= MAX_SIZE:
             raise ValueError('daily_limit')
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'a') as f:
             f.write(json.dumps(record, separators=(',', ':')) + '\n')
+        if record['event'] == 'support_bundle': ids.add(record['report_id'])
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -326,6 +342,7 @@ if __name__ == '__main__':
     parser.add_argument('--listen',default='10.77.0.1')
     parser.add_argument('--direct-only',action='store_true')
     parser.add_argument('--enrollment', action='store_true')
+    parser.add_argument('--pki-dir')
     args=parser.parse_args()
     prune()
     server = Server((args.listen, 8443), Handler)
@@ -335,10 +352,10 @@ if __name__ == '__main__':
     server.enrollment=args.enrollment
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain('/etc/swanctl/x509/starfive.pem', '/etc/swanctl/private/starfive.pem')
+    context.load_cert_chain(str(Path(args.pki_dir)/'server.pem') if args.pki_dir else '/etc/swanctl/x509/starfive.pem', str(Path(args.pki_dir)/'server-key.pem') if args.pki_dir else '/etc/swanctl/private/starfive.pem')
     context.verify_mode = ssl.CERT_OPTIONAL if args.enrollment else ssl.CERT_REQUIRED
-    context.load_verify_locations('/etc/swanctl/x509ca/starfive-ca.pem')
-    context.load_verify_locations('/etc/swanctl/x509crl/devices.pem')
+    context.load_verify_locations(str(Path(args.pki_dir)/'ca.pem') if args.pki_dir else '/etc/swanctl/x509ca/starfive-ca.pem')
+    context.load_verify_locations(str(Path(args.pki_dir)/'devices.pem') if args.pki_dir else '/etc/swanctl/x509crl/devices.pem')
     context.verify_flags |= ssl.VERIFY_CRL_CHECK_LEAF
     server.context = context
     server.serve_forever()
