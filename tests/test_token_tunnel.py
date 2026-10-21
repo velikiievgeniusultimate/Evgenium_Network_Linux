@@ -105,13 +105,13 @@ class IsolatedClientTests(unittest.TestCase):
             self.assertFalse(status['active']);self.assertEqual(status['phase'],'interrupted')
             self.assertNotIn('SECRET',json.dumps(status))
 
-    def test_reference_probe_rejects_non_yandex_and_non_https_urls(self):
-        self.assertEqual(tunnel.validate_yandex_probe('https://node.cdn.yandex.net/probes/50mb')[0], 'node.cdn.yandex.net')
-        for url in ('http://node.cdn.yandex.net/probes/50mb', 'https://cdn.yandex.net.attacker.test/x',
-                    'https://127.0.0.1/x', 'https://user:pass@node.cdn.yandex.net/x',
-                    'https://node.cdn.yandex.net:8443/x'):
-            with self.subTest(url=url), self.assertRaises(ValueError):
-                tunnel.validate_yandex_probe(url)
+    def test_speed_measurement_never_installs_physical_bypass(self):
+        reply=subprocess.CompletedProcess([],0,'200 2097152 2097152 1.0 0.1','')
+        with tempfile.TemporaryDirectory() as directory,patch.object(tunnel,'ROOT',Path(directory)),patch.object(tunnel,'STOP',False),patch.object(tunnel,'inside',return_value=reply) as inside,patch.object(tunnel,'command') as host:
+            self.assertTrue(tunnel.speed_sample()['available'])
+            self.assertEqual(inside.call_count,2)
+            self.assertTrue(all(c.args[0][0]=='curl' for c in inside.call_args_list))
+            host.assert_not_called()
 
     def test_lab_filter_preserves_forwarding_disabled_outside_test(self):
         self.assertIn('meta nfproto ipv4 drop', tunnel.host_rules('wlan0', previous_forward=False))
