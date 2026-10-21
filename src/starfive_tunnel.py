@@ -15,6 +15,7 @@ import socket
 import ssl
 import subprocess
 import time
+import sys
 
 ROOT = Path('/etc/vpn-manager/starfive-tunnel')
 RUNTIME = Path('/run/evgenium-starfive-tunnel')
@@ -31,13 +32,24 @@ PRIORITY = 75
 NFT = 'evgenium_starfive_lab_host'
 SERVER = '195.209.211.163'
 IKE_PORT = 24550
-ENDPOINTS = (SERVER,)
+ENDPOINTS = (SERVER, '38.180.164.67')
+CANDIDATES = (
+ {'id':'ru-udp','address':SERVER,'identity':SERVER,'port':24550,'tls':False,'label':'HSVDS → Эстония'},
+ {'id':'ee-udp','address':'38.180.164.67','identity':'38.180.164.67','port':443,'tls':False,'label':'Эстония напрямую'},
+ {'id':'ee-tls','address':'38.180.164.67','identity':'38.180.164.67','port':443,'tls':True,'label':'Эстония через TLS'},
+)
+ACTIVE = CANDIDATES[0]
+rank_api = None
+support_api = None
+tls_api = None
+TLS_PROCESS = None
 # Kept only for removing routes installed by pre-migration versions.
 LEGACY_ENDPOINTS = ('109.194.67.159', '192.168.0.163')
 HEALTH = '10.77.0.1'
 REQID = 177
 TOKEN_PATTERN = r'EVN1-[A-Za-z0-9_-]{43}'
 STOP = False
+DNS_PROCESS = None
 policy = None
 PINNED_CA = '-----BEGIN CERTIFICATE-----\nMIIEODCCAqCgAwIBAgIUbkJ+8SaqAgwY1RDAjZRTjcqQ9eMwDQYJKoZIhvcNAQEL\nBQAwIjEgMB4GA1UEAwwXRXZnZW5pdW0gcHJpdmF0ZSBWUE4gQ0EwHhcNMjYxMDA3\nMTkxMzQxWhcNMzYxMDA0MTkxMzQxWjAiMSAwHgYDVQQDDBdFdmdlbml1bSBwcml2\nYXRlIFZQTiBDQTCCAaIwDQYJKoZIhvcNAQEBBQADggGPADCCAYoCggGBAOZ+nviE\n2OrF7Pdtkk/XIaFVIvJlvC11VZf9rljCBIvBykbsrArGryQHGnuuXLNaaS8NtLxY\nNeSBDK6MdgYJAejsP4wITub3nMjSG2umIIVU6mE+GDozGPlNMNJ+bhkKaVhaPjFE\nyYLYrdPe5VA4w+5p0NZOD6CBHD3tEXWBNRIeVSWbtMITsOES1Pe/aAL7v3oNIVkV\n8nDw9j7+wG2y5dhbp7KUJHbrDB024r7cYrQ3axYF6gykjmztpKXsbkxQv27BvhSB\ne0EktJ/jCS6R9IImYgIQrCraWZmVScnGF/Aq4TNw1H4OzFCkR+7JUlYnSYUvMRi1\nLzKekUC+2/0WFmhnCoDtdjcoYbxpLpKDelGiS3RsNCvxnslMaPz5hCcF64Y7RijX\nj6DuCYpFYWlr13B20qAnRoUas+AjX7PXCkR4xOhH+kW8/HmFHiHkohWE0wllISBX\nVBo7KBOZd8SVewybd2rB4soXouTtjXs/jTge+HWxQDGPP1umfz8cFLR/uQIDAQAB\no2YwZDAdBgNVHQ4EFgQUoQfTif77xWt06haXh3ha890qkT8wHwYDVR0jBBgwFoAU\noQfTif77xWt06haXh3ha890qkT8wEgYDVR0TAQH/BAgwBgEB/wIBADAOBgNVHQ8B\nAf8EBAMCAQYwDQYJKoZIhvcNAQELBQADggGBAI7GKnmfJjuL1QvyRtlw+Hr6AY/Z\nOxdDvECefoFL7Q41VZa+L7DI87kMLYHygRHush66oUv878TWMtasnbt/8wYg6jrw\nAygpg/F3VD24yTrnJ7OCdyGib6LGuusuTP4rUGsccWcznQXYFkzRVz1VeYMZUN+P\ntAViNl4ERS1fh+cGzT4OqXQkJDkReqH/HCTE8kUQUUgXaSXphKjGa8pR2HVeFukX\n+0pp1iR+6di4aCKapkaTiVR3r62tRBUwbxoFYRyxNXynTK9EhnM25WEpn/qu0lsD\noXrFVmj0AQfAUHRN/2rPL//w6RPEpHgUcrt7zuSgoXJZh0DT30VEIK9NNbuKSFd9\nIiWvrxbVQS6mQgtEZN4Lc2Hm1pvY+WrI+H03u8042+cpLIsCnxPm9Wvi7dMXxqob\no2/aL2xDG5G/8WVR/W5EAfvKdxdrk3H602occov7+Jg1voxi00IbdMExoMxd5aeh\nfXRiJhTEFouIpmESCF4vVMlWFr3mqlQ3GKSPVA==\n-----END CERTIFICATE-----\n'
 
@@ -118,6 +130,8 @@ def full_firewall():
  }}
  chain forward {{ type filter hook forward priority -30; policy drop;
   iifname "{HOST}" ip saddr {CLIENT} ip daddr {{ {SERVER} }} udp dport {IKE_PORT} accept
+  iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 udp dport 443 accept
+  iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 tcp dport 24571 accept
   iifname "{HOST}" ip saddr {CLIENT} ip daddr {{ {SERVER} }} tcp dport 8443 accept
   oifname "{HOST}" ip daddr {CLIENT} ct state established,related accept
   meta nfproto ipv4 oifname "{FULL_HOST}" accept
@@ -168,7 +182,7 @@ def full_namespace(address):
     rules = deletions + f'''table inet evn_full_forward {{
  chain forward {{ type filter hook forward priority -5; policy drop;
   iifname "{FULL_PEER}" oifname "{PEER}" ip saddr 172.29.247.1 accept
-  iifname "{PEER}" oifname "{FULL_PEER}" ip daddr 172.29.247.1 ipsec in reqid {REQID} ct state established,related accept
+  iifname {{ "{PEER}", "lo" }} oifname "{FULL_PEER}" ip daddr 172.29.247.1 ipsec in reqid {REQID} ct state established,related accept
  }}
  chain nat {{ type nat hook postrouting priority srcnat; policy accept;
   ip saddr 172.29.247.1 oifname "{PEER}" snat ip to {vip}
@@ -177,7 +191,8 @@ def full_namespace(address):
 table netdev evn_full_wire {{
  chain egress {{ type filter hook egress device "{PEER}" priority 0; policy drop;
   ether type arp accept
-  ip daddr {address} udp dport {IKE_PORT} accept
+  ip daddr {address} udp dport {ACTIVE['port']} accept
+  ip daddr 38.180.164.67 tcp dport 24571 accept
   ip daddr {address} tcp dport 8443 accept
  }}
 }}'''
@@ -190,7 +205,7 @@ table netdev evn_full_wire {{
 
 
 def egress_health():
-    for url,expected in [('https://www.cloudflare.com/cdn-cgi/trace','ip=38.180.164.67'),
+    for url,expected in [('https://1.1.1.1/cdn-cgi/trace','ip=38.180.164.67'),
                          ('https://api.ipify.org','38.180.164.67')]:
         result = inside(['curl','-4','--noproxy','*','--fail','--silent','--show-error',
                          '--connect-timeout','3','--max-time','5',url],timeout=7,check=False)
@@ -200,12 +215,10 @@ def egress_health():
 
 
 def retire_previous_connections(addresses):
-    # A changed VPN egress cannot preserve old TCP sessions. Wake applications now
-    # instead of leaving stale source addresses and UDP NAT until their timeouts.
-    for address in addresses:
-        command(['ss','-K','src',address],check=False)
-        for protocol in ('tcp','udp'):
-            command(['conntrack','-D','-f','ipv4','-p',protocol,'-s',address],check=False)
+    # The firewall already blocks old non-exempt flows. Do not kill all sockets
+    # sharing a physical source address: that destroys SSH, LAN and app exclusions.
+    # Only this manager's DNS translations need explicit retirement (handled above).
+    return
 
 
 def system_dns_health(resolv_conf=Path('/etc/resolv.conf')):
@@ -231,6 +244,79 @@ def system_dns_health(resolv_conf=Path('/etc/resolv.conf')):
         except (OSError, ValueError):
             continue
     return False
+
+
+def start_namespace_dns():
+    """A private DNS endpoint reachable only over the host/namespace veth."""
+    global DNS_PROCESS
+    if DNS_PROCESS is not None and DNS_PROCESS.poll() is None:return
+    cfg = {'log':{'loglevel':'warning','access':'none'},
+      'inbounds':[{'tag':'dns-in','listen':'172.29.247.2','port':53,'protocol':'dokodemo-door',
+                   'settings':{'address':'1.1.1.1','port':53,'network':'tcp,udp'}}],
+      'dns':{'servers':['1.1.1.1','tcp://9.9.9.9','https://1.0.0.1/dns-query'],
+             'queryStrategy':'UseIPv4','tag':'dns-engine','enableParallelQuery':True},
+      'outbounds':[{'tag':'wire','protocol':'freedom'},
+                   {'tag':'dns','protocol':'dns','settings':{'rules':[{'qType':'1,28','action':'hijack'},{'action':'direct'}]}}],
+      'routing':{'rules':[{'type':'field','inboundTag':['dns-in'],'outboundTag':'dns'},
+                          {'type':'field','inboundTag':['dns-engine'],'outboundTag':'wire'}]}}
+    path=ROOT/'namespace-dns.json';write(path,json.dumps(cfg))
+    binary='/opt/vpn-manager/bin/xray'
+    inside([binary,'run','-test','-config',path])
+    DNS_PROCESS=subprocess.Popen(['ip','netns','exec',NS,binary,'run','-config',str(path)],
+        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    for _ in range(30):
+        if DNS_PROCESS.poll() is not None:raise RuntimeError('private_dns_stopped')
+        if '172.29.247.2:53' in inside(['ss','-lnu'],check=False).stdout:
+            write(Path('/etc/netns')/NS/'resolv.conf','nameserver 172.29.247.2\noptions timeout:3 attempts:2\n')
+            return
+        time.sleep(.1)
+    raise RuntimeError('private_dns_not_ready')
+
+
+def use_resolver_file(path=Path('/etc/resolv.conf')):
+    data=json.loads(full_state().read_text())
+    target=ROOT/'resolv-vpn.conf'
+    if 'resolver_original' not in data:
+        data['resolver_original']={'link':os.readlink(path) if path.is_symlink() else None,
+                                   'text':path.read_text() if path.exists() else '',
+                                   'existed':path.exists() or path.is_symlink()}
+    data['dns_fallback']=True
+    write(full_state(),json.dumps(data))
+    write(target,'nameserver 172.29.247.2\noptions timeout:3 attempts:2\n')
+    target.chmod(0o644)
+    # The parent must be traversable by applications. Secrets remain root-only.
+    # Put only this public resolver file outside the credential directory.
+    public=Path('/run/evgenium-resolv.conf')
+    public.parent.mkdir(parents=True,exist_ok=True)
+    write(public,target.read_text());public.chmod(0o644)
+    temporary=path.with_name('.evgenium-resolv.new')
+    temporary.unlink(missing_ok=True);temporary.symlink_to(public)
+    os.replace(temporary,path)
+
+
+def restore_resolver_file(data,path=Path('/etc/resolv.conf')):
+    saved=data.get('resolver_original')
+    if saved and path.is_symlink() and os.readlink(path)=='/run/evgenium-resolv.conf':
+        temporary=path.with_name('.evgenium-resolv.restore')
+        temporary.unlink(missing_ok=True)
+        if saved['link'] is not None:temporary.symlink_to(saved['link'])
+        else:temporary.write_text(saved['text']);temporary.chmod(0o644)
+        if saved.get('existed',True):os.replace(temporary,path)
+        else:path.unlink();temporary.unlink()
+    elif not saved and 'dns_backup' in data:
+        path.write_text(data['dns_backup'])
+
+
+def recover_system_dns():
+    for _ in range(2):
+        if system_dns_health():return True
+        if STOP:return False
+        time.sleep(.3)
+    if not full_state().exists():return False
+    # Switch only the resolver file we own; never stop another VPN or resolver.
+    stage('repairing','Переключаю неисправный системный DNS на защищённый резерв.',90,active=False,error_code='system_dns_failed')
+    use_resolver_file()
+    return system_dns_health()
 
 
 def persist_guard(rules):
@@ -268,6 +354,7 @@ def activate_full(address):
             raise RuntimeError('full_rule_collision')
         write(full_state(),json.dumps({'active':False}))
     full_namespace(address)
+    start_namespace_dns()
     # Validate the egress filter before interrupting the previous VPN.
     if not egress_health():
         raise RuntimeError('estonia_egress_failed')
@@ -292,30 +379,34 @@ def activate_full(address):
     if shutil.which('resolvectl') and command(['systemctl','is-active','--quiet','systemd-resolved'],check=False).returncode == 0:
         data['dns_mode']='resolved_link'
         write(full_state(),json.dumps(data))
-        command(['resolvectl','dns',FULL_HOST,'1.1.1.1','9.9.9.9'])
+        command(['resolvectl','dns',FULL_HOST,'172.29.247.2'])
         command(['resolvectl','domain',FULL_HOST,'~.'])
         command(['resolvectl','default-route',FULL_HOST,'yes'])
         command(['resolvectl','flush-caches'],check=False)
     else:
-        if 'dns_backup' not in data:
-            data['dns_backup']=Path('/etc/resolv.conf').read_text()
-            write(full_state(),json.dumps(data))
-        Path('/etc/resolv.conf').write_text('nameserver 1.1.1.1\nnameserver 9.9.9.9\noptions timeout:2 attempts:2\n')
+        use_resolver_file()
     clear_dns_mappings(previous_vpn=True)
     retire_previous_connections(old_addresses)
     if policy is not None:
         policy.apply()
-    if not system_dns_health():
+    if not recover_system_dns():
         raise RuntimeError('system_dns_failed')
     # Test the actual host path as well as namespace probes before announcing connected.
     check = command(['curl','-4','--noproxy','' if policy is not None else '*','--fail','--silent','--max-time','10',*(['--socks5-hostname','127.0.0.1:18554'] if policy is not None else []),'https://api.ipify.org'],timeout=12)
     if check.stdout.strip() != '38.180.164.67':
         raise RuntimeError('host_egress_failed')
+    data=json.loads(full_state().read_text())
     data['active']=True
     write(full_state(),json.dumps(data))
 
 
 def cleanup_full(release=False):
+    global DNS_PROCESS
+    if DNS_PROCESS is not None and DNS_PROCESS.poll() is None:
+        DNS_PROCESS.terminate()
+        try:DNS_PROCESS.wait(timeout=3)
+        except subprocess.TimeoutExpired:DNS_PROCESS.kill();DNS_PROCESS.wait()
+    DNS_PROCESS=None
     if policy is not None:
         policy.stop(release=release)
     if not full_state().exists():
@@ -326,8 +417,7 @@ def cleanup_full(release=False):
     # On failure: retain routing, DNS and the persistent guard until explicit disconnect.
     if not release:
         return
-    if 'dns_backup' in data:
-        Path('/etc/resolv.conf').write_text(data['dns_backup'])
+    restore_resolver_file(data)
     command(['ip','rule','del','priority','80','lookup',FULL_TABLE],check=False)
     command(['ip','rule','del','priority','79','to',CLIENT+'/32','lookup','main'],check=False)
     command(['ip','rule','del','priority','79','iif',FULL_HOST,'lookup','main'],check=False)
@@ -376,15 +466,18 @@ def stage(phase, message, progress, **fields):
     data = {**saved(), 'phase': phase, 'message': message, 'progress': progress,
             'updated': int(time.time()), 'heartbeat': time.monotonic(), **fields}
     write(STATE, json.dumps(data, ensure_ascii=False))
+    if support_api is not None:
+        try:support_api.record(ROOT,write,data)
+        except (OSError,ValueError,TypeError):pass
 
 
 def status():
     data = saved()
     running = command(['systemctl', 'is-active', '--quiet', UNIT], check=False, timeout=2).returncode == 0
-    if data.get('phase') == 'connected' and (not running or time.monotonic()-data.get('heartbeat', 0) > 45):
+    if data.get('phase') == 'connected' and (not running or time.monotonic()-data.get('heartbeat', 0) > 90):
         data.update(phase='interrupted', message='Соединение остановилось. Проверьте состояние защиты и нажмите «Починить».', active=False)
     public = {key: data[key] for key in ('phase', 'message', 'progress', 'active', 'updated', 'metrics',
-                                        'scope', 'since', 'retry', 'error_code') if key in data}
+                                        'scope', 'since', 'retry', 'error_code', 'path') if key in data}
     token_info = token_status()
     return {'phase': 'off', 'message': ('Токен сохранён. Нажмите «Подключить».' if token_info['has_token'] else 'Введите и подтвердите токен клиента.'),
             'progress': 0, 'active': False, **public, 'running': running,
@@ -426,9 +519,11 @@ def host_rules(iface, previous_forward=True):
  chain forward {{
   type filter hook forward priority -20; policy accept;
   iifname "{HOST}" ip daddr {{ {SERVER} }} udp dport {IKE_PORT} accept
+  iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 udp dport 443 accept
+  iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 tcp dport 24571 accept
   iifname "{HOST}" ip daddr {{ {SERVER} }} tcp dport 8443 accept
   iifname "{HOST}" drop
-  oifname "{HOST}" ip saddr {{ {SERVER} }} ct state established,related accept
+  oifname "{HOST}" ip saddr {{ {SERVER}, 38.180.164.67 }} ct state established,related accept
   oifname "{HOST}" drop
 {preserve_disabled}
  }}
@@ -507,122 +602,15 @@ def cleanup():
     (ROOT/'network.json').unlink(missing_ok=True)
 
 
-@contextlib.contextmanager
-def measurement_route(address):
-    """A short-lived direct route for a verified Yandex HTTPS measurement, lab only."""
-    if not ipaddress.ip_address(address).is_global or address in ENDPOINTS:
-        raise ValueError('invalid_measurement_address')
-    label = 'evn-measure-'+secrets.token_hex(8)
-    data = json.loads((ROOT/'network.json').read_text())
-    data['measurement_ips'] = sorted(set(data.get('measurement_ips', [])+[address]))
-    write(ROOT/'network.json', json.dumps(data))
-    try:
-        command(['ip', 'rule', 'add', 'priority', '111', 'from', CLIENT+'/32',
-                 'to', address+'/32', 'lookup', str(TABLE)])
-        command(['nft', 'insert', 'rule', 'inet', NFT, 'forward', 'iifname', HOST,
-                 'ip', 'daddr', address, 'tcp', 'dport', '443', 'accept', 'comment', label])
-        command(['nft', 'insert', 'rule', 'inet', NFT, 'forward', 'oifname', HOST,
-                 'ip', 'saddr', address, 'ct', 'state', 'established,related', 'accept', 'comment', label])
-        yield
-    finally:
-        result = command(['nft', '-j', '-a', 'list', 'chain', 'inet', NFT, 'forward'], check=False)
-        if result.returncode == 0:
-            for entry in json.loads(result.stdout).get('nftables', []):
-                rule = entry.get('rule', {})
-                if rule.get('comment') == label:
-                    command(['nft', 'delete', 'rule', 'inet', NFT, 'forward', 'handle', str(rule['handle'])], check=False)
-        command(['ip', 'rule', 'del', 'priority', '111', 'from', CLIENT+'/32',
-                 'to', address+'/32', 'lookup', str(TABLE)], check=False)
 
 
-def provider_addresses(host):
-    # DNS may use the working resolver, but measured HTTPS itself takes the physical route.
-    addresses = [answer[4][0] for answer in socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)]
-    return list(dict.fromkeys(x for x in addresses if ipaddress.ip_address(x).is_global))[:2]
-
-
-def provider_get(host, path, maximum, measure=False):
-    last = None
-    for address in provider_addresses(host):
-        output = ROOT/('reference-'+secrets.token_hex(8)+'.tmp')
-        try:
-            with measurement_route(address):
-                args = ['curl', '-4', '--silent', '--show-error', '--fail', '--noproxy', '*',
-                        '--proto', '=https', '--connect-timeout', '4', '--max-time', '10',
-                        '--resolve', host+':443:'+address, '--max-filesize', str(maximum),
-                        '--output', str(output), '--write-out', '%{json}']
-                if measure:
-                    args += ['--range', '0-'+str(maximum-1)]
-                args += ['https://'+host+path]
-                result = inside(args, timeout=12, check=False)
-                if result.returncode:
-                    raise RuntimeError('measurement_curl_'+str(result.returncode))
-                statistics = json.loads(result.stdout)
-                if measure:
-                    received = int(statistics['size_download'])
-                    elapsed = float(statistics['time_total'])-float(statistics['time_starttransfer'])
-                    if received < 1024*1024 or received > maximum or elapsed <= 0:
-                        raise RuntimeError('measurement_too_short')
-                    return {'bytes': received, 'elapsed_ms': round(elapsed*1000),
-                            'estimated_mbps': round(received*8/elapsed/1e6, 2)}
-                return output.read_bytes()
-        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
-            last = exc
-        finally:
-            output.unlink(missing_ok=True)
-    raise RuntimeError('reference_unavailable') from last
-
-
-def validate_yandex_probe(url):
-    from urllib.parse import urlsplit
-    parsed = urlsplit(url)
-    if (len(url) > 2048 or parsed.scheme != 'https' or not parsed.hostname or
-        not parsed.hostname.endswith('.cdn.yandex.net') or parsed.username or parsed.password or
-        parsed.port not in (None, 443) or parsed.fragment):
-        raise ValueError('untrusted_reference_url')
-    return parsed.hostname, parsed.path+('?' + parsed.query if parsed.query else '')
-
-
-def reference_sample(force=False):
-    route = physical_route()
-    fingerprint = hashlib.sha256(json.dumps({key: route.get(key) for key in ('dev', 'gateway', 'prefsrc')}, sort_keys=True).encode()).hexdigest()
-    try:
-        cached = json.loads((ROOT/'reference.json').read_text())
-        if not force and cached.get('network') == fingerprint and cached.get('provider') == 'Yandex Internetometer':
-            return cached
-    except (OSError, ValueError):
-        pass
-    stage('reference', 'Запускаю замер прямого соединения: Яндекс Интернетометр.', 12)
-    config = json.loads(provider_get('yandex.ru', '/internet/api/v0/get-probes?from=internet&nocache='+str(int(time.time()*1000)), 65536))
-    probes = config.get('download', {}).get('probes', [])
-    candidates = []
-    for probe in probes:
-        try:
-            host, path = validate_yandex_probe(probe.get('url', ''))
-        except (ValueError, TypeError):
-            continue
-        if '50mb' in path or '100mb' in path:
-            candidates.append((host, path))
-    if not candidates:
-        raise RuntimeError('reference_schema_changed')
-    host, path = candidates[0]
-    # Short samples avoid a minute-long saturation while the user watches video.
-    samples = [provider_get(host, path, 8*1024*1024, measure=True) for _ in range(2)]
-    result = {'provider': 'Yandex Internetometer', 'network': fingerprint, 'time': int(time.time()),
-              'estimated_mbps': max(x['estimated_mbps'] for x in samples), 'samples': samples,
-              'short_sample': True, 'direct_physical_route': True}
-    write(ROOT/'reference.json', json.dumps(result))
-    return result
-
-
-
-def tls_request(address, path, body=None, client=False, timeout=8):
+def tls_request(address, path, body=None, client=False, timeout=8, identity=SERVER):
     context = ssl.create_default_context(cadata=PINNED_CA)
     if client:
         context.load_cert_chain(str(ROOT/'client.pem'), str(ROOT/'client-key.pem'))
     sock = socket.create_connection((address, 8443), timeout=timeout)
     try:
-        tls = context.wrap_socket(sock, server_hostname=SERVER)
+        tls = context.wrap_socket(sock, server_hostname=identity)
     except BaseException:
         sock.close()
         raise
@@ -670,7 +658,7 @@ def enroll():
              '-out', ROOT/'request.pem'])
     payload = {'token': token, 'device': (ROOT/'device').read_text().strip(), 'csr': (ROOT/'request.pem').read_text()}
     last = None
-    for address in ENDPOINTS:
+    for address in (SERVER,):
         try:
             with namespace():
                 reply = tls_request(address, '/enroll', payload, timeout=6)
@@ -719,7 +707,7 @@ charon-systemd {{ journal {{ default = 0; ike = 1 }} }}
  starfive {{
   version = 2
   remote_addrs = {address}
-  remote_port = {IKE_PORT}
+  remote_port = {ACTIVE['port']}
   local_port = 4500
   vips = 0.0.0.0
   proposals = aes256gcm16-prfsha384-ecp384
@@ -728,7 +716,7 @@ charon-systemd {{ journal {{ default = 0; ike = 1 }} }}
   mobike = yes
   dpd_delay = 15s
   local {{ auth = eap-tls; id = {identity}; eap_id = {identity}; certs = {ROOT}/client.pem }}
-  remote {{ auth = pubkey; id = {SERVER}; cacerts = {ROOT}/ca.pem }}
+  remote {{ auth = pubkey; id = {ACTIVE['identity']}; cacerts = {ROOT}/ca.pem }}
   children {{
    starfive-net {{
     local_ts = dynamic
@@ -751,7 +739,10 @@ secrets {{ private-client {{ file = {ROOT}/client-key.pem }} }}
  chain output {{
   type filter hook output priority -10; policy drop;
   oifname "lo" accept
-  ip daddr {address} udp dport {IKE_PORT} accept
+  ip daddr 127.0.0.1 udp dport 24573 accept
+  oifname "{FULL_PEER}" ip daddr 172.29.247.1 meta l4proto {{ tcp, udp }} th sport 53 accept
+  ip daddr {address} udp dport {ACTIVE['port']} accept
+  ip daddr 38.180.164.67 tcp dport 24571 accept
   meta skuid 0 ip daddr {address} tcp dport 8443 accept
   meta nfproto ipv4 ipsec out reqid {REQID} accept
  }}
@@ -775,7 +766,7 @@ def installed():
 
 def health():
     with namespace():
-        return tls_request(HEALTH, '/health', client=True).get('service') == 'evgenium-starfive'
+        return tls_request(HEALTH, '/health', client=True, identity=ACTIVE['identity'], timeout=3).get('service') == 'evgenium-starfive'
 
 
 def download(size=1048576):
@@ -786,7 +777,7 @@ def download(size=1048576):
     context.load_cert_chain(str(ROOT/'client.pem'), str(ROOT/'client-key.pem'))
     with namespace():
         sock = socket.create_connection((HEALTH, 8443), timeout=10)
-        tls = context.wrap_socket(sock, server_hostname=SERVER)
+        tls = context.wrap_socket(sock, server_hostname=ACTIVE['identity'])
         connection = http.client.HTTPConnection(HEALTH, 8443, timeout=10); connection.sock = tls
         try:
             start = time.monotonic()
@@ -864,7 +855,7 @@ def save_token(token):
         raise RuntimeError('Сначала отключите VPN-туннель перед сменой токена.')
     # A different account needs its own device credentials. Never reuse its certificate.
     for name in ('device-info.json', 'device', 'client-key.pem', 'client.pem', 'profile.json', 'request.pem',
-                 'private/client-key.pem', 'x509/client.pem'):
+                 'private/client-key.pem', 'x509/client.pem', 'ranking.json', 'recalibrate', 'events.json', 'support-preview.json'):
         (ROOT/name).unlink(missing_ok=True)
     write(ROOT/'token', token)
     sync_device_name()
@@ -881,8 +872,10 @@ def connect(token='', repair=False):
     if repair:
         write(ROOT/'recalibrate', '1')
     unit = f'''[Unit]
-Description=Evgenium HSVDS full-device Estonia VPN
+Description=Evgenium full-device Estonia VPN
 After=network.target
+StartLimitIntervalSec=180
+StartLimitBurst=3
 [Service]
 Type=simple
 ExecStart=/usr/local/sbin/vpnctl internal-starfive-tunnel
@@ -891,7 +884,8 @@ TimeoutStopSec=20
 KillMode=mixed
 UMask=0077
 MemoryMax=256M
-Restart=no
+Restart=on-failure
+RestartSec=3
 '''
     write(Path('/etc/systemd/system')/UNIT, unit)
     recovery = "evgenium-starfive-tunnel-recover.service"
@@ -908,7 +902,8 @@ WantedBy=multi-user.target
 """)
     command(['systemctl', 'daemon-reload'])
     command(['systemctl', 'enable', recovery])
-    stage('starting' , 'Готовлю подключение через HSVDS в Эстонию.', 2, active=False, retry=0, error_code='')
+    if repair:command(['systemctl','reset-failed',UNIT],check=False)
+    stage('starting' , 'Готовлю подключение в Эстонию.', 2, active=False, retry=0, error_code='')
     command(['systemctl', 'restart' if repair else 'start', UNIT])
     print('VPN запускается.',flush=True)
 
@@ -927,108 +922,216 @@ def start_daemon(env):
     daemon = subprocess.Popen(['ip', 'netns', 'exec', NS, charon_binary()],
                               env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
     log.close()
-    for _ in range(60):
-        if STOP or daemon.poll() is not None:
-            raise RuntimeError('daemon_stopped')
-        if (RUNTIME/'charon.vici').exists() and swan('--stats', check=False, timeout=1).returncode == 0:
-            break
-        time.sleep(.1)
-    swan('--load-creds', '--noprompt', '--file', ROOT/'connection.conf')
-    swan('--load-conns', '--file', ROOT/'connection.conf')
-    return daemon
+    try:
+        for _ in range(60):
+            if STOP or daemon.poll() is not None:
+                raise RuntimeError('daemon_stopped')
+            if (RUNTIME/'charon.vici').exists() and swan('--stats', check=False, timeout=1).returncode == 0:
+                break
+            time.sleep(.1)
+        swan('--load-creds', '--noprompt', '--file', ROOT/'connection.conf')
+        swan('--load-conns', '--file', ROOT/'connection.conf')
+        return daemon
+    except BaseException:
+        stop_process(daemon)
+        raise
+
+
+def stop_process(process):
+    if process is not None and process.poll() is None:
+        process.terminate()
+        try:process.wait(timeout=5)
+        except subprocess.TimeoutExpired:process.kill();process.wait(timeout=3)
+
+
+def stop_candidate(daemon=None):
+    global TLS_PROCESS
+    stop_process(daemon)
+    stop_process(TLS_PROCESS);TLS_PROCESS=None
+    cleanup()
+
+
+def prepare_data_plane(address):
+    if not full_state().exists():
+        if Path('/sys/class/net/'+FULL_HOST).exists():
+            raise RuntimeError('full_interface_collision')
+        if command(['ip','route','show','table',FULL_TABLE],check=False).stdout.strip():
+            raise RuntimeError('full_table_collision')
+        if command(['ip','route','show','table',ADMIN_TABLE],check=False).stdout.strip():
+            raise RuntimeError('admin_table_collision')
+        if any(r.get('priority') in (79,80) for r in json.loads(command(['ip','-j','-4','rule']).stdout)):
+            raise RuntimeError('full_rule_collision')
+        write(full_state(),json.dumps({'active':False,'measurement_only':True}))
+    full_namespace(address)
+    start_namespace_dns()
+
+
+def start_candidate(candidate,identity):
+    global ACTIVE,TLS_PROCESS
+    ACTIVE=candidate
+    write(ROOT/'active-path.json',json.dumps({'id':candidate['id']}))
+    setup_network()
+    daemon_configs(identity,candidate['address'])
+    if candidate['tls']:
+        TLS_PROCESS=subprocess.Popen(['ip','netns','exec',NS,'/usr/local/sbin/vpnctl','internal-tls-client'],
+                                     stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        for _ in range(50):
+            if STOP:raise RuntimeError('cancelled')
+            if TLS_PROCESS.poll() is not None:raise RuntimeError('tls_carrier_stopped')
+            if '127.0.0.1:24573' in inside(['ss','-lnu'],check=False).stdout:break
+            time.sleep(.1)
+        else:raise RuntimeError('tls_carrier_not_ready')
+        inside(['nft','-f','-'],data='table ip evn_tls_carrier {\n chain output {\n type nat hook output priority dstnat; policy accept;\n ip daddr 38.180.164.67 udp dport 443 redirect to :24573\n }\n}\n')
+    env={**os.environ,'STRONGSWAN_CONF':str(ROOT/'strongswan.conf')};env.pop('NOTIFY_SOCKET',None)
+    daemon=start_daemon(env)
+    try:
+        swan('--initiate','--child','starfive-net',timeout=35)
+        if STOP:raise RuntimeError('cancelled')
+        if not installed() or not health():raise RuntimeError('handshake_failed')
+        prepare_data_plane(candidate['address'])
+        if not egress_health():raise RuntimeError('estonia_egress_failed')
+        return daemon
+    except BaseException:
+        stop_process(daemon);raise
+
+
+def speed_sample(size=2097152):
+    """Bounded synthetic bidirectional probe; never reads user files."""
+    payload=ROOT/'speed-payload.bin'
+    if not payload.exists() or payload.stat().st_size!=size:
+        with payload.open('wb') as f:
+            for _ in range(size//65536):f.write(secrets.token_bytes(65536))
+        payload.chmod(0o600)
+    base=['curl','-4','--noproxy','*','--fail','--silent','--show-error','--connect-timeout','3','--max-time','12',
+          '--output','/dev/null','--write-out','%{http_code} %{size_download} %{size_upload} %{time_total} %{time_connect}']
+    results=[]
+    for direction in ('down','up'):
+        if STOP:raise RuntimeError('cancelled')
+        extra=['https://speed.cloudflare.com/__down?bytes='+str(size)] if direction=='down' else ['--data-binary','@'+str(payload),'https://speed.cloudflare.com/__up']
+        r=inside(base+extra,timeout=14,check=False)
+        try:
+            code,down,up,elapsed,latency=r.stdout.split()
+            count=float(down if direction=='down' else up)
+            if r.returncode or code!='200' or count<size:raise ValueError()
+            results.append((count*8/max(.001,float(elapsed))/1e6,float(latency)*1000))
+        except (ValueError,TypeError):return {'available':False}
+    return {'available':True,'download_mbps':round(results[0][0],2),'upload_mbps':round(results[1][0],2),
+            'latency_ms':round(max(x[1] for x in results),1),'sample_bytes':size}
+
+
+def traffic_total():
+    try:
+        stats=Path('/sys/class/net')/FULL_HOST/'statistics'
+        return sum(int((stats/name).read_text()) for name in ('rx_bytes','tx_bytes'))
+    except (OSError,ValueError):return 0
+
+
+def speed_degraded(sample,baseline):
+    # Require usable samples and a meaningful baseline in the affected direction.
+    return bool(sample.get('available') and any(
+        baseline.get(k,0)>=2 and sample.get(k,0)<baseline[k]*.2
+        for k in ('download_mbps','upload_mbps')))
 
 
 def worker():
     global STOP
-    STOP = False
-    signal.signal(signal.SIGTERM, lambda *_: globals().__setitem__('STOP', True))
-    signal.signal(signal.SIGINT, lambda *_: globals().__setitem__('STOP', True))
-    daemon = None
+    STOP=False
+    signal.signal(signal.SIGTERM,lambda *_:globals().__setitem__('STOP',True))
+    signal.signal(signal.SIGINT,lambda *_:globals().__setitem__('STOP',True))
+    daemon=None
+    rank=rank_api.Ranking(ROOT/'ranking.json',[x['id'] for x in CANDIDATES])
     try:
-        cleanup()
-        refresh_retained_guard()
-        stage('prepare', 'Готовлю защищённое соединение с HSVDS.', 8, active=False)
+        cleanup();refresh_retained_guard()
+        stage('prepare','Готовлю защищённые маршруты.',5,active=False,metrics={},error_code='',scope='full-device')
         setup_network()
-        try:
-            reference = ({'skipped': 'guard_active'} if full_guard_active() else reference_sample(force=(ROOT/'recalibrate').exists()))
-        except (OSError, RuntimeError, ValueError):
-            reference = {'available': False, 'provider': 'Yandex Internetometer'}
-        (ROOT/'recalibrate').unlink(missing_ok=True)
-        stage('token', 'Проверяю токен и сохранённое подключение этого устройства.', 20)
-        identity, address = enroll()
+        identity,_=enroll()
         sync_device_name()
-        scope = 'public-address'
-        stage('daemon', 'Запускаю туннель IKEv2 Россия → Эстония.', 40, scope=scope)
-        daemon_configs(identity, address)
-        env = {**os.environ, 'STRONGSWAN_CONF': str(ROOT/'strongswan.conf')}
-        env.pop('NOTIFY_SOCKET', None)
-        daemon = start_daemon(env)
-        stage('handshake', 'Устанавливаю защищённое соединение с HSVDS.', 60)
-        swan('--initiate', '--child', 'starfive-net', timeout=35)
-        if not installed():
-            raise RuntimeError('sa_not_installed')
-        stage('health', 'Проверяю туннель и защищённый ответ сервера.', 75)
-        if not health():
-            raise RuntimeError('health_failed')
-        stage('measure', 'Проверяю передачу данных и целостность файла.', 85)
-        metrics = download()
-        metrics['reference'] = reference
-        stage('routing', 'Подключаю весь трафик компьютера к выходу в Эстонии.', 92)
-        activate_full(address)
-        stage('connected', 'Подключено: компьютер → HSVDS → Эстония. ', 100,
-              active=True, metrics=metrics, since=int(time.time()))
-        failures = 0
-        while not STOP:
-            for _ in range(100):
-                if STOP:
-                    break
-                time.sleep(.1)
-            if STOP:
-                break
-            try:
-                if policy is not None:
-                    policy.ensure_route()
-                ok = daemon.poll() is None and installed() and health()
-                if ok and not egress_health():
-                    stage('egress_wait', 'HSVDS доступен; ожидаю восстановления выхода в Эстонии.', 90, active=False)
-                    continue
-            except (OSError, RuntimeError, subprocess.TimeoutExpired):
-                ok = False
-            failures = 0 if ok else failures+1
-            if failures == 1:
-                stage('checking', 'Ответ HSVDS задерживается. Проверяю соединение.', 90, active=False)
-                continue
-            if failures >= 2:
-                stage('repairing', 'Связь с HSVDS потеряна. Восстанавливаю VPN-туннель.', 60, active=False)
-                if daemon.poll() is not None:
-                    inside(['ip', 'xfrm', 'state', 'flush'])
-                    inside(['ip', 'xfrm', 'policy', 'flush'])
-                    inside(['ip', 'route', 'flush', 'table', '51822'], check=False)
-                    daemon = start_daemon(env)
-                swan('--terminate', '--ike', 'starfive', check=False)
-                swan('--initiate', '--child', 'starfive-net', timeout=35)
-                if not installed() or not health():
-                    raise RuntimeError('recovery_failed')
-                full_namespace(address)
-                if not egress_health():
-                    raise RuntimeError('estonia_egress_failed')
-                failures = 0
-            stage('connected', 'Подключено: компьютер → HSVDS → Эстония. ', 100, active=True)
-    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
-        code = str(exc) if re.fullmatch(r"[a-z_]{1,64}", str(exc)) else type(exc).__name__
-        current = saved().get('phase', 'prepare')
-        message = {'token': 'Не удалось подтвердить токен или получить сертификат HSVDS.',
-                   'handshake': 'HSVDS не подтвердил подключение IKEv2.',
-                   'measure': 'Проверка передачи данных не прошла.',
-                   'repairing': 'Автовосстановление не удалось. Нажмите «Починить».'}.get(current, 'VPN-туннель не запустился. Нажмите «Починить».')
-        stage('failed', message+(' Интернет заблокирован до отключения режима.' if full_guard_active() else ' Маршрутизация компьютера не переключена.'), 0, active=False, error_code=code, metrics={})
-    finally:
-        if daemon and daemon.poll() is None:
-            daemon.terminate()
-            try:
-                daemon.wait(timeout=6)
-            except subprocess.TimeoutExpired:
-                daemon.kill(); daemon.wait(timeout=3)
         cleanup()
-        if STOP:
-            stage('off', 'VPN выключен.', 0, active=False)
+        rebuild=(ROOT/'recalibrate').exists() or not rank.load()
+        if rebuild:
+            measurements={}
+            for i,candidate in enumerate(CANDIDATES):
+                if STOP:return
+                stage('ranking','Проверяю маршрут: '+candidate['label'],10+i*20,active=False,path=candidate['id'])
+                try:
+                    daemon=start_candidate(candidate,identity)
+                    integrity=download(1048576)
+                    measurements[candidate['id']]={'ok':True,**speed_sample(2097152),'integrity':integrity['integrity']}
+                except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired):
+                    if STOP:return
+                    measurements[candidate['id']]={'ok':False}
+                finally:
+                    stop_candidate(daemon);daemon=None
+            rank.build(measurements)
+            (ROOT/'recalibrate').unlink(missing_ok=True)
+        candidates={x['id']:x for x in CANDIDATES}
+        current=next(iter(rank.candidates()),None)
+        while current and not STOP:
+            candidate=candidates[current]
+            try:
+                stage('handshake','Подключаю: '+candidate['label'],75,active=False,path=current)
+                daemon=start_candidate(candidate,identity)
+                stage('routing','Подключаю трафик к проверенному маршруту.',92)
+                activate_full(candidate['address'])
+                stage('connected','Подключено: '+candidate['label']+'.',100,active=True,path=current,
+                      metrics=rank.data['entries'][current],since=int(time.time()),error_code='')
+                failures=0;slow=0;last_traffic=traffic_total();next_speed=time.monotonic()+600+secrets.randbelow(60)
+                while not STOP:
+                    for _ in range(50):
+                        if STOP:break
+                        time.sleep(.1)
+                    if STOP:break
+                    try:
+                        if policy is not None:policy.ensure_route()
+                        if DNS_PROCESS is None or DNS_PROCESS.poll() is not None:
+                            stage('repairing','Перезапускаю защищённый DNS.',90,active=False,error_code='private_dns_stopped')
+                            start_namespace_dns()
+                        healthy=daemon.poll() is None and installed() and health() and egress_health()
+                        if healthy and not recover_system_dns():raise RuntimeError('system_dns_failed')
+                    except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired):healthy=False
+                    failures=0 if healthy else failures+1
+                    if failures>=2:raise RuntimeError('path_health_failed')
+                    if not healthy:
+                        stage('checking','Ответ задерживается. Проверяю текущий маршрут.',90,active=False)
+                        continue
+                    if time.monotonic()>=next_speed:
+                        traffic=traffic_total()
+                        if not slow and traffic-last_traffic<4194304:
+                            last_traffic=traffic;next_speed=time.monotonic()+600+secrets.randbelow(60)
+                            continue
+                        last_traffic=traffic
+                        sample=speed_sample(2097152);baseline=rank.data['entries'][current]
+                        degraded=speed_degraded(sample,baseline)
+                        slow=slow+1 if degraded else 0
+                        next_speed=time.monotonic()+(20 if slow else 600+secrets.randbelow(60))
+                        if slow>=3:raise RuntimeError('confirmed_speed_drop')
+                    stage('connected','Подключено: '+candidate['label']+'.',100,active=True,path=current,error_code='')
+            except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired) as exc:
+                if STOP:break
+                reason=str(exc) if re.fullmatch('[a-z_]{1,64}',str(exc)) else 'connection_failed'
+                # A missing physical interface is not a transport's defeat.
+                try:
+                    route=physical_route();carrier=Path('/sys/class/net')/route['dev']/'carrier'
+                    offline=carrier.exists() and carrier.read_text().strip()=='0'
+                except (OSError,RuntimeError):offline=True
+                if not offline:
+                    rank.lose(current,reason)
+                    following=rank.next_after(current)
+                    current=following or next(iter(rank.candidates()),None)
+                stage('repairing','Связь потеряна. Переключаю защищённый маршрут.' if not offline else 'Ожидаю восстановления физической сети.',65,
+                      active=False,error_code=reason)
+                for _ in range(30 if not offline else 100):
+                    if STOP:break
+                    time.sleep(.1)
+            finally:
+                stop_candidate(daemon);daemon=None
+        if not STOP:
+            stage('failed','Доступные маршруты исчерпали три попытки. Нажмите «Восстановить» для нового рейтинга.',0,
+                  active=False,error_code='ranking_exhausted')
+    except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired) as exc:
+        if not STOP:
+            code=str(exc) if re.fullmatch('[a-z_]{1,64}',str(exc)) else 'connection_failed'
+            stage('failed','Не удалось подготовить VPN. Нажмите «Восстановить».',0,active=False,error_code=code)
+    finally:
+        stop_candidate(daemon)
+        if STOP:stage('off','VPN выключен.',0,active=False)

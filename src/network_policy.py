@@ -176,7 +176,7 @@ def firewall(p,lan,uid):
  # Redirecting their upstream socket to loopback breaks SO_BINDTODEVICE.
  # Only an explicitly disabled loopback-stub rule uses the local DNS listener.
  dns+=['ip daddr 127.0.0.0/8 meta l4proto { tcp, udp } th dport 53 redirect to :'+str(DNS_PORT),
-       'meta nfproto ipv4 meta l4proto { tcp, udp } th dport 53 dnat ip to 1.1.1.1']
+       'meta nfproto ipv4 meta l4proto { tcp, udp } th dport 53 dnat ip to 172.29.247.2']
  mark+=['meta l4proto { tcp, udp } th dport 53 meta mark set '+str(VPN)+' return']
  waynets=waydroid_network()['networks']
  mark.append(f'ip daddr @waydroid_networks meta mark set {DIRECT} return')
@@ -224,6 +224,8 @@ def firewall(p,lan,uid):
  }}
  chain forward {{ type filter hook forward priority -30; policy drop;
   iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr {tunnel.SERVER} udp dport {tunnel.IKE_PORT} accept
+  iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr 38.180.164.67 udp dport 443 accept
+  iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr 38.180.164.67 tcp dport 24571 accept
   iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr {tunnel.SERVER} tcp dport 8443 accept
   oifname "{tunnel.HOST}" ip daddr {tunnel.CLIENT} ct state established,related accept
   iifname "waydroid0" meta nfproto ipv4 meta mark {DIRECT} accept
