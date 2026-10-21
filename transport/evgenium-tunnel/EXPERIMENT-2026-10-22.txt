@@ -1,0 +1,76 @@
+EvgeniumTunnel: isolated RU–Estonia experiment, 22 October 2026 (MSK)
+
+Scope
+Own Go framing, UDP queues, liveness and diagnostics over standard mutual TLS1.3.
+WireGuard remains the inner tunnel. Isolated namespace/peer, not the desktop VPN.
+Server-side synthetic transfers use bounded constant data with SHA256 verification.
+Download means Estonia -> RU; upload means RU -> Estonia.
+These results do not measure the subscriber's complete access path or general VLESS performance.
+
+Interleaved comparison: three repetitions, 8 MiB per direction, alternating order.
+                            Download Mbps       Upload Mbps
+EvgeniumTunnel              132.81/144.29/124.95 83.51/90.21/90.40
+Existing HY carrier          99.46/73.35/100.69  23.31/21.05/25.26
+Existing REALITY carrier     77.42/116.83/130.62 6.86/6.49/7.79
+Median                      132.81 / 99.46 / 116.83 download
+                             90.21 / 23.31 /   6.86 upload
+Inner TCP retransmissions during uploads: own 0/0/0, HY 63/74/99,
+REALITY 90/69/87. Every completed transfer passed SHA256 integrity.
+
+Controlled queue experiment: same protocol, hosts and ports; only RU application
+queue capacity changed, while requested socket buffer stayed at 4 MiB.
+Queue1024: uploads 73.08/54.48 Mbps, queue/kernel/stale/gap deltas zero.
+Queue16: uploads 7.44/6.74 Mbps; local queue drops 216/518 exactly matched peer
+sequence gaps 216/518. Kernel overflow remained zero. Downloads 142.59/91.52 Mbps.
+Conclusion: small local queues can independently reproduce severe directional
+slowdown. This is causal evidence for our prototype's queue behavior, not proof
+of the exact cause in other carriers and not evidence of ISP protocol blocking.
+
+Failed small-socket experiment — not omitted from results:
+Requested UDP receive buffer106496 (Linux actual212992), queue1024.
+Download completed at115.85 Mbps but upload timed out. Subsequent attempts could
+not collect metrics: after process exit its UDP24559 remained bound with no
+visible /proc fd owner, preventing client restart. A targeted socket destroy
+changed its state but did not release it. Lab client and probe endpoint were moved
+to unused UDP24561; normal4MiB buffer restored. No host reboot or production
+routing change. Root cause of this residual socket remains unresolved. Failed
+runs are excluded from success-speed medians, explicitly recorded here.
+
+Restoration/fault test on final build:
+Killed only the experimental Estonia server process with SIGKILL. Supervisor
+restarted it; client reconnected without intervention. Last pre-outage ping reply
+and first post-outage reply were 4.367 seconds apart (20 lost probes at200ms
+interval, 80/100 received overall). This is a recovery measurement, not seamless
+failover. No session/application continuity guarantee follows from ICMP recovery.
+Then six16MiB transfers EACH direction (192MiB total) passed integrity checks.
+Download:134.90,182.51,179.68,195.72,162.54,179.94 Mbps; median179.81.
+Upload:62.33,72.42,67.47,75.09,72.16,67.99 Mbps; median70.075.
+All12 transfer windows: inner TCP retransmission delta0. Final sampled own queue,
+kernel and stale drops0, sequence gaps0. Process memory approx7–8MiB per endpoint.
+These longer transfers are a separate series, not directly interchangeable with
+the earlier8MiB comparison. Outer TCP retransmissions were not captured here.
+
+Validation
+Go race tests and vet passed; final parser fuzz run32231 executions in10s passed
+(previous version569454 in10s). Linux amd64,arm64,riscv64 builds produced.
+Tests cover lengths/truncation/replay/bounded queues/stale discard/short writes,
+TLS1.3 mutual authentication and rejected wrong client/server identities.
+No independent security audit or long-duration/many-client test has been completed.
+
+Deployment boundary
+Own service/PKI/firewall and separate WG probe only. Not a production-selected
+carrier and not part of vpn update. Lab certificates expire after31days; no
+automatic rotation yet. Services were not enabled for boot. Temporary benchmark
+listener stopped and its firewall exceptions removed. Experimental services remain
+running for follow-up; stop them with systemctl stop evgenium-tunnel-lab.
+The original orphaned UDP24559 socket was still visible at final inspection.
+Production path remained HY with all five independent paths healthy. Estonia
+3X-UI PID718674 and Xray PID718685 preserved; protected configuration hash check
+passed. Desktop VPN/routes/DNS were not changed by these experiments.
+
+Evidence files (private workspace outputs, no credentials):
+EVGENIUM_TUNNEL_COMPARISON_2026-10-22.jsonl
+EVGENIUM_TUNNEL_QUEUE_ABLATION_2026-10-22.jsonl
+EVGENIUM_TUNNEL_FINAL_CHECK_2026-10-22.jsonl
+EVGENIUM_TUNNEL_PRESERVED_ru.txt
+EVGENIUM_TUNNEL_PRESERVED_est.txt
