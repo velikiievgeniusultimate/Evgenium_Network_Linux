@@ -12,6 +12,8 @@ import secrets
 import shutil
 import signal
 import socket
+import platform
+import urllib.request
 import ssl
 import subprocess
 import time
@@ -37,6 +39,7 @@ CANDIDATES = (
  {'id':'ru-udp','address':SERVER,'identity':SERVER,'port':24550,'tls':False,'label':'HSVDS → Эстония'},
  {'id':'ee-udp','address':'38.180.164.67','identity':'38.180.164.67','port':443,'tls':False,'label':'Эстония напрямую'},
  {'id':'ee-tls','address':'38.180.164.67','identity':'38.180.164.67','port':443,'tls':True,'label':'Эстония через TLS'},
+ {'id':'ee-evgt','address':'38.180.164.67','identity':'38.180.164.67','port':443,'tls':False,'evgt':True,'label':'Эстония через EvgeniumTunnel'},
 )
 ACTIVE = CANDIDATES[0]
 rank_api = None
@@ -71,8 +74,38 @@ def charon_binary():
     return next((p for p in candidates if Path(p).is_file()), None)
 
 
+EVGT_VERSION = '0.2.0'
+EVGT_ASSETS = {
+ 'x86_64': ('amd64','3ffaf67bd81d85dd28942db0c73a608c07fe0a5ca8b2aa5a9c3dba1bc7720744'),
+ 'aarch64': ('arm64','458f77b6a596b64f9846587d4208ae97a7362df4fe1dbef6d2a364eacf070ce8'),
+ 'riscv64': ('riscv64','5952cb56773a1460ba01efd0af378b500f53d0f4fcac81b1fe78b1b39d62a2bb'),
+}
+
+def ensure_evgt_binary():
+    asset=EVGT_ASSETS.get(platform.machine())
+    if asset is None:raise RuntimeError('evgt_arch_unsupported')
+    arch,digest=asset
+    path=ROOT/('evgenium-tunnel-'+EVGT_VERSION)
+    if path.is_symlink():raise RuntimeError('evgt_binary_symlink')
+    if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest()==digest:
+        path.chmod(0o700);return path
+    ROOT.mkdir(mode=0o700,parents=True,exist_ok=True)
+    url='https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/evgenium-tunnel-v'+EVGT_VERSION+'/evgenium-tunnel-linux-'+arch
+    with urllib.request.urlopen(url,timeout=30) as response:blob=response.read(16*1024*1024+1)
+    if len(blob)>16*1024*1024 or hashlib.sha256(blob).hexdigest()!=digest:
+        raise RuntimeError('evgt_binary_checksum_failed')
+    tmp=path.with_name(path.name+'.new')
+    fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|os.O_NOFOLLOW,0o700)
+    try:
+        with os.fdopen(fd,'wb') as output:output.write(blob);output.flush();os.fsync(output.fileno())
+        os.chmod(tmp,0o700);os.replace(tmp,path)
+    finally:tmp.unlink(missing_ok=True)
+    return path
+
+
 def ensure_dependencies():
     if charon_binary() and all(shutil.which(p) for p in ('swanctl','ip','nft','curl','openssl','conntrack')):
+        ensure_evgt_binary()
         return
     stage('dependencies', 'Устанавливаю необходимые системные компоненты VPN.', 3, active=False)
     if shutil.which('pacman'):
@@ -84,6 +117,7 @@ def ensure_dependencies():
     command(args, timeout=300)
     if not charon_binary() or not all(shutil.which(p) for p in ('swanctl','conntrack')):
         raise RuntimeError('Пакет strongSwan не предоставил необходимые программы.')
+    ensure_evgt_binary()
 
 
 def clear_dns_mappings(previous_vpn=False):
@@ -131,7 +165,7 @@ def full_firewall():
  chain forward {{ type filter hook forward priority -30; policy drop;
   iifname "{HOST}" ip saddr {CLIENT} ip daddr {{ {SERVER} }} udp dport {IKE_PORT} accept
   iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 udp dport 443 accept
-  iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 tcp dport 24571 accept
+  iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 tcp dport {{ 24571, 24578 }} accept
   iifname "{HOST}" ip saddr {CLIENT} ip daddr {{ {SERVER} }} tcp dport 8443 accept
   oifname "{HOST}" ip daddr {CLIENT} ct state established,related accept
   meta nfproto ipv4 oifname "{FULL_HOST}" accept
@@ -192,7 +226,7 @@ table netdev evn_full_wire {{
  chain egress {{ type filter hook egress device "{PEER}" priority 0; policy drop;
   ether type arp accept
   ip daddr {address} udp dport {ACTIVE['port']} accept
-  ip daddr 38.180.164.67 tcp dport 24571 accept
+  ip daddr 38.180.164.67 tcp dport {{ 24571, 24578 }} accept
   ip daddr {address} tcp dport 8443 accept
  }}
 }}'''
@@ -520,7 +554,7 @@ def host_rules(iface, previous_forward=True):
   type filter hook forward priority -20; policy accept;
   iifname "{HOST}" ip daddr {{ {SERVER} }} udp dport {IKE_PORT} accept
   iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 udp dport 443 accept
-  iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 tcp dport 24571 accept
+  iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 tcp dport {{ 24571, 24578 }} accept
   iifname "{HOST}" ip daddr {{ {SERVER} }} tcp dport 8443 accept
   iifname "{HOST}" drop
   oifname "{HOST}" ip saddr {{ {SERVER}, 38.180.164.67 }} ct state established,related accept
@@ -742,7 +776,7 @@ secrets {{ private-client {{ file = {ROOT}/client-key.pem }} }}
   ip daddr 127.0.0.1 udp dport 24573 accept
   oifname "{FULL_PEER}" ip daddr 172.29.247.1 meta l4proto {{ tcp, udp }} th sport 53 accept
   ip daddr {address} udp dport {ACTIVE['port']} accept
-  ip daddr 38.180.164.67 tcp dport 24571 accept
+  ip daddr 38.180.164.67 tcp dport {{ 24571, 24578 }} accept
   meta skuid 0 ip daddr {address} tcp dport 8443 accept
   meta nfproto ipv4 ipsec out reqid {REQID} accept
  }}
@@ -972,13 +1006,20 @@ def start_candidate(candidate,identity):
     write(ROOT/'active-path.json',json.dumps({'id':candidate['id']}))
     setup_network()
     daemon_configs(identity,candidate['address'])
-    if candidate['tls']:
-        TLS_PROCESS=subprocess.Popen(['ip','netns','exec',NS,'/usr/local/sbin/vpnctl','internal-tls-client'],
-                                     stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    if candidate['tls'] or candidate.get('evgt'):
+        if candidate.get('evgt'):
+            binary=ensure_evgt_binary()
+            carrier=[str(binary),'-mode','client','-server',candidate['address']+':24578','-server-name',candidate['identity'],
+                     '-udp-listen','127.0.0.1:24573','-udp-peer',CLIENT+':4500',
+                     '-ca',str(ROOT/'ca.pem'),'-cert',str(ROOT/'client.pem'),'-key',str(ROOT/'client-key.pem')]
+        else:carrier=['/usr/local/sbin/vpnctl','internal-tls-client']
+        TLS_PROCESS=subprocess.Popen(['ip','netns','exec',NS,*carrier],
+                                     stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,
+                                     stderr=None if candidate.get('evgt') else subprocess.DEVNULL)
         for _ in range(50):
             if STOP:raise RuntimeError('cancelled')
             if TLS_PROCESS.poll() is not None:raise RuntimeError('tls_carrier_stopped')
-            if '127.0.0.1:24573' in inside(['ss','-lnu'],check=False).stdout:break
+            if '127.0.0.1:24573' in inside(['ss','-anu'],check=False).stdout:break
             time.sleep(.1)
         else:raise RuntimeError('tls_carrier_not_ready')
         inside(['nft','-f','-'],data='table ip evn_tls_carrier {\n chain output {\n type nat hook output priority dstnat; policy accept;\n ip daddr 38.180.164.67 udp dport 443 redirect to :24573\n }\n}\n')
@@ -1052,7 +1093,7 @@ def worker():
             measurements={}
             for i,candidate in enumerate(CANDIDATES):
                 if STOP:return
-                stage('ranking','Проверяю маршрут: '+candidate['label'],10+i*20,active=False,path=candidate['id'])
+                stage('ranking','Проверяю маршрут: '+candidate['label'],10+int(i*60/len(CANDIDATES)),active=False,path=candidate['id'])
                 try:
                     daemon=start_candidate(candidate,identity)
                     integrity=download(1048576)

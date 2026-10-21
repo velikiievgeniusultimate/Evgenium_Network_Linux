@@ -92,10 +92,10 @@ func decode(r io.Reader) (packet, error) {
 }
 
 type options struct {
-	mode, listen, udpListen, udpPeer, server, serverName, ca, cert, key, peerName string
-	queue, buffer, maxSessions                                                    int
-	maxAge                                                                        time.Duration
-	pace                                                                          float64
+	mode, listen, udpListen, udpPeer, server, serverName, ca, cert, key, peerName, crl string
+	queue, buffer, maxSessions                                                         int
+	maxAge                                                                             time.Duration
+	pace                                                                               float64
 }
 
 func socketBuffer(c *net.UDPConn, n int) error {
@@ -131,8 +131,8 @@ func udp(o options, server bool) (*net.UDPConn, error) {
 	if e != nil {
 		return nil, e
 	}
-	if !peer.IP.IsLoopback() {
-		return nil, errors.New("udp_peer_must_be_loopback")
+	if !localPeer(peer.IP) {
+		return nil, errors.New("udp_peer_must_be_local")
 	}
 	var local *net.UDPAddr
 	if !server {
@@ -308,6 +308,13 @@ func session(c *tls.Conn, u *net.UDPConn, o options) error {
 	if e := c.HandshakeContext(ctx); e != nil {
 		return errors.New("tls_authentication_failed")
 	}
+	if o.mode == "server" && o.crl != "" {
+		release, ok := reserveDevice(c.ConnectionState().PeerCertificates[0].Raw)
+		if !ok {
+			return errors.New("device_session_limit")
+		}
+		defer release()
+	}
 	if c.ConnectionState().NegotiatedProtocol != "evgenium/1" {
 		return errors.New("protocol_negotiation_failed")
 	}
@@ -357,7 +364,13 @@ func tlsConfig(o options) (*tls.Config, error) {
 		c.ClientCAs = roots
 		c.ClientAuth = tls.RequireAndVerifyClientCert
 		c.VerifyConnection = func(s tls.ConnectionState) error {
-			if len(s.PeerCertificates) == 0 || s.PeerCertificates[0].Subject.CommonName != o.peerName {
+			if len(s.PeerCertificates) == 0 {
+				return errors.New("unauthorized_peer")
+			}
+			if o.crl != "" {
+				return verifyDevice(s, o.crl, time.Now())
+			}
+			if s.PeerCertificates[0].Subject.CommonName != o.peerName {
 				return errors.New("unauthorized_peer")
 			}
 			return nil
@@ -379,6 +392,7 @@ func main() {
 	flag.StringVar(&o.ca, "ca", "", "CA PEM")
 	flag.StringVar(&o.cert, "cert", "", "certificate PEM")
 	flag.StringVar(&o.key, "key", "", "private key PEM")
+	flag.StringVar(&o.crl, "crl", "", "signed device CRL: enables device identity policy instead of a single peer CN")
 	flag.StringVar(&o.peerName, "peer-name", "evgenium-ru-lab", "allowed client certificate CN")
 	flag.IntVar(&o.queue, "queue", 1024, "bounded UDP queue, packets")
 	flag.IntVar(&o.buffer, "udp-buffer", 4*1024*1024, "socket buffer bytes")

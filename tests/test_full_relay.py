@@ -25,12 +25,14 @@ class FullRelayTests(unittest.TestCase):
             t.cleanup_full(release=True)
             cmd.assert_not_called()
 
-    def test_dependency_install_is_skipped_when_complete(self):
+    @patch.object(t, "ensure_evgt_binary")
+    def test_dependency_install_is_skipped_when_complete(self, binary):
         with patch.object(t,'charon_binary',return_value='/usr/bin/charon-systemd'),patch.object(t.shutil,'which',return_value='/usr/bin/tool'),patch.object(t,'command') as cmd:
             t.ensure_dependencies()
             cmd.assert_not_called()
 
-    def test_arch_missing_dependency_installs_native_packages(self):
+    @patch.object(t, "ensure_evgt_binary")
+    def test_arch_missing_dependency_installs_native_packages(self, binary):
         with patch.object(t,'charon_binary',side_effect=[None,'/usr/bin/charon-systemd']),patch.object(t.shutil,'which',return_value='/usr/bin/tool'),patch.object(t,'command') as cmd,patch.object(t,'stage'):
             t.ensure_dependencies()
             args=cmd.call_args.args[0]

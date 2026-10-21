@@ -1,6 +1,6 @@
 # EvgeniumTunnel — experimental UDP transport
 
-Independent Go implementation of a bounded UDP carrier over mutually authenticated TLS 1.3. Designed to carry an existing encrypted WireGuard session between two controlled hosts. This is a working research prototype, **not a production VPN release or a claim of censorship resistance**. The VPN client installer and `vpn update` do not select this transport yet.
+Independent Go implementation of a bounded UDP carrier over mutually authenticated TLS 1.3. Designed to carry an existing encrypted WireGuard session between two controlled hosts. The transport is one optional ranked candidate in VPN client 0.5.1. It is not a claim of censorship resistance or universal superiority. The client automatically installs a SHA-256-pinned binary and uses its existing device certificate.
 
 ## Build and test
 
@@ -10,11 +10,11 @@ Linux, Go 1.24 or newer; standard library only.
 go test -race ./...
 go vet ./...
 go test -run '^$' -fuzz FuzzFrames -fuzztime 10s
-CGO_ENABLED=0 go build -trimpath -o evgenium-tunnel .
-GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 go build -trimpath -o evgenium-tunnel-riscv64 .
+CGO_ENABLED=0 go build -trimpath -buildvcs=false -o evgenium-tunnel .
+GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o evgenium-tunnel-riscv64 .
 ```
 
-Builds also support Linux amd64 and arm64. The executable never changes routes, DNS, firewall rules or global kernel settings. Both UDP endpoints must be loopback IPv4 addresses. Bind each WireGuard UDP socket in the same network namespace as the carrier; its interface can subsequently be moved into an isolated namespace.
+Builds also support Linux amd64 and arm64. The executable never changes routes, DNS, firewall rules or global kernel settings. The UDP listener must be loopback IPv4. Its fixed peer must be loopback or an address assigned in the same network namespace. Bind each WireGuard UDP socket in the same network namespace as the carrier; its interface can subsequently be moved into an isolated namespace.
 
 ## Authentication and operation
 
@@ -59,4 +59,10 @@ Every five seconds and on SIGUSR1, logs contain a cumulative JSON `metrics` snap
 
 See `EXPERIMENT-2026-10-22.txt` for interleaved RU–Estonia measurements and a controlled queue-size experiment. These are short synthetic inner-TCP transfers, not desktop Internet benchmarks, long-term uptime measurements or evidence that an ISP filters a protocol. A small-socket failure remains unresolved and is explicitly included in the report.
 
-Not yet implemented/validated: independent security review, long-duration and many-client load tests, automatic certificate renewal/revocation, adaptive multipath scheduling, UDP congestion control, browser camouflage, production controller integration. No promise of uninterrupted connectivity or superiority to VLESS in general.
+Not yet implemented/validated: independent security review, long-duration and many-client load tests, automatic certificate renewal, adaptive multipath scheduling, UDP congestion control, browser camouflage, long-duration production behavior. No promise of uninterrupted connectivity or superiority to VLESS in general.
+
+## Device ingress (0.2.0 transport / 0.5.1 VPN client)
+
+The Estonia device ingress listens on TCP24578 inside the existing isolated IKE namespace. It reuses the existing server certificate and per-device CA. `-crl devices.pem` enables device mode: a verified clientAuth chain, CN matching `device-[a-f0-9]{24}`, and a fresh correctly signed CRL are mandatory. Missing, future, expired, invalid or revoked credentials are rejected. At most two sessions per certificate and32 total sessions are configured. The existing revocation watcher restarts this carrier when its CRL changes and closes the whole ingress gate if revocation snapshots become stale. UDP forwards only to the local IKE socket4500. The interserver prototype and its separate lab CA are not exposed as a client entrypoint.
+
+See `scripts/direct-ingress/evgenium-direct-evgt.service` and the VPN client's `ee-evgt` candidate. Source-based loopback routing lets the fixed peer be the namespace-local IKE source address while preserving NAT reversal and the server certificate identity. The updater downloads the binary for amd64/arm64/riscv64 and verifies its pinned digest before atomic installation. No Go compiler is required on client machines.
