@@ -19,6 +19,7 @@ jobs:
         with:
           cmdline-tools-version: '15859902'
           log-accepted-android-sdk-licenses: 'false'
+          packages: 'platform-tools'
       - name: Install pinned Android toolchain
         run: |
           sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'build-tools;36.0.0' 'ndk;27.3.13750724'
