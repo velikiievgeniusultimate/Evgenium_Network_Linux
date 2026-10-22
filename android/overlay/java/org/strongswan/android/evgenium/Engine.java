@@ -184,7 +184,7 @@ public class Engine extends Service {
       } finally {
         busy = false;
         if (!cancel && mine == generation)
-          handler.postDelayed(() -> monitor(mine), 15000);
+          handler.postDelayed(() -> monitor(mine), consecutive > 0 ? 3000 : 15000);
       }
     });
   }
