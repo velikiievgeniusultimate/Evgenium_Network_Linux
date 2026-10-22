@@ -19,6 +19,11 @@ import javax.net.ssl.*;
 public final class TunnelCarrier implements AutoCloseable {
   private static volatile TunnelCarrier active;
   private static volatile long faultUntil;
+  private static volatile long heartbeatFaultUntil;
+  public static void debugHeartbeatFault(android.content.Context c) {
+    if ((c.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
+      heartbeatFaultUntil = SystemClock.uptimeMillis() + 90000;
+  }
   public static void debugFault(android.content.Context c) {
     if ((c.getApplicationInfo().flags &
          android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0)
@@ -73,6 +78,7 @@ public final class TunnelCarrier implements AutoCloseable {
         .put("sequence_gaps", sequenceGaps.get())
         .put("queue_depth", queue.size())
         .put("heartbeat_rtt_ms", heartbeatRttMs)
+        .put("heartbeat_timeouts", heartbeatTimeouts.get())
         .put("max_queue_ms", maxQueueMs)
         .put("max_write_ms", maxWriteMs)
         .put("write_timeouts", writeTimeouts.get())
@@ -126,6 +132,8 @@ public final class TunnelCarrier implements AutoCloseable {
   private volatile boolean closed;
   private volatile SocketAddress peer;
   private volatile long lastRx;
+  private volatile Heartbeat heartbeat;
+  private final AtomicLong heartbeatTimeouts = new AtomicLong();
   private volatile long offlineSince = SystemClock.elapsedRealtime();
   public static long offlineMillis() {
     TunnelCarrier a = active;
@@ -177,6 +185,10 @@ public final class TunnelCarrier implements AutoCloseable {
         try {
           Thread.sleep(1000);
           power.sample(sent + received);
+          Heartbeat h = heartbeat;
+          if (h != null && h.expired(SystemClock.uptimeMillis())) {
+            heartbeat = null; heartbeatTimeouts.incrementAndGet(); abortTransport();
+          }
           SSLSocket sck = tls;
           if (sck != null && lastRx > 0 &&
               SystemClock.elapsedRealtime() - lastRx > 25000)
@@ -217,6 +229,7 @@ public final class TunnelCarrier implements AutoCloseable {
           Thread.sleep(500);
           continue;
         }
+        lastRx = 0;
         power.connecting();
         boolean labForward =
             !laboratory &&
@@ -253,6 +266,9 @@ public final class TunnelCarrier implements AutoCloseable {
           org.conscrypt.Conscrypt.setApplicationProtocols(
               tls, new String[] {"evgenium/1"});
         tls.setSoTimeout(20000);
+        DataInputStream in;
+        DataOutputStream out;
+        try (SocketDeadline handshake = new SocketDeadline(raw, 6000)) {
         tls.startHandshake();
         Log.i("Evgenium", "carrier_tls_authenticated");
         if (evgt &&
@@ -261,8 +277,8 @@ public final class TunnelCarrier implements AutoCloseable {
                     ? tls.getApplicationProtocol()
                     : org.conscrypt.Conscrypt.getApplicationProtocol(tls)))
           throw new IOException("alpn_mismatch");
-        DataInputStream in = new DataInputStream(tls.getInputStream());
-        DataOutputStream out = new DataOutputStream(new BufferedOutputStream(
+        in = new DataInputStream(tls.getInputStream());
+        out = new DataOutputStream(new BufferedOutputStream(
             tls.getOutputStream(), laboratory ? 65536 : 8192));
         if (evgt) {
           out.write(MAGIC);
@@ -272,6 +288,8 @@ public final class TunnelCarrier implements AutoCloseable {
           if (!Arrays.equals(m, MAGIC))
             throw new IOException("protocol_magic");
         }
+        }
+        heartbeat = evgt ? new Heartbeat(3000, 12000) : null;
         offlineSince = 0;
         seq = 0;
         lastRx = SystemClock.elapsedRealtime();
@@ -297,10 +315,9 @@ public final class TunnelCarrier implements AutoCloseable {
               continue;
             }
             if (type == 3) {
-              long stamp = 0;
-              for (byte b : data) stamp = (stamp << 8) | (b & 255L);
-              long rtt = SystemClock.elapsedRealtime() - stamp;
-              if (rtt >= 0 && rtt < 20000) heartbeatRttMs = rtt;
+              Heartbeat h = heartbeat;
+              long rtt = h == null || SystemClock.uptimeMillis() < heartbeatFaultUntil ? -1 : h.ack(data, SystemClock.uptimeMillis());
+              if (rtt >= 0) heartbeatRttMs = rtt;
               continue;
             }
             if (len == 0) continue;
@@ -326,6 +343,7 @@ public final class TunnelCarrier implements AutoCloseable {
                                 e.getClass().getSimpleName() + ":" +
                                 e.getMessage());
       } finally {
+        heartbeat = null;
         if (!closed && offlineSince == 0) offlineSince = SystemClock.elapsedRealtime();
         abortTransport();
         queue.clear();
@@ -344,22 +362,17 @@ public final class TunnelCarrier implements AutoCloseable {
                          SocketDeadline.Writes deadline) {
     try {
       while (!closed && !session.isClosed()) {
-        Packet p = queue.poll(5, TimeUnit.SECONDS);
+        Packet p = queue.poll(evgt ? 1 : 5, TimeUnit.SECONDS);
+        Heartbeat h = heartbeat;
+        byte[] probe = h == null ? null : h.probe(SystemClock.uptimeMillis());
+        if (p == null && evgt && probe == null) continue;
         synchronized (out) {
           deadline.begin();
           try {
             long started = SystemClock.elapsedRealtime();
+            if (probe != null) frame(out, 2, 0, probe);
             if (p == null) {
-              if (evgt) {
-                byte[] stamp = new byte[8];
-                long t = SystemClock.elapsedRealtime();
-                for (int i = 7; i >= 0; i--) {
-                  stamp[i] = (byte)t;
-                  t >>>= 8;
-                }
-                frame(out, 2, 0, stamp);
-              } else
-                out.writeShort(0);
+              if (!evgt) out.writeShort(0);
             } else {
               int count = 0;
               do {

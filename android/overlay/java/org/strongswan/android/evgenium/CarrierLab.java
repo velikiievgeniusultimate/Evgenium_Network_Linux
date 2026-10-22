@@ -130,6 +130,10 @@ public final class CarrierLab {
           f.write(rows.toString(2).getBytes(StandardCharsets.UTF_8));
         }
       } catch (Exception e) {
+        try (FileOutputStream f=c.openFileOutput("mobile-check.json",Context.MODE_PRIVATE)) {
+          JSONObject failure=new JSONObject().put("time",System.currentTimeMillis()).put("error",e.getClass().getSimpleName()).put("fresh_site_results",false);
+          f.write(new JSONArray().put(failure).toString().getBytes(StandardCharsets.UTF_8));
+        } catch(Exception ignored) {}
         android.util.Log.w("Evgenium",
                            "mobile_check_" + e.getClass().getSimpleName());
       }

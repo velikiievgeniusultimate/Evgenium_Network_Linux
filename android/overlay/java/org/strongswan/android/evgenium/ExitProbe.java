@@ -5,8 +5,8 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import javax.net.ssl.*;
 /**
- * No DNS dependency: ordinary unprotected socket, inside the VPN,
- * authenticated HTTPS.
+ * Authenticated HTTPS inside the VPN. Numeric primary/final probes avoid DNS;
+ * an independent provider uses a bounded resolver as fallback.
  */
 public final class ExitProbe {
   private static volatile SSLSocketFactory factory;
@@ -37,21 +37,35 @@ public final class ExitProbe {
     tls.init(null, managers.getTrustManagers(), null);
     return factory = tls.getSocketFactory();
   }
-  public static String get(android.content.Context context) throws Exception {
+  private static final ExitChecks checks = new ExitChecks();
+  private static final java.util.concurrent.ExecutorService resolver = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+    Thread t=new Thread(r,"evgenium-exit-dns");t.setDaemon(true);return t;
+  });
+  private static java.util.concurrent.Future<InetAddress[]> query;
+  private static InetAddress[] cached;
+  private static long cachedAt;
+  private static synchronized InetAddress resolveIndependent() throws Exception {
+    long now=android.os.SystemClock.elapsedRealtime();
+    if(cached!=null && now-cachedAt<600000)return cached[0];
+    // At most one DNS task: a resolver stall cannot accumulate threads or work.
+    if(query==null)query=resolver.submit(()->InetAddress.getAllByName("api.ipify.org"));
     try {
-      return get(context, "1.1.1.1");
-    } catch (Exception first) {
-      try {
-        return get(context, "1.0.0.1");
-      } catch (Exception second) {
-        second.addSuppressed(first);
-        throw second;
-      }
-    }
+      InetAddress[] result=query.get(2,java.util.concurrent.TimeUnit.SECONDS);
+      query=null;
+      for(InetAddress address:result)if(address instanceof Inet4Address){cached=new InetAddress[]{address};cachedAt=now;return address;}
+      throw new IOException("exit_probe_no_ipv4");
+    } catch(java.util.concurrent.TimeoutException e) {
+      if(cached!=null)return cached[0];throw new IOException("exit_probe_dns_timeout");
+    } catch(java.util.concurrent.ExecutionException e){query=null;if(cached!=null)return cached[0];throw new IOException("exit_probe_dns_failed");}
   }
-  private static String get(android.content.Context context, String host) throws Exception {
+  public static String get(android.content.Context context) throws Exception {
+    return checks.get(index -> get(context,index));
+  }
+  private static String get(android.content.Context context, int index) throws Exception {
+    String host=index==0?"1.1.1.1":index==1?"api.ipify.org":"1.0.0.1";
+    InetAddress address=index==1?resolveIndependent():InetAddress.getByName(host);
     try (Socket raw = new Socket(); SocketDeadline deadline = new SocketDeadline(raw, 4500)) {
-      raw.connect(new InetSocketAddress(host, 443), 3000);
+      raw.connect(new InetSocketAddress(address, 443), 3000);
       raw.setSoTimeout(3000);
       try (SSLSocket tls = (SSLSocket) factory(context).createSocket(raw, host, 443, true)) {
         tls.setSoTimeout(3000);
@@ -60,16 +74,10 @@ public final class ExitProbe {
         tls.setSSLParameters(parameters);
         tls.startHandshake();
         tls.getOutputStream().write(
-            ("GET /cdn-cgi/trace HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n")
+            ("GET "+(index==1?"/":"/cdn-cgi/trace")+" HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n")
                 .getBytes(StandardCharsets.US_ASCII));
-        String reply =
-            new String(Credentials.read(tls.getInputStream(), 32768), StandardCharsets.US_ASCII);
-        if (!reply.startsWith("HTTP/1.1 200 "))
-          throw new IOException("exit_probe_http");
-        for (String line : reply.split("\\r?\\n"))
-          if (line.matches("ip=[0-9.]{7,15}"))
-            return line.substring(3);
-        throw new IOException("exit_probe_format");
+        String reply = new String(Credentials.read(tls.getInputStream(), 32768), StandardCharsets.US_ASCII);
+        return ExitChecks.parse(reply,index!=1);
       }
     }
   }

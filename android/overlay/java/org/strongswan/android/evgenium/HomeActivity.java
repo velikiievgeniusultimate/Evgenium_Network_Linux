@@ -254,8 +254,9 @@ public class HomeActivity extends Activity {
       return;
     if ("mobile-check".equals(cmd)) { CarrierLab.mobileCheck(this); return; }
     if ("packet-lab".equals(cmd)) { CarrierLab.start(this); return; }
-    if ("fault".equals(cmd)) {
-      TunnelCarrier.debugFault(this);
+    if ("fault".equals(cmd) || "heartbeat-fault".equals(cmd)) {
+      if ("heartbeat-fault".equals(cmd)) TunnelCarrier.debugHeartbeatFault(this);
+      else TunnelCarrier.debugFault(this);
       new Thread(() -> {
         try {
           org.json.JSONArray probes = new org.json.JSONArray();
