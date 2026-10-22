@@ -13,8 +13,8 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 
 public class HomeActivity extends Activity {
-  private static final int BG = 0xff121b16, CARD = 0xff1c2820, INK = 0xffe9f0e6, MUTED = 0xff9bab9a,
-                           LIME = 0xffbbf08b;
+  private static final int BG = 0xff141217, CARD = 0xff211c24, INK = 0xfffff1e9, MUTED = 0xffbaa8af,
+                           ACCENT = 0xffff586d;
   private TextView status, deviceName, diagnosticStatus;
   private EditText token;
   private Spinner route;
@@ -49,7 +49,8 @@ public class HomeActivity extends Activity {
   private GradientDrawable shape(int color, int radius) {
     GradientDrawable d = new GradientDrawable();
     d.setColor(color);
-    d.setCornerRadius(dp(radius));
+    d.setCornerRadius(dp(Math.min(radius, 8)));
+    d.setStroke(dp(1), 0xff48303c);
     return d;
   }
   private LinearLayout column() {
@@ -94,19 +95,26 @@ public class HomeActivity extends Activity {
         home();
     });
     TextView brand = new TextView(this);
-    brand.setText(title == null ? "EVGENIUM" : title);
-    brand.setTextSize(title == null ? 17 : 22);
+    brand.setText(title == null ? "EVGENIUM / NETWORK" : title);
+    brand.setTextSize(title == null ? 15 : 22);
     brand.setTypeface(Typeface.create("sans-serif-medium", 0));
     brand.setTextColor(INK);
+    if (title == null)
+      brand.setLetterSpacing(.09f);
     brand.setPadding(dp(18), 0, 0, 0);
     header.addView(brand, new LinearLayout.LayoutParams(0, dp(52), 1));
     brand.setGravity(Gravity.CENTER_VERTICAL);
     root.addView(header);
+    View rule = new View(this);
+    rule.setBackgroundColor(ACCENT);
+    LinearLayout.LayoutParams ruleParams = new LinearLayout.LayoutParams(dp(44), dp(3));
+    ruleParams.topMargin = dp(16);
+    root.addView(rule, ruleParams);
     return root;
   }
   @Override
   public void onCreate(Bundle state) {
-    setTheme(android.R.style.Theme_Material_NoActionBar);
+    setTheme(org.strongswan.android.R.style.EvgeniumTheme);
     super.onCreate(state);
     getWindow().setStatusBarColor(BG);
     getWindow().setNavigationBarColor(BG);
@@ -172,14 +180,14 @@ public class HomeActivity extends Activity {
             : getResources().getConfiguration().screenHeightDp < 700
             ? new LinearLayout.LayoutParams(-1, -2)
             : new LinearLayout.LayoutParams(-1, 0, 4));
-    TextView word = title(bottom, "ВАША СЕТЬ. ВАШ КОНТРОЛЬ.", 11);
+    TextView word = title(bottom, "СВЯЗЬ В ВАШЕМ РИТМЕ", 11);
     word.setLetterSpacing(.16f);
-    word.setTextColor(MUTED);
+    word.setTextColor(ACCENT);
     LinearLayout card = column();
     card.setPadding(dp(20), dp(18), dp(20), dp(18));
     card.setBackground(shape(CARD, 22));
     bottom.addView(card, new LinearLayout.LayoutParams(-1, -2));
-    title(card, "Состояние соединения", 13).setTextColor(MUTED);
+    title(card, "СОСТОЯНИЕ СОЕДИНЕНИЯ", 11).setTextColor(MUTED);
     status = title(card, Engine.status, 19);
     status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
     title(bottom, "Тестовая версия · " + version(), 12).setTextColor(MUTED);
@@ -382,6 +390,8 @@ public class HomeActivity extends Activity {
     b.setTextColor(INK);
     b.setBackground(shape(CARD, 14));
     b.setMinHeight(dp(52));
+    b.setPadding(dp(16), dp(12), dp(16), dp(12));
+    b.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
     LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
     lp.topMargin = dp(10);
     root.addView(b, lp);

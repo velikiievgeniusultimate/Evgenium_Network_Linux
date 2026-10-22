@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="EvgeniumTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:colorAccent">#FF586D</item>
+        <item name="android:colorControlActivated">#FF586D</item>
+        <item name="android:colorControlNormal">#BAA8AF</item>
+        <item name="android:colorButtonNormal">#211C24</item>
+        <item name="android:colorBackground">#141217</item>
+        <item name="android:textColorPrimary">#FFF1E9</item>
+        <item name="android:textColorSecondary">#BAA8AF</item>
+        <item name="android:fontFamily">sans</item>
+    </style>
+</resources>
