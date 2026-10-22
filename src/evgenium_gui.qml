@@ -38,7 +38,7 @@ C.ApplicationWindow {
     palette.placeholderText: textMuted
     palette.mid: border
     palette.light: border
-    palette.dark: sidebar
+    palette.dark: textMuted
 
     property string reportText: ""
     property string reportId: ""
