@@ -382,6 +382,22 @@ public class Engine extends Service {
       long start = SystemClock.elapsedRealtime();
       try {
         connectRoute(i);
+        if (diagnosing) {
+          set("Пакетная диагностика: " + LABELS[i]);
+          try {
+            PacketDiagnostics.run(this, () -> {
+              if (cancel)
+                throw new InterruptedException();
+              checkNetwork();
+            }, (phase, values, error) -> record(phase, current, values, error));
+          } catch (Exception diagnosticError) {
+            if (cancel)
+              throw diagnosticError;
+            checkNetwork();
+            record
+            ("packet", current, new JSONObject(), safe(diagnosticError));
+          }
+        }
         set("Измеряю: " + LABELS[i]);
         JSONObject m;
         try {
@@ -409,7 +425,7 @@ public class Engine extends Service {
       r.put("elapsed_ms", SystemClock.elapsedRealtime() - start);
       results.put(r);
       record
-      ("rank", IDS[i], r, "");
+      ("rank", IDS[i], r, r.optString("error", r.optString("warning", "")));
     }
     if (!cancel) {
       checkNetwork();
@@ -440,110 +456,160 @@ public class Engine extends Service {
     }
   }
   private JSONObject measureBlocking() throws Exception {
-    final int size = 4 * 1024 * 1024;
-    boolean privateLab =
-        (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        && getSharedPreferences("evgenium", 0).getBoolean("lab-private-speed", false);
-    String origin = privateLab ? "https://10.77.0.1:24583" : "https://speed.cloudflare.com";
-    long t = SystemClock.elapsedRealtime();
-    String discord = "ok";
+    final String measuredRoute = current;
+    final boolean detailed = diagnosing;
+    final long measurementStart = SystemClock.elapsedRealtime();
+    JSONObject timing = new JSONObject();
+    LoadProbe load = null;
+    int stage = 1;
+    String transferError = "";
     try {
-      textGet("https://discord.com/api/v10/gateway", 4096);
-    } catch (Exception e) {
-      discord = safe(e); // An individual service outage is not a broken VPN route.
-    }
-    if (Thread.currentThread().isInterrupted())
-      throw new InterruptedException();
-    long latency;
-    try (Socket probe = new Socket()) {
-      t = SystemClock.elapsedRealtime();
-      probe.connect(new InetSocketAddress("1.1.1.1", 443), 5000);
-      latency = SystemClock.elapsedRealtime() - t;
-    }
-    t = SystemClock.elapsedRealtime();
-    HttpsURLConnection down =
-        (HttpsURLConnection) new URL(origin + "/__down?bytes=" + size).openConnection();
-    if (privateLab)
-      down.setSSLSocketFactory(Credentials.tls(this, true).getSocketFactory());
-    down.setConnectTimeout(5000);
-    down.setReadTimeout(10000);
-    down.setInstanceFollowRedirects(false);
-    int count;
-    ScheduledFuture<?> downDeadline =
-        httpDeadlines.schedule(down::disconnect, 25, TimeUnit.SECONDS);
-    try {
-      if (down.getResponseCode() != 200)
-        throw new IOException("download_http");
+      final int size = 4 * 1024 * 1024;
+      boolean privateLab =
+          (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+          && getSharedPreferences("evgenium", 0).getBoolean("lab-private-speed", false);
+      String origin = privateLab ? "https://10.77.0.1:24583" : "https://speed.cloudflare.com";
+      long t = SystemClock.elapsedRealtime();
+      String discord = "ok";
+      try {
+        textGet("https://discord.com/api/v10/gateway", 4096);
+      } catch (Exception e) {
+        discord = safe(e); // An individual service outage is not a broken VPN route.
+      }
+      timing.put("discord_ms", SystemClock.elapsedRealtime() - t);
+      stage = 2;
       if (Thread.currentThread().isInterrupted())
         throw new InterruptedException();
-      // Measure body transfer separately from TLS/DNS setup.
-      t = SystemClock.elapsedRealtime();
-      try (InputStream in = down.getInputStream()) {
-        count = 0;
-        byte[] buffer = new byte[32768];
-        int n;
-        while ((n = in.read(buffer)) != -1) {
-          if (Thread.currentThread().isInterrupted())
-            throw new InterruptedException();
-          count += n;
-          if (count > size)
-            throw new IOException("download_size");
-        }
+      long latency;
+      try (Socket probe = new Socket()) {
+        t = SystemClock.elapsedRealtime();
+        probe.connect(new InetSocketAddress("1.1.1.1", 443), 5000);
+        latency = SystemClock.elapsedRealtime() - t;
       }
-    } finally {
-      downDeadline.cancel(false);
-      down.disconnect();
-    }
-    if (count != size)
-      throw new IOException("download_size");
-    double d = size * 8.0 / Math.max(1, SystemClock.elapsedRealtime() - t) / 1000;
-    if (Thread.currentThread().isInterrupted())
-      throw new InterruptedException();
-    byte[] data = new byte[size];
-    new java.security.SecureRandom().nextBytes(data);
-    HttpsURLConnection up = (HttpsURLConnection) new URL(origin + "/__up").openConnection();
-    if (privateLab)
-      up.setSSLSocketFactory(Credentials.tls(this, true).getSocketFactory());
-    up.setConnectTimeout(5000);
-    up.setReadTimeout(10000);
-    up.setRequestMethod("POST");
-    up.setDoOutput(true);
-    up.setFixedLengthStreamingMode(size);
-    up.setInstanceFollowRedirects(false);
-    t = SystemClock.elapsedRealtime();
-    ScheduledFuture<?> upDeadline = httpDeadlines.schedule(up::disconnect, 25, TimeUnit.SECONDS);
-    try {
-      try (OutputStream out = up.getOutputStream()) {
+      stage = 3;
+      t = SystemClock.elapsedRealtime();
+      HttpsURLConnection down =
+          (HttpsURLConnection) new URL(origin + "/__down?bytes=" + size).openConnection();
+      if (privateLab)
+        down.setSSLSocketFactory(Credentials.tls(this, true).getSocketFactory());
+      down.setConnectTimeout(5000);
+      down.setReadTimeout(10000);
+      down.setInstanceFollowRedirects(false);
+      int count;
+      long downMaxReadMs = 0, upMaxWriteMs = 0;
+      ScheduledFuture<?> downDeadline =
+          httpDeadlines.schedule(down::disconnect, 25, TimeUnit.SECONDS);
+      try {
+        if (down.getResponseCode() != 200)
+          throw new IOException("download_http");
         if (Thread.currentThread().isInterrupted())
           throw new InterruptedException();
+        timing.put("down_setup_ms", SystemClock.elapsedRealtime() - t);
+        stage = 4;
+        if (detailed)
+          load = new LoadProbe(32);
+        // Measure body transfer separately from TLS/DNS setup.
         t = SystemClock.elapsedRealtime();
-        for (int offset = 0; offset < data.length; offset += 32768) {
+        try (InputStream in = down.getInputStream()) {
+          count = 0;
+          byte[] buffer = new byte[32768];
+          int n;
+          while (true) {
+            long readStart = SystemClock.elapsedRealtime();
+            n = in.read(buffer);
+            downMaxReadMs = Math.max(downMaxReadMs, SystemClock.elapsedRealtime() - readStart);
+            if (n == -1)
+              break;
+            if (Thread.currentThread().isInterrupted())
+              throw new InterruptedException();
+            count += n;
+            if (count > size)
+              throw new IOException("download_size");
+          }
+        }
+      } finally {
+        downDeadline.cancel(false);
+        down.disconnect();
+      }
+      if (count != size)
+        throw new IOException("download_size");
+      timing.put("down_body_ms", SystemClock.elapsedRealtime() - t);
+      double d = size * 8.0 / Math.max(1, SystemClock.elapsedRealtime() - t) / 1000;
+      if (Thread.currentThread().isInterrupted())
+        throw new InterruptedException();
+      byte[] data = new byte[size];
+      new java.security.SecureRandom().nextBytes(data);
+      stage = 5;
+      HttpsURLConnection up = (HttpsURLConnection) new URL(origin + "/__up").openConnection();
+      if (privateLab)
+        up.setSSLSocketFactory(Credentials.tls(this, true).getSocketFactory());
+      up.setConnectTimeout(5000);
+      up.setReadTimeout(10000);
+      up.setRequestMethod("POST");
+      up.setDoOutput(true);
+      up.setFixedLengthStreamingMode(size);
+      up.setInstanceFollowRedirects(false);
+      t = SystemClock.elapsedRealtime();
+      ScheduledFuture<?> upDeadline = httpDeadlines.schedule(up::disconnect, 25, TimeUnit.SECONDS);
+      try {
+        try (OutputStream out = up.getOutputStream()) {
+          timing.put("up_setup_ms", SystemClock.elapsedRealtime() - t);
+          stage = 6;
           if (Thread.currentThread().isInterrupted())
             throw new InterruptedException();
-          out.write(data, offset, Math.min(32768, data.length - offset));
+          t = SystemClock.elapsedRealtime();
+          for (int offset = 0; offset < data.length; offset += 32768) {
+            if (Thread.currentThread().isInterrupted())
+              throw new InterruptedException();
+            long writeStart = SystemClock.elapsedRealtime();
+            out.write(data, offset, Math.min(32768, data.length - offset));
+            upMaxWriteMs = Math.max(upMaxWriteMs, SystemClock.elapsedRealtime() - writeStart);
+          }
         }
+        timing.put("up_write_ms", SystemClock.elapsedRealtime() - t);
+        stage = 7;
+        if (up.getResponseCode() != 200)
+          throw new IOException("upload_http");
+        try (InputStream in = up.getInputStream()) {
+          Credentials.read(in, 65536);
+        }
+      } finally {
+        upDeadline.cancel(false);
+        up.disconnect();
       }
-      if (up.getResponseCode() != 200)
-        throw new IOException("upload_http");
-      try (InputStream in = up.getInputStream()) {
-        Credentials.read(in, 65536);
-      }
+      timing.put("up_body_ack_ms", SystemClock.elapsedRealtime() - t);
+      stage = 8;
+      double u = size * 8.0 / Math.max(1, SystemClock.elapsedRealtime() - t) / 1000;
+      return new JSONObject()
+          .put("screen_on", getSystemService(android.os.PowerManager.class).isInteractive())
+          .put("cpu_lock", labWake != null && labWake.isHeld())
+          .put("endpoint", privateLab ? "private-estonia" : "cloudflare")
+          .put("down_max_read_ms", downMaxReadMs)
+          .put("up_max_write_ms", upMaxWriteMs)
+          .put("down", d)
+          .put("up", u)
+          .put("latency", latency)
+          .put("bytes_per_direction", size)
+          .put("method", "body-4mib-v2")
+          .put("discord", discord);
+    } catch (Exception e) {
+      transferError = safe(e);
+      throw e;
     } finally {
-      upDeadline.cancel(false);
-      up.disconnect();
+      if (detailed) {
+        if (load != null) {
+          load.close();
+          record
+          ("load", measuredRoute, load.metrics(), "");
+        }
+        timing.put("stage", stage)
+            .put("elapsed_ms", SystemClock.elapsedRealtime() - measurementStart);
+        record
+        ("transfer", measuredRoute, timing, transferError);
+      }
     }
-    double u = size * 8.0 / Math.max(1, SystemClock.elapsedRealtime() - t) / 1000;
-    return new JSONObject()
-        .put("screen_on", getSystemService(android.os.PowerManager.class).isInteractive())
-        .put("cpu_lock", labWake != null && labWake.isHeld())
-        .put("endpoint", privateLab ? "private-estonia" : "cloudflare")
-        .put("down", d)
-        .put("up", u)
-        .put("latency", latency)
-        .put("bytes_per_direction", size)
-        .put("method", "body-4mib-v2")
-        .put("discord", discord);
   }
+
   private static final class NetworkChanged extends IOException {}
   private void beginNetwork() throws NetworkChanged {
     operationNetwork = NetworkAccess.select(this);

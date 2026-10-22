@@ -15,10 +15,10 @@ public final class DiagnosticReports {
       "received_packets", "queue_drops", "stale_drops", "sequence_gaps", "queue_depth",
       "heartbeat_rtt_ms", "heartbeat_timeouts", "max_queue_ms", "max_write_ms", "write_timeouts",
       "write_ms", "flushes", "reconnects", "udp_receive_buffer", "batch_packets", "max_age_ms",
-      "dial_attempts", "connect_ms", "tcp_send_buffer", "tcp_receive_buffer"};
-  private static final Set<String> PHASES =
-      new HashSet<>(Arrays.asList("start", "connected", "health_ok", "health_failed", "failed",
-          "failover", "network_changed", "candidate_failed", "rank", "measurement"));
+      "dial_attempts", "connect_ms", "tcp_send_buffer", "tcp_receive_buffer", "started_at"};
+  private static final Set<String> PHASES = new HashSet<>(Arrays.asList("start", "connected",
+      "health_ok", "health_failed", "failed", "failover", "network_changed", "candidate_failed",
+      "rank", "measurement", "packet", "packet_server", "dns", "baseline", "load", "transfer"));
   private static File file(Context c) {
     return new File(c.getFilesDir(), "support-preview.json");
   }
@@ -27,7 +27,7 @@ public final class DiagnosticReports {
   }
   public static JSONObject preview(Context c) throws Exception {
     try (InputStream in = new AtomicFile(file(c)).openRead()) {
-      return new JSONObject(new String(Credentials.read(in, 98304), StandardCharsets.UTF_8));
+      return new JSONObject(new String(Credentials.read(in, 131072), StandardCharsets.UTF_8));
     }
   }
   static String error(String s) {
@@ -64,7 +64,13 @@ public final class DiagnosticReports {
     if (source == null)
       return out;
     for (String k : new String[] {"down", "up", "latency", "connect_ms", "elapsed_ms", "score",
-             "losses", "bytes_per_direction"})
+             "losses", "bytes_per_direction", "size", "burst", "sent", "received", "duplicates",
+             "reordered", "invalid", "loss_percent", "rtt_p50_ms", "rtt_p95_ms", "rtt_max_ms",
+             "jitter_ms", "control_ms", "server_received", "server_replies", "server_duplicates",
+             "dns_queries", "dns_success", "dns_timeouts", "dns_total_ms", "tcp_attempts",
+             "tcp_success", "tcp_failed", "tcp_p50_ms", "tcp_p95_ms", "tcp_max_ms",
+             "down_max_read_ms", "up_max_write_ms", "discord_ms", "down_setup_ms", "down_body_ms",
+             "up_setup_ms", "up_write_ms", "up_body_ack_ms", "stage"})
       metric(out, k, source.opt(k));
     if (source.has("discord"))
       out.put("discord_ok", "ok".equals(source.optString("discord")));
@@ -92,7 +98,7 @@ public final class DiagnosticReports {
             JSONObject r = new JSONObject(line);
             if (PHASES.contains(r.optString("phase"))) {
               tail.add(r);
-              while (tail.size() > 64) tail.removeFirst();
+              while (tail.size() > 96) tail.removeFirst();
             }
           } catch (JSONException ignored) {
           }
@@ -102,6 +108,9 @@ public final class DiagnosticReports {
     JSONArray samples = new JSONArray(), events = new JSONArray();
     for (JSONObject r : tail) {
       String phase = r.optString("phase"), err = error(r.optString("error"));
+      if ("rank".equals(phase) && "none".equals(err) && r.optJSONObject("values") != null)
+        err = error(r.getJSONObject("values").optString(
+            "error", r.getJSONObject("values").optString("warning", "")));
       JSONObject row = new JSONObject()
                            .put("time", Math.max(0, r.optLong("time")) / 1000)
                            .put("phase", phase)
@@ -140,7 +149,7 @@ public final class DiagnosticReports {
           if (id.isEmpty())
             continue;
           JSONObject m = values(r);
-          m.put("id", id).put("error", error(r.optString("error")));
+          m.put("id", id).put("error", error(r.optString("error", r.optString("warning", ""))));
           safe.put(m);
           JSONObject stats = new JSONObject(), speed = r.optJSONObject("metrics");
           if (speed != null) {
@@ -185,7 +194,7 @@ public final class DiagnosticReports {
                                     .put("samples", samples)
                                     .put("rankings", rankings));
     byte[] data = report.toString(2).getBytes(StandardCharsets.UTF_8);
-    if (data.length > 98304)
+    if (data.length > 131072)
       throw new IOException("report_size");
     AtomicFile af = new AtomicFile(file(c));
     FileOutputStream out = af.startWrite();
@@ -231,7 +240,7 @@ public final class DiagnosticReports {
   }
   private static JSONObject upload(Context c, String host, JSONObject report) throws Exception {
     byte[] payload = report.toString().getBytes(StandardCharsets.UTF_8);
-    if (payload.length > 98304)
+    if (payload.length > 131072)
       throw new IOException("report_size");
     // Ordinary unprotected socket: an active VPN/kill switch remains authoritative.
     try (java.net.Socket raw = new java.net.Socket();
@@ -293,7 +302,7 @@ public final class DiagnosticReports {
         progress = "Сервер подтвердил получение отчёта.";
       } catch (Exception e) {
         progress = "Не удалось отправить. Отчёт сохранён. Нажмите «Повторить отправку отчёта» "
-                   + "после восстановления сети.";
+            + "после восстановления сети.";
       } finally {
         sending = false;
       }

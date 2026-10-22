@@ -14,8 +14,12 @@ class AndroidReports(unittest.TestCase):
  def test_rejects_unbounded_and_invalid_data(self):
   for change in ('rows','nan','error','hardware'):
    b=self.bundle()
-   if change=='rows':b['android']['samples']*=65
+   if change=='rows':b['android']['samples']*=97
    if change=='nan':b['android']['samples'][0]['carrier']['reconnects']=float('nan')
    if change=='error':b['android']['samples'][0]['error']='raw secret message'
    if change=='hardware':b['android']['model']='EVN1-secret'
    with self.assertRaises(ValueError):clean_android(b)
+
+ def test_packet_metrics_and_nested_service_result_survive(self):
+  b=self.bundle();row=b['android']['samples'][0];row['phase']='packet';row['values']={'size':1200,'sent':20,'received':18,'loss_percent':10,'secret':'EVN1-secret','metrics':{'discord_ok':False,'up':20}}
+  r=clean_android(b)['android']['samples'][0]['values'];self.assertEqual(r['loss_percent'],10);self.assertFalse(r['metrics']['discord_ok']);self.assertNotIn('secret',r)

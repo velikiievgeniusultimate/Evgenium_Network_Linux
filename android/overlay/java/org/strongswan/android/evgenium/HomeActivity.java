@@ -19,7 +19,8 @@ public class HomeActivity extends Activity {
   private EditText token;
   private Spinner route;
   private PowerControl power;
-  private Button runDiagnostic;
+  private Button runDiagnostic, tokenAction;
+  private boolean editingToken, enrollingToken;
   private String pending = "connect", page = "home";
   private final Handler ui = new Handler(Looper.getMainLooper());
   private final Runnable refresh = new Runnable() {
@@ -34,8 +35,12 @@ public class HomeActivity extends Activity {
         runDiagnostic.setEnabled(!Engine.working() && !DiagnosticReports.sending);
         runDiagnostic.setText(DiagnosticReports.pendingUpload(HomeActivity.this)
                 ? "Повторить отправку отчёта"
-                : "Проверить и отправить отчёт");
+                : "Полная диагностика");
         runDiagnostic.setAlpha(runDiagnostic.isEnabled() ? 1f : .4f);
+      }
+      if (tokenAction != null) {
+        tokenAction.setEnabled(!enrollingToken && (!editingToken || !Engine.running));
+        tokenAction.setAlpha(tokenAction.isEnabled() ? 1f : .4f);
       }
       ui.postDelayed(this, 1000);
     }
@@ -61,6 +66,9 @@ public class HomeActivity extends Activity {
     deviceName = null;
     diagnosticStatus = null;
     runDiagnostic = null;
+    tokenAction = null;
+    token = null;
+    editingToken = false;
     LinearLayout root = column();
     root.setBackgroundColor(BG);
     root.setPadding(dp(24), dp(12), dp(24), dp(16));
@@ -126,7 +134,7 @@ public class HomeActivity extends Activity {
     if (state != null && "settings".equals(state.getString("page")))
       settings();
     else if (state != null && "diagnostics".equals(state.getString("page")))
-      diagnostics();
+      settings();
     if (Build.VERSION.SDK_INT >= 33
         && checkSelfPermission("android.permission.POST_NOTIFICATIONS")
             != getPackageManager().PERMISSION_GRANTED)
@@ -209,27 +217,48 @@ public class HomeActivity extends Activity {
     deviceName = title(c, name, 22);
     button(c, "Изменить имя устройства", this::rename).setEnabled(enrolled());
     title(c, "Токен клиента", 18);
+    editingToken = !enrolled();
+    LinearLayout tokenRow = new LinearLayout(this);
+    tokenRow.setGravity(Gravity.CENTER_VERTICAL);
     token = new EditText(this);
     token.setSingleLine(true);
+    token.setTextSize(14);
     token.setTextColor(INK);
     token.setHintTextColor(MUTED);
-    token.setHint(enrolled() ? "Токен уже подтверждён" : "EVN1-…");
-    token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-    token.setPadding(dp(16), dp(12), dp(16), dp(12));
-    token.setBackground(shape(CARD, 12));
-    c.addView(token, new LinearLayout.LayoutParams(-1, dp(54)));
-    CheckBox show = new CheckBox(this);
-    show.setText("Показать вводимый токен");
-    show.setTextColor(MUTED);
-    c.addView(show);
-    show.setOnCheckedChangeListener((v, on) -> {
-      int n = token.getSelectionStart();
-      token.setTransformationMethod(
-          on ? null : android.text.method.PasswordTransformationMethod.getInstance());
-      token.setSelection(Math.max(0, n));
+    token.setHint(editingToken ? "Введите токен" : "Токен подтверждён");
+    token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+    token.setSaveEnabled(false);
+    token.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+    token.setEnabled(editingToken);
+    token.setPadding(dp(12), dp(8), dp(12), dp(8));
+    token.setBackground(shape(CARD, 8));
+    tokenRow.addView(token, new LinearLayout.LayoutParams(0, dp(54), 1));
+    tokenAction = button(tokenRow, editingToken ? "Подтвердить" : "Изменить", () -> {
+      if (enrollingToken)
+        return;
+      if (editingToken) {
+        enroll();
+        return;
+      }
+      try {
+        token.setText(Credentials.token(this));
+        editingToken = true;
+        token.setEnabled(true);
+        tokenAction.setText("Подтвердить");
+        token.requestFocus();
+        token.setSelection(token.length());
+      } catch (Exception e) {
+        toast("Не удалось прочитать сохранённый токен");
+      }
     });
-    Button enroll = button(c, enrolled() ? "Заменить токен" : "Подтвердить токен", () -> enroll());
-    enroll.setEnabled(!Engine.running);
+    tokenAction.setTextSize(13);
+    tokenAction.setSingleLine(true);
+    tokenAction.setPadding(dp(10), 0, dp(10), 0);
+    LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-2, dp(54));
+    actionParams.leftMargin = dp(8);
+    tokenAction.setLayoutParams(actionParams);
+    c.addView(tokenRow, new LinearLayout.LayoutParams(-1, dp(54)));
     title(c, "Маршрут", 18);
     if (route.getParent() != null)
       ((android.view.ViewGroup) route.getParent()).removeView(route);
@@ -237,7 +266,16 @@ public class HomeActivity extends Activity {
     button(c, "Восстановить · проверить маршруты", () -> confirmTests(false));
     button(c, "Результаты проверки маршрутов", () -> textDialog("Рейтинг маршрутов", results()));
     title(c, "ПОМОЧЬ УЛУЧШИТЬ VPN", 12).setTextColor(MUTED);
-    button(c, "Полная диагностика", this::diagnostics);
+    runDiagnostic = button(c, "Полная диагностика", () -> {
+      if (Engine.working() || DiagnosticReports.sending)
+        return;
+      if (DiagnosticReports.pendingUpload(this))
+        DiagnosticReports.send(this);
+      else
+        confirmTests(true);
+    });
+    diagnosticStatus = title(c, DiagnosticReports.summary(this), 13);
+    diagnosticStatus.setTextColor(MUTED);
     button(c, "Системная защита VPN",
         () -> startActivity(new Intent("android.settings.VPN_SETTINGS")));
     title(c,
@@ -247,30 +285,6 @@ public class HomeActivity extends Activity {
         .setTextColor(MUTED);
     title(c, "Evgenium " + version() + " · strongSwan · GPLv2+", 12).setTextColor(MUTED);
   }
-  private void diagnostics() {
-    page = "diagnostics";
-    LinearLayout c = content("Диагностика");
-    title(c, "Помогите сделать связь лучше", 25);
-    title(c,
-        "Проверим все 5 маршрутов, скорость и доступность сервисов. После проверки отчёт "
-            + "автоматически отправится разработчику. Здесь появится подтверждение сервера.",
-        15)
-        .setTextColor(MUTED);
-    diagnosticStatus = title(c, DiagnosticReports.summary(this), 16);
-    runDiagnostic = button(c, "Проверить и отправить отчёт", () -> {
-      if (Engine.working() || DiagnosticReports.sending)
-        return;
-      if (DiagnosticReports.pendingUpload(this))
-        DiagnosticReports.send(this);
-      else
-        confirmTests(true);
-    });
-    title(c,
-        "Если отправка не удалась, отчёт останется на телефоне. Эта же кнопка повторит "
-            + "отправку без нового прогона тестов.",
-        13)
-        .setTextColor(MUTED);
-  }
   private void confirmTests(boolean diagnostic) {
     if (!enrolled()) {
       toast("Сначала подтвердите токен в настройках");
@@ -278,11 +292,12 @@ public class HomeActivity extends Activity {
     }
     new AlertDialog.Builder(this)
         .setTitle(diagnostic ? "Проверить и отправить отчёт?" : "Перепроверить маршруты?")
-        .setMessage("Проверка займёт несколько минут и обновит рейтинг. Во время переключений "
+        .setMessage("Проверка займёт примерно 3–7 минут и обновит рейтинг. Во время переключений "
             + "возможны паузы связи. Расход — около 60 МБ, при повторах больше."
             + (diagnostic ? "\n\nПосле проверки автоматически отправим модель и версию Android, "
-                        + "результаты тестов, события VPN и технические счётчики. Сервер свяжет "
-                          + "отчёт "
+                        + "результаты скорости, DNS и пакетных проб, задержки, события VPN и "
+                          + "технические счётчики. Сервер свяжет "
+                        + "отчёт "
                         + "с сертификатом устройства. Токены, ключи, содержимое трафика и история "
                         + "посещений не передаются."
                           : ""))
@@ -297,18 +312,26 @@ public class HomeActivity extends Activity {
       toast("Сначала отключите VPN");
       return;
     }
+    if (enrollingToken)
+      return;
+    enrollingToken = true;
+    tokenAction.setEnabled(false);
     final EditText field = token;
     String value = field.getText().toString().trim();
     new Thread(() -> {
       try {
         Credentials.enroll(this, value);
         runOnUiThread(() -> {
+          enrollingToken = false;
           field.setText("");
           settings();
           toast("Токен подтверждён");
         });
       } catch (Exception e) {
-        runOnUiThread(() -> toast("Не удалось подтвердить токен. Проверьте токен и подключение."));
+        runOnUiThread(() -> {
+          enrollingToken = false;
+          toast("Не удалось подтвердить токен. Проверьте токен и подключение.");
+        });
       }
     }).start();
   }

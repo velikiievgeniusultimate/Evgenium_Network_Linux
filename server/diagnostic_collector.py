@@ -298,6 +298,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not Path('/etc/evgenium-diagnostics-enabled').exists():
             self.reply(403, {}); return
         try:
+            if self.path in ('/packet-session', '/packet-result'):
+                if getattr(self.server, 'direct_only', False):
+                    self.reply(404, {}); return
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 0 < size <= 128 or self.headers.get('Transfer-Encoding'): raise ValueError('size')
+                from packet_probe import request
+                result = request(self.path, json.loads(self.rfile.read(size)),
+                                 self.connection.getpeercert(binary_form=True), self.client_address[0])
+                self.reply(200, result); return
             if getattr(self.server,'direct_only',False) and self.path != '/report':
                 self.reply(404,{}); return
             size=int(self.headers.get('Content-Length','0'))
