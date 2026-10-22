@@ -1,0 +1,30 @@
+[Unit]
+Description=Evgenium end-to-end TLS TCP relay to Estonia
+After=network-online.target nftables.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStartPre=+/usr/local/libexec/evgenium-relay-firewall open
+ExecStart=/usr/local/libexec/evgenium-tcp-relay -listen 0.0.0.0:24579 -backend 38.180.164.67:24578 -max-connections 128 -max-per-ip 32 -idle-timeout 60s -backend-congestion bbr
+ExecStopPost=+/usr/local/libexec/evgenium-relay-firewall close
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+MemoryMax=384M
+TasksMax=192
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target
