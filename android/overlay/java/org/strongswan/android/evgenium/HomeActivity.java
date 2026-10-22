@@ -102,9 +102,9 @@ public class HomeActivity extends Activity {
       }).start();
     });
     route = new Spinner(this);
-    String[] options = new String[5];
+    String[] options = new String[Engine.LABELS.length + 1];
     options[0] = "Автоматически по рейтингу";
-    System.arraycopy(Engine.LABELS, 0, options, 1, 4);
+    System.arraycopy(Engine.LABELS, 0, options, 1, Engine.LABELS.length);
     ArrayAdapter<String> adapter =
         new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, options);
     route.setAdapter(adapter);
@@ -220,11 +220,34 @@ public class HomeActivity extends Activity {
   private void handleDebug(Intent i) {
     if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0)
       return;
+    if (i.hasExtra("lab-traffic-power")) getSharedPreferences("evgenium", 0).edit().putBoolean("lab-traffic-power", i.getBooleanExtra("lab-traffic-power", true)).commit();
+    if (i.hasExtra("lab-wake")) getSharedPreferences("evgenium", 0).edit().putBoolean("lab-wake", i.getBooleanExtra("lab-wake", false)).commit();
+    if (i.hasExtra("lab-dials")) {
+      int dials = i.getIntExtra("lab-dials", 1);
+      if (dials == 1 || dials == 3) getSharedPreferences("evgenium", 0).edit().putInt("lab-dials", dials).commit();
+    }
+    if (i.hasExtra("lab-batch")) {
+      int batch=i.getIntExtra("lab-batch",1);
+      if(batch==1||batch==10||batch==32)getSharedPreferences("evgenium",0).edit().putInt("lab-batch",batch).commit();
+    }
+    if (i.hasExtra("lab-age")) {
+      int age = i.getIntExtra("lab-age", 500);
+      if (age == 500 || age == 1500 || age == 3000) getSharedPreferences("evgenium", 0).edit().putInt("lab-age", age).commit();
+    }
+    if (i.hasExtra("lab-send-buffer")) {
+      int buffer = i.getIntExtra("lab-send-buffer", 0);
+      if (buffer == 0 || buffer == 1048576 || buffer == 4194304) getSharedPreferences("evgenium", 0).edit().putInt("lab-send-buffer", buffer).commit();
+    }
+    if (i.hasExtra("lab-udp-port")) {
+      int port=i.getIntExtra("lab-udp-port",443);
+      if(port==443||port==24570)getSharedPreferences("evgenium",0).edit().putInt("lab-udp-port",port).commit();
+    }
     if (i.hasExtra("lab-forward"))
       getSharedPreferences("evgenium", 0)
           .edit()
           .putBoolean("lab-forward", i.getBooleanExtra("lab-forward", false))
           .commit();
+    if (i.hasExtra("lab-private-speed")) getSharedPreferences("evgenium", 0).edit().putBoolean("lab-private-speed", i.getBooleanExtra("lab-private-speed", false)).commit();
     String cmd = i.getStringExtra("lab");
     i.removeExtra("lab"); // Do not repeat an ADB command when Android recreates the screen.
     if (cmd == null)
@@ -313,7 +336,7 @@ public class HomeActivity extends Activity {
       return;
     }
     if (i.hasExtra("route"))
-      route.setSelection(i.getIntExtra("route", -1) + 1);
+      route.setSelection(Math.max(0, Math.min(Engine.IDS.length, i.getIntExtra("route", -1) + 1)));
     if ("connect".equals(cmd) || "rank".equals(cmd))
       prepare(cmd);
     else if ("stop".equals(cmd) || "measure".equals(cmd))

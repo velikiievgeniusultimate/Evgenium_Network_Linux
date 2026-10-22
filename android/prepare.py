@@ -9,13 +9,14 @@ for path in (root/'overlay').rglob('*'):
  if path.is_file():target=main/path.relative_to(root/'overlay');target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(path,target)
 for path in (root/'tests').rglob('*.java'):
  target=app/'src/test/java'/path.relative_to(root/'tests');target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(path,target)
-f=app/'build.gradle';s=original(f).replace('applicationId "org.strongswan.android"','applicationId "com.evgenium.network.lab"').replace('minSdkVersion 21','minSdkVersion 26').replace('versionCode 96','versionCode 3').replace('versionName "2.6.2"','versionName "0.1.2-alpha"');abis=os.environ.get('EVG_ANDROID_ABIS','arm64-v8a armeabi-v7a x86_64').split();assert set(abis)<= {'arm64-v8a','armeabi-v7a','x86_64'};s=s.replace("arguments '-j' + Runtime.runtime.availableProcessors()","arguments '-j4'\n                abiFilters "+', '.join(repr(x) for x in abis));s=s.replace("dependencies {", "dependencies {\n    implementation 'org.conscrypt:conscrypt-android:2.7.0'")
+f=app/'build.gradle';s=original(f).replace('applicationId "org.strongswan.android"','applicationId "com.evgenium.network.lab"').replace('minSdkVersion 21','minSdkVersion 26').replace('versionCode 96','versionCode 4').replace('versionName "2.6.2"','versionName "0.1.3-alpha"');abis=os.environ.get('EVG_ANDROID_ABIS','arm64-v8a armeabi-v7a x86_64').split();assert set(abis)<= {'arm64-v8a','armeabi-v7a','x86_64'};s=s.replace("arguments '-j' + Runtime.runtime.availableProcessors()","arguments '-j4'\n                abiFilters "+', '.join(repr(x) for x in abis));s=s.replace("dependencies {", "dependencies {\n    implementation 'org.conscrypt:conscrypt-android:2.7.0'")
 s=s.replace('defaultConfig {', 'defaultConfig {\n        ndk { abiFilters '+', '.join(repr(x) for x in abis)+' }', 1)
 f.write_text(s)
 f=main/'jni/Android.mk';f.write_text(original(f).replace('-DHAVE_STDBOOL_H', '-DHAVE_STDBOOL_H -DHAVE_SIGWAITINFO'))
 f=main/'AndroidManifest.xml';s=original(f).replace('android:name=".ui.MainActivity"','android:name=".evgenium.HomeActivity"',1).replace('android:label="@string/main_activity_name"','android:label="Evgenium Network"',1)
 s=s.replace('android:label="@string/app_name"','android:label="Evgenium Network · Lab"',1)
 s=s.replace('    </application>','        <activity android:name=".ui.MainActivity" android:exported="false" />\n        <service android:name=".evgenium.Engine" android:exported="false" android:foregroundServiceType="specialUse"><property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="VPN connection orchestration and consented route testing" /></service>\n    </application>')
+s=s.replace('    </application>', '    </application>\n    <uses-permission android:name="android.permission.WAKE_LOCK" />')
 for permission in ('READ_EXTERNAL_STORAGE','SYSTEM_ALERT_WINDOW','QUERY_ALL_PACKAGES'):
  s=re.sub(r'<uses-permission android:name="android.permission.'+permission+r'"[^>]*/>', '', s)
 # Keep upstream native namespace; use a distinct application ID and component names.
@@ -29,7 +30,7 @@ s=s[:pos]+ '\n\tprivate org.strongswan.android.evgenium.TunnelCarrier evgeniumCa
 s=s.replace('public void onCreate()','public boolean protect(int fd) { return super.protect(fd) && org.strongswan.android.evgenium.NetworkAccess.bind(this,fd); }\n\t@Override\n\tpublic void onCreate()',1)
 s=s.replace('SettingsWriter writer = new SettingsWriter();','''if ("127.0.0.1".equals(mCurrentProfile.getGateway())) {
                                 try { evgeniumCarrier = new org.strongswan.android.evgenium.TunnelCarrier(this,
-                                    getSharedPreferences("evgenium",0).getString("route","").equals("ee-evgt")); }
+                                    getSharedPreferences("evgenium",0).getString("route","").startsWith("ee-evgt")); }
                                 catch (Exception e) { Log.e("Evgenium","carrier_start_"+e.getClass().getSimpleName());setError(ErrorState.GENERIC_ERROR);continue; }
                             }
                             SettingsWriter writer = new SettingsWriter();''')
@@ -77,4 +78,4 @@ generated=src.parent/'strongswan-6.0.3'
 for name in ('Android.common.mk','src/libstrongswan/crypto/proposal/proposal_keywords_static.c','src/libstrongswan/crypto/proposal/proposal_keywords_static.h','src/libstrongswan/asn1/oid.c','src/libstrongswan/asn1/oid.h','src/libstrongswan/settings/settings_parser.c','src/libstrongswan/settings/settings_parser.h','src/libstrongswan/settings/settings_lexer.c','src/libstrongswan/settings/settings_lexer.h'):
  source=generated/name
  if source.exists():shutil.copyfile(source,src/name)
-print('Prepared Evgenium Android 0.1.2 alpha')
+print('Prepared Evgenium Android 0.1.3 alpha')

@@ -43,9 +43,13 @@ public final class TunnelCarrier implements AutoCloseable {
     }
   }
 
+  private final TrafficPower power;
   private final VpnService service;
   private final boolean evgt;
   private final int endpointPort, batchPackets, udpBuffer;
+  private final int maxAgeMs, requestedSendBuffer;
+  private volatile int tcpSendBuffer, tcpReceiveBuffer, dialAttempts;
+  private volatile long connectMs;
   final int localPort;
   private final long startedAt = System.currentTimeMillis();
   private final boolean laboratory;
@@ -56,7 +60,7 @@ public final class TunnelCarrier implements AutoCloseable {
                            receivedPackets = new AtomicLong(),
                            sequenceGaps = new AtomicLong();
   private final AtomicLong writeTimeouts = new AtomicLong();
-  private volatile long maxQueueMs, maxWriteMs, writeMs, flushes;
+  private volatile long maxQueueMs, maxWriteMs, writeMs, flushes, heartbeatRttMs;
   public JSONObject metrics() throws Exception {
     return new JSONObject()
         .put("sent_bytes", sent)
@@ -68,6 +72,7 @@ public final class TunnelCarrier implements AutoCloseable {
         .put("stale_drops", staleDrops.get())
         .put("sequence_gaps", sequenceGaps.get())
         .put("queue_depth", queue.size())
+        .put("heartbeat_rtt_ms", heartbeatRttMs)
         .put("max_queue_ms", maxQueueMs)
         .put("max_write_ms", maxWriteMs)
         .put("write_timeouts", writeTimeouts.get())
@@ -76,6 +81,12 @@ public final class TunnelCarrier implements AutoCloseable {
         .put("reconnects", reconnects)
         .put("udp_receive_buffer", udpBuffer)
         .put("batch_packets", batchPackets)
+        .put("max_age_ms", maxAgeMs)
+        .put("transfer_cpu_lock", power.held())
+        .put("dial_attempts", dialAttempts)
+        .put("connect_ms", connectMs)
+        .put("tcp_send_buffer", tcpSendBuffer)
+        .put("tcp_receive_buffer", tcpReceiveBuffer)
         .put("started_at", startedAt);
   }
   public static JSONObject activeMetrics() {
@@ -115,6 +126,11 @@ public final class TunnelCarrier implements AutoCloseable {
   private volatile boolean closed;
   private volatile SocketAddress peer;
   private volatile long lastRx;
+  private volatile long offlineSince = SystemClock.elapsedRealtime();
+  public static long offlineMillis() {
+    TunnelCarrier a = active;
+    return a == null || a.closed || a.offlineSince == 0 ? 0 : Math.max(0, SystemClock.elapsedRealtime() - a.offlineSince);
+  }
   private final ArrayBlockingQueue<Packet> queue =
       new ArrayBlockingQueue<>(1024);
   private final ExecutorService threads = Executors.newFixedThreadPool(4);
@@ -126,8 +142,13 @@ public final class TunnelCarrier implements AutoCloseable {
     final long at = SystemClock.elapsedRealtime();
     Packet(byte[] b) { bytes = b; }
   }
+  private static int debugBatch(VpnService s,boolean evgt) {
+    if(!evgt || (s.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0)return 1;
+    int n=s.getSharedPreferences("evgenium",0).getInt("lab-batch",1);
+    return n==10||n==32?n:1;
+  }
   public TunnelCarrier(VpnService s, boolean e) throws Exception {
-    this(s, e, 24573, e ? 24578 : 24571, 1, false);
+    this(s, e, 24573, e ? 24578 : 24571, debugBatch(s,e), false);
   }
   private TunnelCarrier(VpnService s, boolean e, int localPort, int remotePort,
                         int batch, boolean lab) throws Exception {
@@ -136,6 +157,12 @@ public final class TunnelCarrier implements AutoCloseable {
     endpointPort = remotePort;
     batchPackets = batch;
     laboratory = lab;
+    boolean debug = (s.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+    int age = debug ? s.getSharedPreferences("evgenium", 0).getInt("lab-age", 500) : 500;
+    maxAgeMs = age == 1500 || age == 3000 ? age : 500;
+    int buffer = debug ? s.getSharedPreferences("evgenium", 0).getInt("lab-send-buffer", 0) : 0;
+    requestedSendBuffer = buffer == 1048576 || buffer == 4194304 ? buffer : 0;
+    power = new TrafficPower(s, debug && s.getSharedPreferences("evgenium", 0).getBoolean("lab-traffic-power", false));
     udp = new DatagramSocket(
         new InetSocketAddress(InetAddress.getByName("127.0.0.1"), localPort));
     udp.setReceiveBufferSize(4 * 1024 * 1024);
@@ -149,6 +176,7 @@ public final class TunnelCarrier implements AutoCloseable {
       while (!closed) {
         try {
           Thread.sleep(1000);
+          power.sample(sent + received);
           SSLSocket sck = tls;
           if (sck != null && lastRx > 0 &&
               SystemClock.elapsedRealtime() - lastRx > 25000)
@@ -189,21 +217,29 @@ public final class TunnelCarrier implements AutoCloseable {
           Thread.sleep(500);
           continue;
         }
-        raw = new Socket();
-        raw.bind(new InetSocketAddress(0));
-        if (!service.protect(raw))
-          throw new IOException("protect_failed");
+        power.connecting();
         boolean labForward =
             !laboratory &&
             (service.getApplicationInfo().flags &
              android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0 &&
             service.getSharedPreferences("evgenium", 0)
                 .getBoolean("lab-forward", false);
-        raw.connect(new InetSocketAddress(
-                        labForward ? "127.0.0.1" : Credentials.EE,
-                        labForward ? (evgt ? 34578 : 34571) : endpointPort),
-                    7000);
+        boolean relay = evgt && !laboratory && "ee-evgt-ru".equals(service.getSharedPreferences("evgenium", 0).getString("route", ""));
+        dialAttempts = (service.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0 && service.getSharedPreferences("evgenium", 0).getInt("lab-dials", 1) == 3 ? 3 : 1;
+        long dialStart = SystemClock.elapsedRealtime();
+        raw = SocketRace.connect(new InetSocketAddress(
+                        labForward ? "127.0.0.1" : relay ? Credentials.RU : Credentials.EE,
+                        labForward ? (evgt ? 34578 : 34571) : relay ? 24579 : endpointPort),
+                    dialAttempts, 7000, socket -> {
+                      if (requestedSendBuffer > 0) socket.setSendBufferSize(requestedSendBuffer);
+                      socket.bind(new InetSocketAddress(0));
+                      if (!service.protect(socket)) throw new IOException("protect_failed");
+                    });
+        if (closed) { raw.close(); return; }
+        connectMs = SystemClock.elapsedRealtime() - dialStart;
         raw.setTcpNoDelay(true);
+        tcpSendBuffer = raw.getSendBufferSize();
+        tcpReceiveBuffer = raw.getReceiveBufferSize();
         tls = (SSLSocket)Credentials.tls(service, true)
                   .getSocketFactory()
                   .createSocket(raw, Credentials.EE, endpointPort, true);
@@ -236,12 +272,13 @@ public final class TunnelCarrier implements AutoCloseable {
           if (!Arrays.equals(m, MAGIC))
             throw new IOException("protocol_magic");
         }
+        offlineSince = 0;
         seq = 0;
         lastRx = SystemClock.elapsedRealtime();
         SSLSocket session = tls;
         Socket transport = raw;
-        Future<?> writer =
-            threads.submit(() -> writeLoop(out, session, transport));
+        SocketDeadline.Writes deadline = new SocketDeadline.Writes(transport, 10000, () -> writeTimeouts.incrementAndGet());
+        Future<?> writer = threads.submit(() -> writeLoop(out, session, deadline));
         long lastSeq = 0;
         try {
           while (!closed) {
@@ -253,13 +290,20 @@ public final class TunnelCarrier implements AutoCloseable {
             lastRx = SystemClock.elapsedRealtime();
             if (type == 2) {
               synchronized (out) {
-                frame(out, 3, number, data);
-                out.flush();
+                deadline.begin();
+                try { frame(out, 3, number, data); out.flush(); }
+                finally { deadline.end(); }
               }
               continue;
             }
-            if (type == 3 || len == 0)
+            if (type == 3) {
+              long stamp = 0;
+              for (byte b : data) stamp = (stamp << 8) | (b & 255L);
+              long rtt = SystemClock.elapsedRealtime() - stamp;
+              if (rtt >= 0 && rtt < 20000) heartbeatRttMs = rtt;
               continue;
+            }
+            if (len == 0) continue;
             if (evgt) {
               sequenceGaps.addAndGet(number - lastSeq - 1);
               lastSeq = number;
@@ -274,6 +318,7 @@ public final class TunnelCarrier implements AutoCloseable {
         } finally {
           abortTransport();
           writer.cancel(true);
+          deadline.close();
         }
       } catch (Exception e) {
         if (!closed)
@@ -281,6 +326,7 @@ public final class TunnelCarrier implements AutoCloseable {
                                 e.getClass().getSimpleName() + ":" +
                                 e.getMessage());
       } finally {
+        if (!closed && offlineSince == 0) offlineSince = SystemClock.elapsedRealtime();
         abortTransport();
         queue.clear();
       }
@@ -295,9 +341,8 @@ public final class TunnelCarrier implements AutoCloseable {
     }
   }
   private void writeLoop(DataOutputStream out, SSLSocket session,
-                         Socket transport) {
-    try (SocketDeadline.Writes deadline = new SocketDeadline.Writes(
-             transport, 10000, () -> writeTimeouts.incrementAndGet())) {
+                         SocketDeadline.Writes deadline) {
+    try {
       while (!closed && !session.isClosed()) {
         Packet p = queue.poll(5, TimeUnit.SECONDS);
         synchronized (out) {
@@ -320,7 +365,7 @@ public final class TunnelCarrier implements AutoCloseable {
               do {
                 long age = SystemClock.elapsedRealtime() - p.at;
                 maxQueueMs = Math.max(maxQueueMs, age);
-                if (age > 500) {
+                if (age > maxAgeMs) {
                   dropped++;
                   staleDrops.incrementAndGet();
                 } else {
@@ -366,6 +411,7 @@ public final class TunnelCarrier implements AutoCloseable {
     if (active == this)
       active = null;
     closed = true;
+    power.close();
     udp.close();
     abortTransport();
     threads.shutdownNow();

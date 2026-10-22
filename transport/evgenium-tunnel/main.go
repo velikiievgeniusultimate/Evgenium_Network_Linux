@@ -93,7 +93,7 @@ func decode(r io.Reader) (packet, error) {
 
 type options struct {
 	mode, listen, udpListen, udpPeer, server, serverName, ca, cert, key, peerName, crl string
-	queue, buffer, maxSessions, batch                                                  int
+	tcpSendBuffer, queue, buffer, maxSessions, batch                                   int
 	maxAge                                                                             time.Duration
 	pace                                                                               float64
 }
@@ -327,6 +327,13 @@ func readFrames(ctx context.Context, c net.Conn, u *net.UDPConn, control chan<- 
 func session(c *tls.Conn, u *net.UDPConn, o options) error {
 	defer c.Close()
 	defer u.Close()
+	if o.tcpSendBuffer > 0 {
+		if tcp, ok := c.NetConn().(*net.TCPConn); ok {
+			if err := tcp.SetWriteBuffer(o.tcpSendBuffer); err != nil {
+				return errors.New("tcp_send_buffer_failed")
+			}
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = c.SetDeadline(time.Now().Add(6 * time.Second))
@@ -423,13 +430,14 @@ func main() {
 	flag.StringVar(&o.crl, "crl", "", "signed device CRL: enables device identity policy instead of a single peer CN")
 	flag.StringVar(&o.peerName, "peer-name", "evgenium-ru-lab", "allowed client certificate CN")
 	flag.IntVar(&o.batch, "batch-packets", 32, "maximum already queued frames per flush (1..32)")
+	flag.IntVar(&o.tcpSendBuffer, "tcp-send-buffer", 0, "optional TCP send buffer bytes (0 keeps OS autotuning)")
 	flag.IntVar(&o.queue, "queue", 1024, "bounded UDP queue, packets")
 	flag.IntVar(&o.buffer, "udp-buffer", 4*1024*1024, "socket buffer bytes")
 	flag.IntVar(&o.maxSessions, "max-sessions", 8, "maximum concurrent server sessions including handshakes")
 	flag.DurationVar(&o.maxAge, "max-age", 500*time.Millisecond, "discard obsolete queued datagrams")
 	flag.Float64Var(&o.pace, "pace-mbps", 0, "optional local UDP delivery pacing (0 disables)")
 	flag.Parse()
-	if (o.mode != "server" && o.mode != "client") || o.batch < 1 || o.batch > 32 || o.queue < 1 || o.queue > 4096 || o.buffer < 4096 || o.buffer > 8*1024*1024 || o.maxSessions < 1 || o.maxSessions > 32 || o.maxAge < time.Millisecond || o.maxAge > 5*time.Second || math.IsNaN(o.pace) || math.IsInf(o.pace, 0) || o.pace < 0 || o.pace > 10000 {
+	if (o.tcpSendBuffer != 0 && (o.tcpSendBuffer < 4096 || o.tcpSendBuffer > 4*1024*1024)) || (o.mode != "server" && o.mode != "client") || o.batch < 1 || o.batch > 32 || o.queue < 1 || o.queue > 4096 || o.buffer < 4096 || o.buffer > 8*1024*1024 || o.maxSessions < 1 || o.maxSessions > 32 || o.maxAge < time.Millisecond || o.maxAge > 5*time.Second || math.IsNaN(o.pace) || math.IsInf(o.pace, 0) || o.pace < 0 || o.pace > 10000 {
 		log.Fatal("invalid_options")
 	}
 	cfg, e := tlsConfig(o)
