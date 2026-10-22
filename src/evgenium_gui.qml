@@ -11,19 +11,34 @@ C.ApplicationWindow {
     minimumHeight: 580
     visible: true
     title: "Evgenium Network"
-    color: "#f4f6fa"
+    color: "#141217"
 
-    readonly property color bg: "#f4f6fa"
-    readonly property color surface: "#ffffff"
-    readonly property color sidebar: "#111827"
-    readonly property color sidebarHover: "#1f2937"
-    readonly property color accent: "#39aef0"
-    readonly property color accentSoft: "#e8f6fe"
-    readonly property color textMain: "#111827"
-    readonly property color textMuted: "#6b7280"
-    readonly property color border: "#e5e7eb"
-    readonly property color good: "#16a34a"
-    readonly property color bad: "#dc2626"
+    readonly property color bg: "#141217"
+    readonly property color surface: "#211c24"
+    readonly property color sidebar: "#19151c"
+    readonly property color sidebarHover: "#2b202a"
+    readonly property color accent: "#ff586d"
+    readonly property color accentSoft: "#3a202d"
+    readonly property color textMain: "#fff1e9"
+    readonly property color textMuted: "#baa8af"
+    readonly property color border: "#48303c"
+    readonly property color good: "#a6d8c2"
+    readonly property color bad: "#ffad9e"
+
+    font.family: "Noto Sans"
+    palette.window: bg
+    palette.windowText: textMain
+    palette.base: "#18131b"
+    palette.alternateBase: surface
+    palette.text: textMain
+    palette.button: "#29202b"
+    palette.buttonText: textMain
+    palette.highlight: accent
+    palette.highlightedText: "#180d13"
+    palette.placeholderText: textMuted
+    palette.mid: border
+    palette.light: border
+    palette.dark: textMuted
 
     property string reportText: ""
     property string reportId: ""
@@ -191,22 +206,29 @@ C.ApplicationWindow {
         property bool danger: false
         property bool enabledButton: true
         signal clicked()
-        implicitHeight: 38
+        implicitHeight: 42
         implicitWidth: Math.max(92, buttonText.implicitWidth + 28)
-        radius: 10
-        color: !enabledButton ? "#eef0f3"
-              : danger ? (buttonMouse.containsMouse ? "#fee2e2" : "#fef2f2")
-              : primary ? (buttonMouse.containsMouse ? "#2099dc" : root.accent)
-              : (buttonMouse.containsMouse ? "#eef2f7" : "#f7f9fc")
+        radius: 5
+        color: !enabledButton ? "#2c242f"
+              : danger ? (buttonMouse.containsMouse ? "#5b2939" : "#3a202d")
+              : primary ? (buttonMouse.containsMouse ? "#ff7b89" : root.accent)
+              : (buttonMouse.containsMouse ? "#382432" : "#29202b")
         border.width: primary ? 0 : 1
-        border.color: danger ? "#fecaca" : root.border
-        opacity: enabledButton ? 1 : 0.6
+        border.color: danger ? "#875568" : root.border
+        opacity: enabledButton ? 1 : 0.45
+        activeFocusOnTab: enabledButton
+        Accessible.role: Accessible.Button
+        Accessible.name: label
+        Accessible.onPressAction: if (enabledButton) clicked()
+        Keys.onReturnPressed: if (enabledButton) clicked()
+        Keys.onSpacePressed: if (enabledButton) clicked()
+        Rectangle { anchors.fill: parent; anchors.margins: -3; radius: 7; color: "transparent"; border.color: root.accent; visible: flatButton.activeFocus }
 
         C.Label {
             id: buttonText
             anchors.centerIn: parent
             text: flatButton.label
-            color: flatButton.primary ? "white" : (flatButton.danger ? root.bad : root.textMain)
+            color: !flatButton.enabledButton ? root.textMuted : flatButton.primary ? "#180d13" : (flatButton.danger ? root.bad : root.textMain)
             font.pixelSize: 13
             font.weight: Font.DemiBold
         }
@@ -229,8 +251,8 @@ C.ApplicationWindow {
         Layout.fillWidth: true
         implicitWidth: 186
         height: 48
-        radius: 11
-        color: root.pageIndex === index ? "#253246" : (navMouse.containsMouse ? root.sidebarHover : "transparent")
+        radius: 4
+        color: root.pageIndex === index ? "#3a202d" : (navMouse.containsMouse ? root.sidebarHover : "transparent")
 
         RowLayout {
             anchors.fill: parent
@@ -240,8 +262,8 @@ C.ApplicationWindow {
             Rectangle {
                 implicitWidth: 28
                 implicitHeight: 28
-                radius: 8
-                color: root.pageIndex === nav.index ? root.accent : "#273449"
+                radius: 3
+                color: root.pageIndex === nav.index ? root.accent : "#302330"
                 C.Label {
                     anchors.centerIn: parent
                     text: nav.shortLabel
@@ -253,7 +275,7 @@ C.ApplicationWindow {
             C.Label {
                 Layout.fillWidth: true
                 text: nav.label
-                color: root.pageIndex === nav.index ? "white" : "#cbd5e1"
+                color: root.pageIndex === nav.index ? "white" : "#baa8af"
                 font.pixelSize: 14
                 font.weight: root.pageIndex === nav.index ? Font.DemiBold : Font.Normal
             }
@@ -270,8 +292,90 @@ C.ApplicationWindow {
         }
     }
 
+    component RibbonSwitch: C.Switch {
+        id: control
+        indicator: Rectangle {
+            x: control.leftPadding; y: (control.height - height) / 2
+            implicitWidth: 44; implicitHeight: 24; radius: 12
+            color: control.checked ? root.accent : "#48303c"
+            border.color: control.activeFocus ? root.textMain : root.border
+            Rectangle {
+                width: 18; height: 18; radius: 9; y: 3
+                x: control.checked ? parent.width - width - 3 : 3
+                color: control.checked ? "#180d13" : root.textMain
+            }
+        }
+        contentItem: C.Label {
+            text: control.text; color: root.textMain
+            leftPadding: control.indicator.width + control.spacing
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
+
+    component RibbonMark: Canvas {
+        onPaint: {
+            const ctx = getContext("2d")
+            ctx.reset(); ctx.scale(width / 110, height / 120)
+            for (let side = 0; side < 2; side++) {
+                ctx.save()
+                if (side) { ctx.translate(110, 0); ctx.scale(-1, 1) }
+ctx.beginPath();
+ctx.moveTo(10, 6);
+ctx.bezierCurveTo(-4, 17, 1, 29, 12, 38);
+ctx.bezierCurveTo(4, 52, 13, 63, 22, 70);
+ctx.bezierCurveTo(17, 82, 28, 98, 34, 112);
+ctx.bezierCurveTo(37, 95, 44, 82, 37, 68);
+ctx.bezierCurveTo(48, 55, 49, 46, 41, 36);
+ctx.bezierCurveTo(58, 13, 40, -4, 10, 6);
+ctx.closePath();
+ctx.fillStyle = "#702a40"; ctx.fill();
+ctx.beginPath();
+ctx.moveTo(44, 7);
+ctx.bezierCurveTo(10, -4, -8, 12, 8, 27);
+ctx.bezierCurveTo(15, 34, 32, 38, 41, 43);
+ctx.lineTo(46, 31);
+ctx.bezierCurveTo(33, 24, 13, 22, 12, 15);
+ctx.bezierCurveTo(18, 9, 31, 8, 44, 7);
+ctx.closePath();
+ctx.fillStyle = root.accent; ctx.fill();
+ctx.beginPath();
+ctx.moveTo(5, 26);
+ctx.bezierCurveTo(-3, 44, 13, 53, 34, 59);
+ctx.bezierCurveTo(38, 61, 40, 64, 41, 67);
+ctx.lineTo(45, 53);
+ctx.bezierCurveTo(31, 44, 10, 42, 11, 34);
+ctx.closePath();
+ctx.fillStyle = root.accent; ctx.fill();
+ctx.beginPath();
+ctx.moveTo(12, 51);
+ctx.bezierCurveTo(8, 67, 21, 77, 33, 80);
+ctx.lineTo(38, 90);
+ctx.lineTo(41, 75);
+ctx.bezierCurveTo(30, 66, 19, 63, 18, 58);
+ctx.closePath();
+ctx.fillStyle = root.accent; ctx.fill();
+ctx.beginPath();
+ctx.moveTo(22, 76);
+ctx.bezierCurveTo(20, 89, 31, 101, 34, 112);
+ctx.lineTo(39, 93);
+ctx.bezierCurveTo(31, 88, 29, 83, 29, 81);
+ctx.closePath();
+ctx.fillStyle = root.accent; ctx.fill();
+ctx.beginPath();
+ctx.moveTo(39, 8);
+ctx.bezierCurveTo(21, 3, 4, 11, 8, 20);
+ctx.moveTo(7, 34);
+ctx.bezierCurveTo(7, 43, 23, 48, 34, 52);
+ctx.moveTo(16, 60);
+ctx.bezierCurveTo(17, 67, 27, 71, 33, 73);
+ctx.strokeStyle = "#ffacb8"; ctx.lineWidth = 1.2; ctx.stroke();
+ctx.restore()
+}
+}
+}
+
     component Card: Rectangle {
-        radius: 16
+        radius: 7
         color: root.surface
         border.width: 1
         border.color: root.border
@@ -288,8 +392,9 @@ C.ApplicationWindow {
                 anchors.fill: parent
                 anchors.margins: 18
                 spacing: 8
-                C.Label { text: "Evgenium"; color: "white"; font.pixelSize: 23; font.bold: true; Layout.topMargin: 12 }
-                C.Label { text: "Network"; color: "#94a3b8"; Layout.bottomMargin: 28 }
+                RibbonMark { Layout.preferredWidth: 42; Layout.preferredHeight: 50; Layout.topMargin: 8 }
+                C.Label { text: "EVGENIUM"; color: root.textMain; font.pixelSize: 21; font.bold: true; font.letterSpacing: 1.5; Layout.topMargin: 8 }
+                C.Label { text: "N E T W O R K"; color: root.textMuted; font.pixelSize: 10; Layout.bottomMargin: 28 }
                 NavButton { label: "VPN"; shortLabel: "VPN"; index: 0 }
                 NavButton { label: "Приложения"; shortLabel: "APP"; index: 1; onClicked: root.refreshRunning() }
                 NavButton { label: "Сайты и IP"; shortLabel: "NET"; index: 2 }
@@ -297,8 +402,8 @@ C.ApplicationWindow {
                 NavButton { label: "DNS"; shortLabel: "DNS"; index: 4 }
                 NavButton { label: "Waydroid"; shortLabel: "WAY"; index: 5 }
                 Item { Layout.fillHeight: true }
-                C.Label { text: root.state.active ? "● Подключено" : (root.state.guard ? "● Защита включена" : "○ Отключено"); color: root.state.active ? "#4ade80" : "#cbd5e1" }
-                C.Label { text: "Версия " + (root.state.manager_version || "…"); color: "#94a3b8"; font.pixelSize: 12 }
+                C.Label { text: root.state.active ? "● Подключено" : (root.state.guard ? "● Защита включена" : "○ Отключено"); color: root.state.active ? "#a6d8c2" : "#baa8af" }
+                C.Label { text: "Версия " + (root.state.manager_version || "…"); color: "#ad929e"; font.pixelSize: 12 }
             }
         }
         ColumnLayout {
@@ -306,6 +411,7 @@ C.ApplicationWindow {
             Layout.fillHeight: true
             Layout.margins: 28
             spacing: 16
+            C.Label { text: "EVGENIUM  /  " + (root.pageIndex === 0 ? "ПОДКЛЮЧЕНИЕ" : "ИСКЛЮЧЕНИЯ"); color: root.accent; font.pixelSize: 10; font.letterSpacing: 1.4 }
             C.Label { text: ["Ваш VPN", "Исключения приложений", "Сайты и IP", "Исключения портов", "DNS", "Waydroid"][root.pageIndex]; color: root.textMain; font.pixelSize: 27; font.bold: true }
             C.Label {
                 Layout.fillWidth: true
@@ -349,13 +455,16 @@ C.ApplicationWindow {
                         }
                         Card {
                             Layout.fillWidth: true
-                            implicitHeight: connectionBody.implicitHeight + 40
+                            implicitHeight: Math.max(240, connectionBody.implicitHeight + 48)
+                            Rectangle { anchors.left: parent.left; anchors.top: parent.top; anchors.leftMargin: 20; width: 44; height: 3; color: root.accent }
+                            RibbonMark { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; anchors.rightMargin: 20; width: 105; height: 150; opacity: 0.8 }
                             ColumnLayout {
                                 id: connectionBody
                                 anchors.fill: parent
-                                anchors.margins: 20
+                                anchors.margins: 24
+                                anchors.rightMargin: 145
                                 spacing: 15
-                                C.Label { text: root.state.active ? "Подключено через Эстонию" : (root.tunnel.running ? "Подключение…" : "Готов к подключению"); color: root.state.active ? root.good : root.textMain; font.pixelSize: 21; font.bold: true }
+                                C.Label { text: root.state.active ? "Подключено через Эстонию" : (root.tunnel.running ? "Подключение…" : "Готов к подключению"); color: root.state.active ? root.good : root.textMain; font.pixelSize: 23; font.bold: true; Layout.fillWidth: true; wrapMode: Text.Wrap }
                                 C.Label { text: root.tunnel.message || "Введите токен клиента"; Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMuted }
                                 C.ProgressBar { Layout.fillWidth: true; visible: Boolean(root.tunnel.running) && !root.state.active; from: 0; to: 100; value: Number(root.tunnel.progress || 0) }
                                 RowLayout {
@@ -422,7 +531,7 @@ C.ApplicationWindow {
                             }
                         }
                         C.Label { visible: !(root.policy[root.category] || []).length; text: "Ваших исключений пока нет"; color: root.textMuted }
-                        C.Switch { text: "Отобразить базовые исключения"; checked: root.showBase; onToggled: root.showBase = checked }
+                        RibbonSwitch { text: "Отобразить базовые исключения"; checked: root.showBase; onToggled: root.showBase = checked }
                         ColumnLayout {
                             Layout.fillWidth: true
                             visible: root.showBase
@@ -432,7 +541,7 @@ C.ApplicationWindow {
                                     required property var modelData
                                     Layout.fillWidth: true
                                     C.Label { text: modelData.label; Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMain }
-                                    C.Switch { checked: Boolean(modelData.enabled); enabled: !root.busy; onToggled: root.action({action: "base", category: root.category, value: modelData.id, enabled: checked}) }
+                                    RibbonSwitch { checked: Boolean(modelData.enabled); enabled: !root.busy; onToggled: root.action({action: "base", category: root.category, value: modelData.id, enabled: checked}) }
                                 }
                             }
                             C.Label { Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMuted; text: "Вы можете выключить любое базовое правило. Скрытие списка не меняет его состояние." }
@@ -466,7 +575,7 @@ C.ApplicationWindow {
                         Layout.fillWidth: true
                         spacing: 18
                         C.Label { Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMuted; text: "Waydroid управляется отдельно от приложений компьютера. По умолчанию весь его трафик, включая DNS, идёт напрямую." }
-                        C.Switch { text: "Waydroid в обход VPN"; checked: root.policy.waydroid_direct !== false; enabled: !root.busy; onToggled: root.action({action: "waydroid", enabled: checked}) }
+                        RibbonSwitch { text: "Waydroid в обход VPN"; checked: root.policy.waydroid_direct !== false; enabled: !root.busy; onToggled: root.action({action: "waydroid", enabled: checked}) }
                         C.Label { Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMuted; text: root.policy.waydroid_direct !== false ? "Прямое подключение: Waydroid использует адрес вашего провайдера. Общие исключения не ограничивают этот режим." : "Waydroid использует VPN. При обрыве туннеля его внешние подключения блокируются." }
                     }
                 }
