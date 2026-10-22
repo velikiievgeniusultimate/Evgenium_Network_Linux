@@ -78,3 +78,18 @@ Not yet implemented/validated: independent security review, long-duration and ma
 The Estonia device ingress listens on TCP24578 inside the existing isolated IKE namespace. It reuses the existing server certificate and per-device CA. `-crl devices.pem` enables device mode: a verified clientAuth chain, CN matching `device-[a-f0-9]{24}`, and a fresh correctly signed CRL are mandatory. Missing, future, expired, invalid or revoked credentials are rejected. At most two sessions per certificate and32 total sessions are configured. The existing revocation watcher restarts this carrier when its CRL changes and closes the whole ingress gate if revocation snapshots become stale. UDP forwards only to the local IKE socket4500. The interserver prototype and its separate lab CA are not exposed as a client entrypoint.
 
 See `scripts/direct-ingress/evgenium-direct-evgt.service` and the VPN client's `ee-evgt` candidate. Source-based loopback routing lets the fixed peer be the namespace-local IKE source address while preserving NAT reversal and the server certificate identity. The updater downloads the binary for amd64/arm64/riscv64 and verifies its pinned digest before atomic installation. No Go compiler is required on client machines.
+
+## 0.3.0 recovery protection
+
+An authenticated session now requires a matching heartbeat response within 12 seconds.
+Probes run every 3 seconds and have priority over a busy UDP queue. Unsolicited pongs
+and incoming payload cannot indefinitely hide a broken reverse path. The wire format
+remains version 1 and interoperates with the deployed 0.2.0 server. Session deadlines
+use monotonic time. Metrics include heartbeat_timeouts, queue/write latency and Linux
+TCP retransmissions; they do not contain packet payloads.
+
+The Linux 0.5.3 client also gives the Russian relay's TCP endpoint a narrow routing
+exception inside its own namespace. A new socket after reconnect must select the
+uplink source, not the installed IKE virtual address. An isolated regression test
+checks that ordinary HTTPS traffic still selects the VPN source:
+`sudo python3 scripts/test-relay-reconnect-route.py`.

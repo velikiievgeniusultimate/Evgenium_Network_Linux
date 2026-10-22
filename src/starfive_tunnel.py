@@ -75,11 +75,11 @@ def charon_binary():
     return next((p for p in candidates if Path(p).is_file()), None)
 
 
-EVGT_VERSION = '0.2.0'
+EVGT_VERSION = '0.3.0'
 EVGT_ASSETS = {
- 'x86_64': ('amd64','3ffaf67bd81d85dd28942db0c73a608c07fe0a5ca8b2aa5a9c3dba1bc7720744'),
- 'aarch64': ('arm64','458f77b6a596b64f9846587d4208ae97a7362df4fe1dbef6d2a364eacf070ce8'),
- 'riscv64': ('riscv64','5952cb56773a1460ba01efd0af378b500f53d0f4fcac81b1fe78b1b39d62a2bb'),
+ 'x86_64': ('amd64','fdcc94d65ea6c3da768f66660021783daa45c3656cc946bafd5111a86bb285a6'),
+ 'aarch64': ('arm64','4333c1a74badab6387e8a5bbf2f1e2f4f409da2037e94b32e8466b700688c02d'),
+ 'riscv64': ('riscv64','fc0c14c0fb4bd0aec22d771bad2131f7a5df059d6f7fb537c465f1f2ae25a21f'),
 }
 
 def ensure_evgt_binary():
@@ -241,14 +241,46 @@ table netdev evn_full_wire {{
     inside(['nft','add','rule','inet','evn_starfive_guard','forward','oifname',FULL_PEER,'ipsec','in','reqid',str(REQID),'ct','state','established,related','accept'])
 
 
+_EGRESS_PROBES = ('https://1.1.1.1/cdn-cgi/trace', 'https://api.ipify.org')
+_egress_preferred = 0
+
+
+def parse_exit(body, trace):
+    values = [line[3:] for line in body.splitlines() if line.startswith('ip=')] if trace else [body.strip()]
+    if len(values) != 1:
+        return None
+    try:
+        return str(ipaddress.IPv4Address(values[0]))
+    except ipaddress.AddressValueError:
+        return None
+
+
 def egress_health():
-    for url,expected in [('https://1.1.1.1/cdn-cgi/trace','ip=38.180.164.67'),
-                         ('https://api.ipify.org','38.180.164.67')]:
-        result = inside(['curl','-4','--noproxy','*','--fail','--silent','--show-error',
-                         '--connect-timeout','3','--max-time','5',url],timeout=7,check=False)
-        if result.returncode == 0 and expected in result.stdout.splitlines():
+    """Independent HTTPS providers; a verified wrong IP must never be masked by fallback."""
+    global _egress_preferred
+    for index in (_egress_preferred, 1-_egress_preferred):
+        url = _EGRESS_PROBES[index]
+        try:
+            result = inside(['curl','-4','--noproxy','*','--fail','--silent','--show-error',
+                             '--connect-timeout','3','--max-time','5','--max-filesize','32768',url],timeout=7,check=False)
+        except (OSError,subprocess.TimeoutExpired):
+            continue
+        if result.returncode != 0:
+            continue
+        observed = parse_exit(result.stdout, index == 0)
+        if observed is not None:
+            if observed != '38.180.164.67':
+                return False
+            _egress_preferred = index
             return True
     return False
+
+
+def path_healthy(daemon):
+    # The private diagnostic HTTP collector is not part of the VPN data plane.
+    # Its outage/restart must not discard a working route's three-loss budget.
+    return (daemon.poll() is None and installed()
+            and (TLS_PROCESS is None or TLS_PROCESS.poll() is None) and egress_health())
 
 
 def retire_previous_connections(addresses):
@@ -599,6 +631,12 @@ def setup_network():
     inside(['ip', 'link', 'set', PEER, 'up'])
     inside(['ip', 'link', 'set', 'lo', 'up'])
     inside(['ip', 'route', 'add', 'default', 'via', GATEWAY])
+    # A reconnect creates a NEW TCP socket after IKE installs its default route.
+    # Keep the relay socket on the namespace uplink with the physical veth source;
+    # otherwise source selection gives it the VPN VIP and tunnels it into itself.
+    if ACTIVE.get('transport_address'):
+        inside(['ip','rule','add','priority','89','to',ACTIVE['transport_address']+'/32',
+                'ipproto','tcp','dport',str(ACTIVE['transport_port']),'lookup','main'])
     command(['ip', 'route', 'add', 'table', str(TABLE), 'default', 'via', route['gateway'], 'dev', route['dev']])
     for address in ENDPOINTS:
         command(['ip', 'rule', 'add', 'priority', str(PRIORITY), 'from', CLIENT+'/32',
@@ -1033,7 +1071,7 @@ def start_candidate(candidate,identity):
     try:
         swan('--initiate','--child','starfive-net',timeout=35)
         if STOP:raise RuntimeError('cancelled')
-        if not installed() or not health():raise RuntimeError('handshake_failed')
+        if not installed():raise RuntimeError('handshake_failed')
         prepare_data_plane(candidate['address'])
         if not egress_health():raise RuntimeError('estonia_egress_failed')
         return daemon
@@ -1101,8 +1139,14 @@ def worker():
                 stage('ranking','Проверяю маршрут: '+candidate['label'],10+int(i*60/len(CANDIDATES)),active=False,path=candidate['id'])
                 try:
                     daemon=start_candidate(candidate,identity)
-                    integrity=download(1048576)
-                    measurements[candidate['id']]={'ok':True,**speed_sample(2097152),'integrity':integrity['integrity']}
+                    try:
+                        integrity=download(1048576)['integrity']
+                    except RuntimeError as error:
+                        if str(error)=='integrity_failed':raise
+                        integrity=None
+                    except (OSError,ValueError,subprocess.TimeoutExpired):
+                        integrity=None
+                    measurements[candidate['id']]={'ok':True,**speed_sample(2097152),'integrity':integrity}
                 except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired):
                     if STOP:return
                     measurements[candidate['id']]={'ok':False}
@@ -1132,7 +1176,7 @@ def worker():
                         if DNS_PROCESS is None or DNS_PROCESS.poll() is not None:
                             stage('repairing','Перезапускаю защищённый DNS.',90,active=False,error_code='private_dns_stopped')
                             start_namespace_dns()
-                        healthy=daemon.poll() is None and installed() and health() and egress_health()
+                        healthy=path_healthy(daemon)
                         if healthy and not recover_system_dns():raise RuntimeError('system_dns_failed')
                     except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired):healthy=False
                     failures=0 if healthy else failures+1

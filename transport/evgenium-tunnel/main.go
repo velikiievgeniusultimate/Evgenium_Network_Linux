@@ -34,12 +34,12 @@ const dataFrame byte = 1
 const pingFrame byte = 2
 const pongFrame byte = 3
 
-type counters struct{ rx, tx, rxBytes, txBytes, queueDrop, staleDrop, kernelDrop, invalid, ioErrors, gaps, udpError, reconnect, active, rtt, flushes, frames, writeUS, maxWriteUS, maxQueueUS atomic.Uint64 }
+type counters struct{ rx, tx, rxBytes, txBytes, queueDrop, staleDrop, kernelDrop, invalid, ioErrors, gaps, udpError, reconnect, active, rtt, flushes, frames, writeUS, maxWriteUS, maxQueueUS, heartbeatTimeouts atomic.Uint64 }
 
 var stats counters
 
 func snapshot() map[string]uint64 {
-	return map[string]uint64{"utc_ms": uint64(time.Now().UnixMilli()), "udp_received": stats.rx.Load(), "udp_delivered": stats.tx.Load(), "received_bytes": stats.rxBytes.Load(), "delivered_bytes": stats.txBytes.Load(), "queue_drops": stats.queueDrop.Load(), "stale_drops": stats.staleDrop.Load(), "kernel_drops": stats.kernelDrop.Load(), "invalid_frames": stats.invalid.Load(), "stream_read_errors": stats.ioErrors.Load(), "sequence_gaps": stats.gaps.Load(), "udp_errors": stats.udpError.Load(), "reconnects": stats.reconnect.Load(), "active": stats.active.Load(), "rtt_us": stats.rtt.Load(), "tls_flushes": stats.flushes.Load(), "frames_written": stats.frames.Load(), "write_us": stats.writeUS.Load(), "max_write_us": stats.maxWriteUS.Load(), "max_queue_us": stats.maxQueueUS.Load(), "tcp_samples": tcpMetrics.samples.Load(), "tcp_sample_errors": tcpMetrics.errors.Load(), "tcp_retransmissions": tcpMetrics.retrans.Load(), "tcp_max_rtt_us": tcpMetrics.maxRTT.Load(), "tcp_max_unacked": tcpMetrics.maxUnacked.Load()}
+	return map[string]uint64{"heartbeat_timeouts": stats.heartbeatTimeouts.Load(), "utc_ms": uint64(time.Now().UnixMilli()), "udp_received": stats.rx.Load(), "udp_delivered": stats.tx.Load(), "received_bytes": stats.rxBytes.Load(), "delivered_bytes": stats.txBytes.Load(), "queue_drops": stats.queueDrop.Load(), "stale_drops": stats.staleDrop.Load(), "kernel_drops": stats.kernelDrop.Load(), "invalid_frames": stats.invalid.Load(), "stream_read_errors": stats.ioErrors.Load(), "sequence_gaps": stats.gaps.Load(), "udp_errors": stats.udpError.Load(), "reconnects": stats.reconnect.Load(), "active": stats.active.Load(), "rtt_us": stats.rtt.Load(), "tls_flushes": stats.flushes.Load(), "frames_written": stats.frames.Load(), "write_us": stats.writeUS.Load(), "max_write_us": stats.maxWriteUS.Load(), "max_queue_us": stats.maxQueueUS.Load(), "tcp_samples": tcpMetrics.samples.Load(), "tcp_sample_errors": tcpMetrics.errors.Load(), "tcp_retransmissions": tcpMetrics.retrans.Load(), "tcp_max_rtt_us": tcpMetrics.maxRTT.Load(), "tcp_max_unacked": tcpMetrics.maxUnacked.Load()}
 }
 
 type packet struct {
@@ -92,6 +92,7 @@ func decode(r io.Reader) (packet, error) {
 }
 
 type options struct {
+	heartbeat                                                                          *heartbeat
 	mode, listen, udpListen, udpPeer, server, serverName, ca, cert, key, peerName, crl string
 	tcpSendBuffer, queue, buffer, maxSessions, batch                                   int
 	maxAge                                                                             time.Duration
@@ -198,7 +199,7 @@ func maximum(a *atomic.Uint64, n uint64) {
 }
 func writeFrames(ctx context.Context, c net.Conn, q <-chan packet, control <-chan packet, o options) error {
 	w := bufio.NewWriterSize(c, 64*1024)
-	tick := time.NewTicker(5 * time.Second)
+	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	send := func(p packet) error {
 		if p.kind == dataFrame {
@@ -221,15 +222,27 @@ func writeFrames(ctx context.Context, c net.Conn, q <-chan packet, control <-cha
 	}
 	for {
 		var p packet
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case p = <-control:
-		case p = <-q:
-		case now := <-tick.C:
-			var b [8]byte
-			binary.BigEndian.PutUint64(b[:], uint64(now.UnixNano()))
-			p = packet{kind: pingFrame, data: b[:]}
+		// Prioritize a due round-trip probe even when UDP is continuously busy.
+		probe, due := packet{}, false
+		if o.heartbeat != nil {
+			probe, due = o.heartbeat.probe(time.Now())
+		}
+		if due {
+			p = probe
+		} else {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case p = <-control:
+			case p = <-q:
+			case now := <-tick.C:
+				if o.heartbeat != nil {
+					continue
+				}
+				var b [8]byte
+				binary.BigEndian.PutUint64(b[:], uint64(now.UnixNano()))
+				p = packet{kind: pingFrame, data: b[:]}
+			}
 		}
 		started := time.Now()
 		_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
@@ -284,6 +297,9 @@ func readFrames(ctx context.Context, c net.Conn, u *net.UDPConn, control chan<- 
 			default:
 			}
 		case pongFrame:
+			if o.heartbeat != nil {
+				o.heartbeat.ack(p.data, time.Now())
+			}
 			sent := int64(binary.BigEndian.Uint64(p.data))
 			delta := time.Now().UnixNano() - sent
 			if delta >= 0 && delta < int64(20*time.Second) {
@@ -365,11 +381,12 @@ func session(c *tls.Conn, u *net.UDPConn, o options) error {
 	defer stats.active.Add(^uint64(0))
 	q := make(chan packet, o.queue)
 	control := make(chan packet, 8)
-	done := make(chan error, 3)
+	o.heartbeat = &heartbeat{interval: 3 * time.Second, timeout: 12 * time.Second}
+	done := make(chan error, 4)
 	var wg sync.WaitGroup
 	tcpDone := make(chan struct{})
 	go func() { watchTCP(ctx, c.NetConn()); close(tcpDone) }()
-	for _, f := range []func() error{func() error { return receiveUDP(ctx, u, q) }, func() error { return writeFrames(ctx, c, q, control, o) }, func() error { return readFrames(ctx, c, u, control, o) }} {
+	for _, f := range []func() error{func() error { return o.heartbeat.watch(ctx) }, func() error { return receiveUDP(ctx, u, q) }, func() error { return writeFrames(ctx, c, q, control, o) }, func() error { return readFrames(ctx, c, u, control, o) }} {
 		wg.Add(1)
 		go func(fn func() error) { defer wg.Done(); done <- fn() }(f)
 	}
