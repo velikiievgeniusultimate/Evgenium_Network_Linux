@@ -15,18 +15,19 @@ import java.nio.charset.StandardCharsets;
 public class HomeActivity extends Activity {
   private static final int BG = 0xff141217, CARD = 0xff211c24, INK = 0xfffff1e9, MUTED = 0xffbaa8af,
                            ACCENT = 0xffff586d;
-  private TextView status, deviceName, diagnosticStatus;
+  private TextView status, deviceName, diagnosticStatus, protectionStatus;
   private EditText token;
   private Spinner route;
   private PowerControl power;
-  private Button runDiagnostic, tokenAction;
+  private Button runDiagnostic, tokenAction, updateAction;
   private boolean editingToken, enrollingToken;
   private String pending = "connect", page = "home";
   private final Handler ui = new Handler(Looper.getMainLooper());
   private final Runnable refresh = new Runnable() {
     public void run() {
+      if (protectionStatus != null) protectionStatus.setText(Protection.summary(HomeActivity.this));
       if (status != null)
-        status.setText(Engine.status);
+        status.setText(Engine.status + ("home".equals(page) && Engine.running ? "\n" + Protection.summary(HomeActivity.this) : ""));
       if (power != null)
         power.state(Engine.verified, Engine.running);
       if (diagnosticStatus != null)
@@ -38,6 +39,7 @@ public class HomeActivity extends Activity {
                 : "Полная диагностика");
         runDiagnostic.setAlpha(runDiagnostic.isEnabled() ? 1f : .4f);
       }
+      if (updateAction != null) { updateAction.setText(AppUpdates.status); updateAction.setEnabled(!AppUpdates.busy.get()); }
       if (tokenAction != null) {
         tokenAction.setEnabled(!enrollingToken && (!editingToken || !Engine.running));
         tokenAction.setAlpha(tokenAction.isEnabled() ? 1f : .4f);
@@ -62,11 +64,13 @@ public class HomeActivity extends Activity {
   }
   private LinearLayout frame(String title) {
     status = null;
+    protectionStatus = null;
     power = null;
     deviceName = null;
     diagnosticStatus = null;
     runDiagnostic = null;
     tokenAction = null;
+    updateAction = null;
     token = null;
     editingToken = false;
     LinearLayout root = column();
@@ -140,6 +144,7 @@ public class HomeActivity extends Activity {
             != getPackageManager().PERMISSION_GRANTED)
       requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, 2);
     handleDebug(getIntent());
+    importReleaseToken(getIntent());
   }
   private boolean enrolled() {
     return new File(getFilesDir(), "device.json").isFile();
@@ -276,6 +281,16 @@ public class HomeActivity extends Activity {
     });
     diagnosticStatus = title(c, DiagnosticReports.summary(this), 13);
     diagnosticStatus.setTextColor(MUTED);
+    protectionStatus = title(c, Protection.summary(this), 13);
+    protectionStatus.setTextColor(ACCENT);
+    button(c, "Разрешить работу в фоне", () -> {
+      android.os.PowerManager pm = getSystemService(android.os.PowerManager.class);
+      if (pm.isIgnoringBatteryOptimizations(getPackageName())) { toast("Ограничение батареи уже снято"); return; }
+      try { startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+          android.net.Uri.parse("package:"+getPackageName()))); }
+      catch(Exception e) { startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+          android.net.Uri.parse("package:"+getPackageName()))); }
+    });
     button(c, "Системная защита VPN",
         () -> startActivity(new Intent("android.settings.VPN_SETTINGS")));
     title(c,
@@ -283,7 +298,36 @@ public class HomeActivity extends Activity {
             + "соединений без VPN в системных настройках.",
         13)
         .setTextColor(MUTED);
+    updateAction = button(c, AppUpdates.status, () -> AppUpdates.check(this));
+    if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
+      button(c, "Перенести токен в релизную версию", this::exportReleaseToken);
     title(c, "Evgenium " + version() + " · strongSwan · GPLv2+", 12).setTextColor(MUTED);
+  }
+  private void exportReleaseToken() {
+    try {
+      android.content.pm.PackageInfo target = getPackageManager().getPackageInfo(UpdatePolicy.PACKAGE, AppUpdates.flags());
+      if (!UpdatePolicy.SIGNER.equals(AppUpdates.signer(target))) throw new SecurityException();
+      new AlertDialog.Builder(this).setTitle("Перенести доступ?")
+        .setMessage("Токен будет передан установленной релизной версии Evgenium на этом телефоне. Затем подтвердите его там.")
+        .setNegativeButton("Отмена", null).setPositiveButton("Перенести", (d,w) -> {
+          try {
+            startActivity(new Intent().setClassName(UpdatePolicy.PACKAGE, HomeActivity.class.getName())
+              .putExtra("import-token", Credentials.token(this)));
+          } catch(Exception e) { toast("Не удалось перенести токен"); }
+        }).show();
+    } catch(Exception e) { toast("Сначала установите подписанную релизную версию"); }
+  }
+  private void importReleaseToken(Intent intent) {
+    if (!UpdatePolicy.PACKAGE.equals(getPackageName()) || intent == null) return;
+    String value = intent.getStringExtra("import-token");
+    intent.removeExtra("import-token");
+    if (value == null || !value.matches("EVN1-[A-Za-z0-9_-]{43}")) return;
+    if (enrolled() || Engine.running) { toast("Доступ уже настроен"); return; }
+    new AlertDialog.Builder(this).setTitle("Перенести доступ из лабораторной версии?")
+      .setMessage("Этот телефон зарегистрируется как новое устройство вашего пользователя.")
+      .setNegativeButton("Отмена", null).setPositiveButton("Подтвердить", (d,w) -> {
+        settings(); token.setText(value); enroll();
+      }).show();
   }
   private void confirmTests(boolean diagnostic) {
     if (!enrolled()) {
@@ -330,6 +374,7 @@ public class HomeActivity extends Activity {
       } catch (Exception e) {
         runOnUiThread(() -> {
           enrollingToken = false;
+          android.util.Log.w("Evgenium", "enrollment_failed_"+e.getClass().getSimpleName());
           toast("Не удалось подтвердить токен. Проверьте токен и подключение.");
         });
       }
@@ -452,6 +497,7 @@ public class HomeActivity extends Activity {
   @Override
   protected void onNewIntent(Intent i) {
     super.onNewIntent(i);
+    importReleaseToken(i);
     setIntent(i);
     handleDebug(i);
   }
@@ -583,6 +629,12 @@ public class HomeActivity extends Activity {
         }
       }).start();
       return;
+    }
+    if ("renew-check".equals(cmd)) {
+      new Thread(() -> {
+        try { Credentials.enroll(this, Credentials.token(this)); android.util.Log.i("Evgenium", "renewal_check_ok"); }
+        catch(Exception e) { android.util.Log.e("Evgenium", "renewal_check_failed_"+e.getClass().getSimpleName()); }
+      }).start(); return;
     }
     if ("enroll".equals(cmd)) {
       new Thread(() -> {

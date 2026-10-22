@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Private mTLS collector: bounded pseudonymous reports; no HTTP access logging."""
+import calendar
 import hashlib
 import http.server
 import ipaddress
@@ -187,7 +188,11 @@ def prune():
     LOG.mkdir(mode=0o700, parents=True, exist_ok=True)
     now = time.time()
     for path in LOG.glob('*.jsonl'):
-        if now - path.stat().st_mtime > MAX_AGE:
+        try:
+            created = calendar.timegm(time.strptime(path.stem, '%Y-%m-%d'))
+        except ValueError:
+            created = path.stat().st_mtime
+        if now - created > MAX_AGE:
             path.unlink()
 
 
@@ -370,4 +375,13 @@ if __name__ == '__main__':
     context.load_verify_locations(str(Path(args.pki_dir)/'devices.pem') if args.pki_dir else '/etc/swanctl/x509crl/devices.pem')
     context.verify_flags |= ssl.VERIFY_CRL_CHECK_LEAF
     server.context = context
+    def retention_worker():
+        while True:
+            time.sleep(3600)
+            try:
+                with LOCK:
+                    prune()
+            except OSError:
+                print('report_retention_failed', flush=True)
+    threading.Thread(target=retention_worker, name='report-retention', daemon=True).start()
     server.serve_forever()

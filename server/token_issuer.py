@@ -245,9 +245,17 @@ def enroll(body):
             # Share this lock with the administrative issue/revoke commands.
             with (PKI/'ca.lock').open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                run(['openssl', 'ca', '-batch', '-notext', '-config', str(PKI/'ca.conf'),
-                     '-subj', '/CN='+identity, '-extensions', 'client', '-extfile', str(extension),
-                     '-in', str(request), '-out', str(certificate)])
+                temporary = folder/'cert.pem.pending'
+                try:
+                    run(['openssl', 'ca', '-batch', '-notext', '-config', str(PKI/'ca.conf'),
+                         '-subj', '/CN='+identity, '-extensions', 'client', '-extfile', str(extension),
+                         '-in', str(request), '-out', str(temporary)])
+                    run(['openssl', 'verify', '-CAfile', str(PKI/'ca.pem'), str(temporary)])
+                    temporary.chmod(0o600)
+                    with temporary.open('rb') as stream: os.fsync(stream.fileno())
+                    os.replace(temporary, certificate)
+                finally:
+                    temporary.unlink(missing_ok=True)
         records[device] = {**(previous or {}), 'identity': identity, 'key_hash': key_hash, 'enrolled': previous.get('enrolled',int(time.time())) if previous else int(time.time())}
         device_name=reserve_device_name(account,device)
         write_json(ROOT/'accounts.json', data)

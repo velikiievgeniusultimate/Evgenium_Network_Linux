@@ -27,4 +27,9 @@ if $missing_crypto; then
  bash "$build_dir/strongswan/src/frontends/android/openssl/build.sh"
 fi
 cd "$build_dir/strongswan/src/frontends/android"
-./gradlew assembleDebug testDebugUnitTest
+if [[ ${EVG_ANDROID_RELEASE:-0} == 1 ]]; then
+  ./gradlew assembleRelease testReleaseUnitTest
+  "$here/sign-release.sh" app/build/outputs/apk/release/app-release-unsigned.apk "$build_dir/Evgenium-Android.apk" "$ANDROID_HOME"
+else
+  ./gradlew assembleDebug testDebugUnitTest
+fi

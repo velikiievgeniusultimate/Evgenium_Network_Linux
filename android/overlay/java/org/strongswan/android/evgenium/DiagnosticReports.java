@@ -188,6 +188,8 @@ public final class DiagnosticReports {
                             .put("android",
                                 new JSONObject()
                                     .put("sdk", Build.VERSION.SDK_INT)
+                                    .put("always_on", Protection.alwaysOn(context))
+                                    .put("lockdown", Protection.lockdown(context))
                                     .put("manufacturer", word(Build.MANUFACTURER))
                                     .put("model", word(Build.MODEL))
                                     .put("outcome", outcome)

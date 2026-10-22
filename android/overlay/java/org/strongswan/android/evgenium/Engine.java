@@ -77,8 +77,13 @@ public class Engine extends Service {
   }
   @Override
   public int onStartCommand(Intent i, int f, int id) {
-    if (i == null)
-      return START_NOT_STICKY;
+    if (i == null) {
+      if (!getSharedPreferences("evgenium", 0).getBoolean("connection-wanted", false)) {
+        stopSelf(); return START_NOT_STICKY;
+      }
+      i = new Intent().putExtra("command", "connect").putExtra("route",
+          getSharedPreferences("evgenium", 0).getInt("wanted-route", -1));
+    }
     if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
       if (getSharedPreferences("evgenium", 0).getBoolean("lab-wake", false)) {
         if (labWake == null) {
@@ -94,6 +99,7 @@ public class Engine extends Service {
     String cmd = i.getStringExtra("command");
     int route = i.getIntExtra("route", -1);
     if ("stop".equals(cmd)) {
+      getSharedPreferences("evgenium", 0).edit().putBoolean("connection-wanted", false).commit();
       running = false;
       verified = false;
       cancel = true;
@@ -109,8 +115,10 @@ public class Engine extends Service {
     }
     if (busy) {
       set("Проверка уже идёт. Для отмены нажмите «Отключить».");
-      return START_NOT_STICKY;
+      return START_STICKY;
     }
+    getSharedPreferences("evgenium", 0).edit().putBoolean("connection-wanted", true)
+        .putInt("wanted-route", route).commit();
     running = true;
     if (!"measure".equals(cmd))
       verified = false;
@@ -173,7 +181,7 @@ public class Engine extends Service {
         }
       }
     });
-    return START_NOT_STICKY;
+    return START_STICKY;
   }
   private void monitorTick(long mine) {
     if (cancel || exhausted || mine != generation)
@@ -211,6 +219,7 @@ public class Engine extends Service {
         if (vpn != null && vpn.getState() == VpnStateService.State.CONNECTED
             && Credentials.EE.equals(ExitProbe.get(this))) {
           checkNetwork();
+          Credentials.ensureFresh(this);
           consecutive = 0;
           record
           ("health_ok", current, new JSONObject(), "");
@@ -273,6 +282,7 @@ public class Engine extends Service {
     checkNetwork();
     if (route < 0 || route >= IDS.length)
       throw new IOException("no_available_route");
+    Credentials.ensureFresh(this);
     JSONObject credentials = Credentials.profile(this);
     Credentials.certificate(this).checkValidity();
     VpnProfileSource src = new VpnProfileSource(this);

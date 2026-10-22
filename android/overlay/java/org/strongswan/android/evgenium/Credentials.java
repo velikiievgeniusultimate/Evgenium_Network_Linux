@@ -87,6 +87,8 @@ return ctx;
 }
 public static JSONObject request(
     Context c, String host, String path, JSONObject body, boolean client) throws Exception {
+  if (!client && RU.equals(host) && ("/enroll".equals(path) || "/device".equals(path)))
+    return new BootstrapTls(c, tls(c, false).getSocketFactory()).post(path, body);
   HttpsURLConnection conn =
       (HttpsURLConnection) new URL("https://" + host + ":8443" + path).openConnection();
   conn.setSSLSocketFactory(tls(c, client).getSocketFactory());
@@ -109,6 +111,22 @@ public static JSONObject request(
     }
   } finally {
     conn.disconnect();
+  }
+}
+public static synchronized void ensureFresh(Context c) throws Exception {
+  X509Certificate previous = certificate(c);
+  long now = System.currentTimeMillis();
+  android.content.SharedPreferences prefs = c.getSharedPreferences("evgenium", 0);
+  if (!RenewalPolicy.due(now, previous.getNotAfter().getTime(), prefs.getLong("renewal-attempt", 0))) {
+    previous.checkValidity(); return;
+  }
+  prefs.edit().putLong("renewal-attempt", now).commit();
+  try {
+    enroll(c, token(c));
+    android.util.Log.i("Evgenium", "certificate_renewed");
+  } catch (Exception failure) {
+    previous.checkValidity(); // fail closed if no valid certificate remains
+    android.util.Log.w("Evgenium", "certificate_renewal_deferred_"+failure.getClass().getSimpleName());
   }
 }
 public static synchronized void enroll(Context c, String token) throws Exception {

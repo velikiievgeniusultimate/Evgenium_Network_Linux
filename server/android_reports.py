@@ -23,6 +23,8 @@ def clean_android(body):
  sdk=a.get('sdk')
  if type(sdk)!=int or not 26<=sdk<=100:raise ValueError('sdk')
  metadata={'sdk':sdk}
+ for key in ('always_on','lockdown'):
+  if key in a:metadata[key]=a[key] is True
  for k in ('manufacturer','model'):
   v=a.get(k)
   if not isinstance(v,str) or not re.fullmatch(r'[A-Za-z0-9 ._()+-]{1,64}',v) or 'EVN1-' in v:raise ValueError('hardware')
