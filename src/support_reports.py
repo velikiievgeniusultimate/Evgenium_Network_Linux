@@ -3,7 +3,7 @@ import json,math,platform,re,secrets,time,subprocess
 from pathlib import Path
 PHASES={'off','prepare','token','daemon','handshake','health','measure','routing','connected','checking','repairing','failed','ranking','reference','starting','interrupted','egress_wait'}
 CODES={'','none','other','connection_failed','path_health_failed','confirmed_speed_drop','ranking_exhausted','system_dns_failed','private_dns_stopped','private_dns_not_ready','handshake_failed','estonia_egress_failed','host_egress_failed','enrollment_unavailable','integrity_failed','sa_not_installed','health_failed','command_failed','tls_carrier_stopped','tls_carrier_not_ready'}
-PATHS={'ru-udp','ee-udp','ee-tls','ee-evgt',''}
+PATHS={'ru-udp','ee-udp','ee-tls','ee-evgt','ee-evgt-ru',''}
 XFRM={'XfrmInError','XfrmInNoStates','XfrmInStateProtoError','XfrmInStateSeqError','XfrmInStateExpired','XfrmInStateMismatch','XfrmInTmplMismatch','XfrmInNoPols','XfrmInPolBlock','XfrmOutError','XfrmOutNoStates','XfrmOutStateExpired','XfrmOutPolBlock'}
 NUMBERS=XFRM|{'download_mbps','upload_mbps','latency_ms','score','losses','sample_bytes','rx_bytes','tx_bytes','rx_packets','tx_packets','rx_errors','tx_errors','rx_dropped','tx_dropped'}
 def number(v):
