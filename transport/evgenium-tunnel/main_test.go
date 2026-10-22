@@ -139,3 +139,30 @@ func TestShortWrite(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+// Coalescing changes write boundaries, never datagram boundaries or order.
+func TestBatchLimitsPreserveFrames(t *testing.T) {
+	for _, batch := range []int{1, 10, 32} {
+		a, b := net.Pipe()
+		q := make(chan packet, 65)
+		for i := 1; i <= 65; i++ {
+			q <- packet{kind: dataFrame, seq: uint64(i), data: bytes.Repeat([]byte{byte(i)}, 1200), at: time.Now()}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			done <- writeFrames(ctx, a, q, make(chan packet), options{batch: batch, maxAge: 5 * time.Second})
+		}()
+		_ = b.SetReadDeadline(time.Now().Add(3 * time.Second))
+		for i := 1; i <= 65; i++ {
+			p, e := decode(b)
+			if e != nil || p.seq != uint64(i) || !bytes.Equal(p.data, bytes.Repeat([]byte{byte(i)}, 1200)) {
+				t.Fatalf("batch=%d frame=%d error=%v", batch, i, e)
+			}
+		}
+		cancel()
+		a.Close()
+		b.Close()
+		<-done
+	}
+}

@@ -39,7 +39,7 @@ Restrict the server TCP port to intended source addresses with your firewall **b
 
 Default datagram queue: 1024 packets, bounded at 4096. Default requested UDP receive buffer: 4 MiB. Linux may cap this; startup logs report the actual value. If granted CAP_NET_ADMIN, the process attempts SO_RCVBUFFORCE on its own socket only. Linux reports doubled accounting sizes. Do not interpret a successful setsockopt as proof of loss-free delivery.
 
-Packets queued for more than 500 ms are discarded and counted, preventing a long replay of obsolete traffic. The writer batches at most 32 already queued frames and immediately flushes sparse traffic. Optional `-pace-mbps` limits local UDP delivery; this option has not been benchmarked. It is not adaptive congestion control.
+Packets queued for more than 500 ms are discarded and counted, preventing a long replay of obsolete traffic. The writer batches at most 32 already queued frames and immediately flushes sparse traffic. `-batch-packets 1..32` bounds coalescing for controlled comparisons; the default remains 32 and no delay is added to wait for a batch. Optional `-pace-mbps` limits local UDP delivery; this option has not been benchmarked. It is not adaptive congestion control.
 
 TLS handshake timeout: 6 seconds; heartbeat interval: 5 seconds; read timeout: 20 seconds; write timeout: 10 seconds. The client reconnects after one second following a session failure. Local UDP binding errors are logged and retried after three seconds. A supervisor should restart the server after a crash. Certificate expiry is enforced; automatic certificate rotation is **not implemented**.
 
@@ -55,6 +55,18 @@ TLS supplies cryptographic confidentiality, integrity and peer authentication. N
 
 Every five seconds and on SIGUSR1, logs contain a cumulative JSON `metrics` snapshot with UTC milliseconds. Counters include received/delivered datagrams and bytes, application queue drops, stale drops, kernel socket overflow, sequence gaps, protocol errors, stream read errors, UDP delivery errors, reconnections, active sessions and latest heartbeat RTT. No payloads or credentials are logged. Compare deltas within one process lifetime; process restart resets counters. Kernel SO_RXQ_OVFL is reported with a subsequent received packet, so absence of a fresh sample is not proof of no loss. Metrics are process-wide across sessions.
 
+Additional metrics: `tls_flushes`, `frames_written`, `write_us`, `max_write_us`,
+`max_queue_us`. The write duration includes encoding and flushing; frames count
+encoded DATA/control frames, not delivery acknowledgements. Queue age includes
+packets rejected as stale.
+
+Linux `TCP_INFO` is sampled once per second and at session start/end:
+`tcp_samples`, `tcp_sample_errors`, `tcp_retransmissions`, `tcp_max_rtt_us`,
+`tcp_max_unacked`. Retransmissions are accumulated per connection; maxima are
+process lifetime values. Retransmission can also be spurious after reordering;
+it is not proof of filtering. No system TCP parameters are changed. Missing
+samples are recorded as errors, never reported as successful measurements.
+
 ## Measured scope and limitations
 
 See `EXPERIMENT-2026-10-22.txt` for interleaved RU–Estonia measurements and a controlled queue-size experiment. These are short synthetic inner-TCP transfers, not desktop Internet benchmarks, long-term uptime measurements or evidence that an ISP filters a protocol. A small-socket failure remains unresolved and is explicitly included in the report.
@@ -66,3 +78,18 @@ Not yet implemented/validated: independent security review, long-duration and ma
 The Estonia device ingress listens on TCP24578 inside the existing isolated IKE namespace. It reuses the existing server certificate and per-device CA. `-crl devices.pem` enables device mode: a verified clientAuth chain, CN matching `device-[a-f0-9]{24}`, and a fresh correctly signed CRL are mandatory. Missing, future, expired, invalid or revoked credentials are rejected. At most two sessions per certificate and32 total sessions are configured. The existing revocation watcher restarts this carrier when its CRL changes and closes the whole ingress gate if revocation snapshots become stale. UDP forwards only to the local IKE socket4500. The interserver prototype and its separate lab CA are not exposed as a client entrypoint.
 
 See `scripts/direct-ingress/evgenium-direct-evgt.service` and the VPN client's `ee-evgt` candidate. Source-based loopback routing lets the fixed peer be the namespace-local IKE source address while preserving NAT reversal and the server certificate identity. The updater downloads the binary for amd64/arm64/riscv64 and verifies its pinned digest before atomic installation. No Go compiler is required on client machines.
+
+## 0.3.0 recovery protection
+
+An authenticated session now requires a matching heartbeat response within 12 seconds.
+Probes run every 3 seconds and have priority over a busy UDP queue. Unsolicited pongs
+and incoming payload cannot indefinitely hide a broken reverse path. The wire format
+remains version 1 and interoperates with the deployed 0.2.0 server. Session deadlines
+use monotonic time. Metrics include heartbeat_timeouts, queue/write latency and Linux
+TCP retransmissions; they do not contain packet payloads.
+
+The Linux 0.5.3 client also gives the Russian relay's TCP endpoint a narrow routing
+exception inside its own namespace. A new socket after reconnect must select the
+uplink source, not the installed IKE virtual address. An isolated regression test
+checks that ordinary HTTPS traffic still selects the VPN source:
+`sudo python3 scripts/test-relay-reconnect-route.py`.
