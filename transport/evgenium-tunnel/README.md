@@ -39,7 +39,7 @@ Restrict the server TCP port to intended source addresses with your firewall **b
 
 Default datagram queue: 1024 packets, bounded at 4096. Default requested UDP receive buffer: 4 MiB. Linux may cap this; startup logs report the actual value. If granted CAP_NET_ADMIN, the process attempts SO_RCVBUFFORCE on its own socket only. Linux reports doubled accounting sizes. Do not interpret a successful setsockopt as proof of loss-free delivery.
 
-Packets queued for more than 500 ms are discarded and counted, preventing a long replay of obsolete traffic. The writer batches at most 32 already queued frames and immediately flushes sparse traffic. Optional `-pace-mbps` limits local UDP delivery; this option has not been benchmarked. It is not adaptive congestion control.
+Packets queued for more than 500 ms are discarded and counted, preventing a long replay of obsolete traffic. The writer batches at most 32 already queued frames and immediately flushes sparse traffic. `-batch-packets 1..32` bounds coalescing for controlled comparisons; the default remains 32 and no delay is added to wait for a batch. Optional `-pace-mbps` limits local UDP delivery; this option has not been benchmarked. It is not adaptive congestion control.
 
 TLS handshake timeout: 6 seconds; heartbeat interval: 5 seconds; read timeout: 20 seconds; write timeout: 10 seconds. The client reconnects after one second following a session failure. Local UDP binding errors are logged and retried after three seconds. A supervisor should restart the server after a crash. Certificate expiry is enforced; automatic certificate rotation is **not implemented**.
 
@@ -54,6 +54,18 @@ TLS supplies cryptographic confidentiality, integrity and peer authentication. N
 ## Diagnostics
 
 Every five seconds and on SIGUSR1, logs contain a cumulative JSON `metrics` snapshot with UTC milliseconds. Counters include received/delivered datagrams and bytes, application queue drops, stale drops, kernel socket overflow, sequence gaps, protocol errors, stream read errors, UDP delivery errors, reconnections, active sessions and latest heartbeat RTT. No payloads or credentials are logged. Compare deltas within one process lifetime; process restart resets counters. Kernel SO_RXQ_OVFL is reported with a subsequent received packet, so absence of a fresh sample is not proof of no loss. Metrics are process-wide across sessions.
+
+Additional metrics: `tls_flushes`, `frames_written`, `write_us`, `max_write_us`,
+`max_queue_us`. The write duration includes encoding and flushing; frames count
+encoded DATA/control frames, not delivery acknowledgements. Queue age includes
+packets rejected as stale.
+
+Linux `TCP_INFO` is sampled once per second and at session start/end:
+`tcp_samples`, `tcp_sample_errors`, `tcp_retransmissions`, `tcp_max_rtt_us`,
+`tcp_max_unacked`. Retransmissions are accumulated per connection; maxima are
+process lifetime values. Retransmission can also be spurious after reordering;
+it is not proof of filtering. No system TCP parameters are changed. Missing
+samples are recorded as errors, never reported as successful measurements.
 
 ## Measured scope and limitations
 

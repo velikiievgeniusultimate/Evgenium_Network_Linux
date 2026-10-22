@@ -40,7 +40,7 @@ public class HomeActivity extends Activity {
     scroll.addView(root);
     setContentView(scroll);
     title(root, "EVGENIUM", 30);
-    title(root, "Android · 0.1.1 alpha", 14);
+    title(root, "Android · 0.1.2 alpha", 14);
     status = title(root, Engine.status, 22);
     status.setPadding(0, 35, 0, 25);
     deviceName = title(root, "Устройство ещё не зарегистрировано", 18);
@@ -229,6 +229,8 @@ public class HomeActivity extends Activity {
     i.removeExtra("lab"); // Do not repeat an ADB command when Android recreates the screen.
     if (cmd == null)
       return;
+    if ("mobile-check".equals(cmd)) { CarrierLab.mobileCheck(this); return; }
+    if ("packet-lab".equals(cmd)) { CarrierLab.start(this); return; }
     if ("fault".equals(cmd)) {
       TunnelCarrier.debugFault(this);
       new Thread(() -> {

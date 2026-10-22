@@ -153,6 +153,7 @@ public class Engine extends Service {
             && Credentials.EE.equals(ExitProbe.get(this))) {
           checkNetwork();
           consecutive = 0;
+          record("health_ok", current, new JSONObject(), "");
           set("Подключено: " + label(current));
           return;
         }
@@ -589,6 +590,7 @@ public class Engine extends Service {
                          .put("route", route)
                          .put("network", networkKind())
                          .put("values", values)
+                         .put("carrier", TunnelCarrier.activeMetrics())
                          .put("error", error);
       File file = new File(getFilesDir(), "diagnostics.jsonl");
       if (file.length() > 1024 * 1024)

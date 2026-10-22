@@ -34,12 +34,12 @@ const dataFrame byte = 1
 const pingFrame byte = 2
 const pongFrame byte = 3
 
-type counters struct{ rx, tx, rxBytes, txBytes, queueDrop, staleDrop, kernelDrop, invalid, ioErrors, gaps, udpError, reconnect, active, rtt atomic.Uint64 }
+type counters struct{ rx, tx, rxBytes, txBytes, queueDrop, staleDrop, kernelDrop, invalid, ioErrors, gaps, udpError, reconnect, active, rtt, flushes, frames, writeUS, maxWriteUS, maxQueueUS atomic.Uint64 }
 
 var stats counters
 
 func snapshot() map[string]uint64 {
-	return map[string]uint64{"utc_ms": uint64(time.Now().UnixMilli()), "udp_received": stats.rx.Load(), "udp_delivered": stats.tx.Load(), "received_bytes": stats.rxBytes.Load(), "delivered_bytes": stats.txBytes.Load(), "queue_drops": stats.queueDrop.Load(), "stale_drops": stats.staleDrop.Load(), "kernel_drops": stats.kernelDrop.Load(), "invalid_frames": stats.invalid.Load(), "stream_read_errors": stats.ioErrors.Load(), "sequence_gaps": stats.gaps.Load(), "udp_errors": stats.udpError.Load(), "reconnects": stats.reconnect.Load(), "active": stats.active.Load(), "rtt_us": stats.rtt.Load()}
+	return map[string]uint64{"utc_ms": uint64(time.Now().UnixMilli()), "udp_received": stats.rx.Load(), "udp_delivered": stats.tx.Load(), "received_bytes": stats.rxBytes.Load(), "delivered_bytes": stats.txBytes.Load(), "queue_drops": stats.queueDrop.Load(), "stale_drops": stats.staleDrop.Load(), "kernel_drops": stats.kernelDrop.Load(), "invalid_frames": stats.invalid.Load(), "stream_read_errors": stats.ioErrors.Load(), "sequence_gaps": stats.gaps.Load(), "udp_errors": stats.udpError.Load(), "reconnects": stats.reconnect.Load(), "active": stats.active.Load(), "rtt_us": stats.rtt.Load(), "tls_flushes": stats.flushes.Load(), "frames_written": stats.frames.Load(), "write_us": stats.writeUS.Load(), "max_write_us": stats.maxWriteUS.Load(), "max_queue_us": stats.maxQueueUS.Load(), "tcp_samples": tcpMetrics.samples.Load(), "tcp_sample_errors": tcpMetrics.errors.Load(), "tcp_retransmissions": tcpMetrics.retrans.Load(), "tcp_max_rtt_us": tcpMetrics.maxRTT.Load(), "tcp_max_unacked": tcpMetrics.maxUnacked.Load()}
 }
 
 type packet struct {
@@ -93,7 +93,7 @@ func decode(r io.Reader) (packet, error) {
 
 type options struct {
 	mode, listen, udpListen, udpPeer, server, serverName, ca, cert, key, peerName, crl string
-	queue, buffer, maxSessions                                                         int
+	queue, buffer, maxSessions, batch                                                  int
 	maxAge                                                                             time.Duration
 	pace                                                                               float64
 }
@@ -189,16 +189,35 @@ func receiveUDP(ctx context.Context, c *net.UDPConn, q chan<- packet) error {
 		}
 	}
 }
+func maximum(a *atomic.Uint64, n uint64) {
+	for old := a.Load(); n > old; old = a.Load() {
+		if a.CompareAndSwap(old, n) {
+			return
+		}
+	}
+}
 func writeFrames(ctx context.Context, c net.Conn, q <-chan packet, control <-chan packet, o options) error {
 	w := bufio.NewWriterSize(c, 64*1024)
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	send := func(p packet) error {
-		if p.kind == dataFrame && time.Since(p.at) > o.maxAge {
-			stats.staleDrop.Add(1)
-			return nil
+		if p.kind == dataFrame {
+			age := time.Since(p.at)
+			maximum(&stats.maxQueueUS, uint64(age.Microseconds()))
+			if age > o.maxAge {
+				stats.staleDrop.Add(1)
+				return nil
+			}
 		}
-		return encode(w, p)
+		if err := encode(w, p); err != nil {
+			return err
+		}
+		stats.frames.Add(1)
+		return nil
+	}
+	batch := o.batch
+	if batch == 0 {
+		batch = 32
 	}
 	for {
 		var p packet
@@ -212,13 +231,14 @@ func writeFrames(ctx context.Context, c net.Conn, q <-chan packet, control <-cha
 			binary.BigEndian.PutUint64(b[:], uint64(now.UnixNano()))
 			p = packet{kind: pingFrame, data: b[:]}
 		}
+		started := time.Now()
 		_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		if e := send(p); e != nil {
 			return e
 		}
 		// Flush immediately for sparse traffic, batch at most 32 already queued frames.
 	batch:
-		for i := 1; i < 32; i++ {
+		for i := 1; i < batch; i++ {
 			select {
 			case p = <-control:
 				if e := send(p); e != nil {
@@ -232,7 +252,12 @@ func writeFrames(ctx context.Context, c net.Conn, q <-chan packet, control <-cha
 				break batch
 			}
 		}
-		if e := w.Flush(); e != nil {
+		e := w.Flush()
+		elapsed := uint64(time.Since(started).Microseconds())
+		stats.flushes.Add(1)
+		stats.writeUS.Add(elapsed)
+		maximum(&stats.maxWriteUS, elapsed)
+		if e != nil {
 			return e
 		}
 	}
@@ -335,12 +360,15 @@ func session(c *tls.Conn, u *net.UDPConn, o options) error {
 	control := make(chan packet, 8)
 	done := make(chan error, 3)
 	var wg sync.WaitGroup
+	tcpDone := make(chan struct{})
+	go func() { watchTCP(ctx, c.NetConn()); close(tcpDone) }()
 	for _, f := range []func() error{func() error { return receiveUDP(ctx, u, q) }, func() error { return writeFrames(ctx, c, q, control, o) }, func() error { return readFrames(ctx, c, u, control, o) }} {
 		wg.Add(1)
 		go func(fn func() error) { defer wg.Done(); done <- fn() }(f)
 	}
 	e := <-done
 	cancel()
+	<-tcpDone // final TCP sample before the descriptor is closed
 	c.Close()
 	u.Close()
 	wg.Wait()
@@ -394,13 +422,14 @@ func main() {
 	flag.StringVar(&o.key, "key", "", "private key PEM")
 	flag.StringVar(&o.crl, "crl", "", "signed device CRL: enables device identity policy instead of a single peer CN")
 	flag.StringVar(&o.peerName, "peer-name", "evgenium-ru-lab", "allowed client certificate CN")
+	flag.IntVar(&o.batch, "batch-packets", 32, "maximum already queued frames per flush (1..32)")
 	flag.IntVar(&o.queue, "queue", 1024, "bounded UDP queue, packets")
 	flag.IntVar(&o.buffer, "udp-buffer", 4*1024*1024, "socket buffer bytes")
 	flag.IntVar(&o.maxSessions, "max-sessions", 8, "maximum concurrent server sessions including handshakes")
 	flag.DurationVar(&o.maxAge, "max-age", 500*time.Millisecond, "discard obsolete queued datagrams")
 	flag.Float64Var(&o.pace, "pace-mbps", 0, "optional local UDP delivery pacing (0 disables)")
 	flag.Parse()
-	if (o.mode != "server" && o.mode != "client") || o.queue < 1 || o.queue > 4096 || o.buffer < 4096 || o.buffer > 8*1024*1024 || o.maxSessions < 1 || o.maxSessions > 32 || o.maxAge < time.Millisecond || o.maxAge > 5*time.Second || math.IsNaN(o.pace) || math.IsInf(o.pace, 0) || o.pace < 0 || o.pace > 10000 {
+	if (o.mode != "server" && o.mode != "client") || o.batch < 1 || o.batch > 32 || o.queue < 1 || o.queue > 4096 || o.buffer < 4096 || o.buffer > 8*1024*1024 || o.maxSessions < 1 || o.maxSessions > 32 || o.maxAge < time.Millisecond || o.maxAge > 5*time.Second || math.IsNaN(o.pace) || math.IsInf(o.pace, 0) || o.pace < 0 || o.pace > 10000 {
 		log.Fatal("invalid_options")
 	}
 	cfg, e := tlsConfig(o)
