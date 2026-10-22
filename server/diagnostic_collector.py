@@ -77,6 +77,9 @@ def clean_report(body):
     if not isinstance(body, dict) or body.get('schema') != 1:
         raise ValueError('schema')
     if body.get('event') == 'support_bundle':
+        if body.get('system') == 'android':
+            from android_reports import clean_android
+            return clean_android(body)
         from support_reports import clean_bundle
         return clean_bundle(body)
     if body.get('event') == 'global_test':

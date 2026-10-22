@@ -9,6 +9,8 @@ for file in /etc/nftables.conf /usr/local/sbin/evgenium-diagnostic-collector /us
     test -f "$backup/$(basename "$file")" || cp -a "$file" "$backup/"
 done
 install -o root -g root -m 0755 "$base/diagnostic_collector.py" /usr/local/sbin/evgenium-diagnostic-collector
+install -m 644 "$base/android_reports.py" /usr/local/sbin/android_reports.py
+install -m 644 "$base/../src/support_reports.py" /usr/local/sbin/support_reports.py
 install -o root -g root -m 0755 "$base/revoke-device.sh" /usr/local/sbin/evgenium-revoke-device
 python3 - <<'PY'
 from pathlib import Path

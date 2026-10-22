@@ -21,10 +21,16 @@ import javax.net.ssl.HttpsURLConnection;
  */
 public class Engine extends Service {
   public static final String[] IDS = {"ru-udp", "ee-udp", "ee-tls", "ee-evgt", "ee-evgt-ru"};
-  public static final String[] LABELS = {
-      "HSVDS → Эстония", "Эстония · UDP", "Эстония · TLS", "Эстония · EvgeniumTunnel", "EvgeniumTunnel · HSVDS → Эстония"};
+  public static final String[] LABELS = {"HSVDS → Эстония", "Эстония · UDP", "Эстония · TLS",
+      "Эстония · EvgeniumTunnel", "EvgeniumTunnel · HSVDS → Эстония"};
   public static volatile String status = "Не подключено";
   public static volatile String current = "";
+  public static volatile boolean running, verified, diagnosing;
+  private static volatile Engine instance;
+  public static boolean working() {
+    Engine e = instance;
+    return e != null && e.busy;
+  }
   private volatile VpnStateService vpn;
   private volatile boolean cancel;
   private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -49,6 +55,7 @@ public class Engine extends Service {
   @Override
   public void onCreate() {
     super.onCreate();
+    instance = this;
     bindService(new Intent(this, VpnStateService.class), connection, BIND_AUTO_CREATE);
     NotificationManager nm = getSystemService(NotificationManager.class);
     nm.createNotificationChannel(new NotificationChannel(
@@ -74,13 +81,21 @@ public class Engine extends Service {
       return START_NOT_STICKY;
     if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
       if (getSharedPreferences("evgenium", 0).getBoolean("lab-wake", false)) {
-        if (labWake == null) { labWake = getSystemService(android.os.PowerManager.class).newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "Evgenium:lab-transfer"); labWake.setReferenceCounted(false); }
+        if (labWake == null) {
+          labWake =
+              getSystemService(android.os.PowerManager.class)
+                  .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "Evgenium:lab-transfer");
+          labWake.setReferenceCounted(false);
+        }
         labWake.acquire(300000);
-      } else if (labWake != null && labWake.isHeld()) labWake.release();
+      } else if (labWake != null && labWake.isHeld())
+        labWake.release();
     }
     String cmd = i.getStringExtra("command");
     int route = i.getIntExtra("route", -1);
     if ("stop".equals(cmd)) {
+      running = false;
+      verified = false;
       cancel = true;
       generation++;
       handler.removeCallbacksAndMessages(null);
@@ -96,6 +111,10 @@ public class Engine extends Service {
       set("Проверка уже идёт. Для отмены нажмите «Отключить».");
       return START_NOT_STICKY;
     }
+    running = true;
+    if (!"measure".equals(cmd))
+      verified = false;
+    diagnosing = "diagnose".equals(cmd);
     busy = true;
     cancel = false;
     exhausted = false;
@@ -115,20 +134,34 @@ public class Engine extends Service {
           record
           ("measurement", current, m, "");
           set("Замер завершён: " + label(current));
-        } else if ("rank".equals(cmd) || (route < 0 && !hasRanking()))
+        } else if ("rank".equals(cmd) || "diagnose".equals(cmd) || (route < 0 && !hasRanking()))
           rank();
         else if (route >= 0)
           connectRoute(route);
         else
           connectRanked(best());
       } catch (NetworkChanged e) {
+        verified = false;
         connectedNetwork = null;
         set("Сеть изменилась. Ожидаю подключение…");
       } catch (Exception e) {
-        set("Ошибка: " + safe(e));
+        verified = false;
+        if (!cancel)
+          set("Ошибка: " + safe(e));
         record
         ("failed", current, new JSONObject(), safe(e));
       } finally {
+        if ("diagnose".equals(cmd)) {
+          try {
+            DiagnosticReports.prepare(this,
+                cancel         ? "cancelled"
+                    : verified ? "completed"
+                               : "incomplete");
+          } catch (Exception reportError) {
+            DiagnosticReports.progress = "Не удалось сохранить отчёт. Повторите сбор данных.";
+          }
+          diagnosing = false;
+        }
         busy = false;
         if (!cancel && mine == generation) {
           nextHealthAt = SystemClock.elapsedRealtime() + 15000;
@@ -139,10 +172,14 @@ public class Engine extends Service {
     return START_NOT_STICKY;
   }
   private void monitorTick(long mine) {
-    if (cancel || exhausted || mine != generation) return;
-    if (!busy && (SystemClock.elapsedRealtime() >= nextHealthAt || TunnelCarrier.offlineMillis() >= 3000)) {
+    if (cancel || exhausted || mine != generation)
+      return;
+    if (!busy
+        && (SystemClock.elapsedRealtime() >= nextHealthAt
+            || TunnelCarrier.offlineMillis() >= 3000)) {
       monitor(mine);
-    } else handler.postDelayed(() -> monitorTick(mine), 1000);
+    } else
+      handler.postDelayed(() -> monitorTick(mine), 1000);
   }
   private void monitor(long mine) {
     if (cancel || exhausted || mine != generation)
@@ -165,23 +202,30 @@ public class Engine extends Service {
             rank();
           return;
         }
-        if (TunnelCarrier.offlineMillis() >= 3000) throw new IOException("carrier_unavailable");
+        if (TunnelCarrier.offlineMillis() >= 3000)
+          throw new IOException("carrier_unavailable");
         if (vpn != null && vpn.getState() == VpnStateService.State.CONNECTED
             && Credentials.EE.equals(ExitProbe.get(this))) {
           checkNetwork();
           consecutive = 0;
-          record("health_ok", current, new JSONObject(), "");
+          record
+          ("health_ok", current, new JSONObject(), "");
+          if (cancel || instance != this)
+            throw new InterruptedException();
+          verified = true;
           set("Подключено: " + label(current));
           return;
         }
         throw new IOException("health_failed");
       } catch (Exception e) {
         if (cancel || !sameNetwork()) {
+          verified = false;
           connectedNetwork = null;
           consecutive = 0;
           set("Ожидаю доступную сеть");
           return;
         }
+        verified = false;
         record
         ("health_failed", current, new JSONObject(), safe(e));
         if (++consecutive >= 2 || TunnelCarrier.offlineMillis() >= 3000) {
@@ -219,6 +263,7 @@ public class Engine extends Service {
     return id;
   }
   private void connectRoute(int route) throws Exception {
+    verified = false;
     if (cancel)
       throw new InterruptedException();
     checkNetwork();
@@ -240,8 +285,9 @@ public class Engine extends Service {
       p.setName(LABELS[route]);
       p.setVpnType(VpnType.IKEV2_EAP_TLS);
       p.setGateway(route == 0 ? Credentials.RU : route == 1 ? Credentials.EE : "127.0.0.1");
-      int directPort=443;
-      if((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0)directPort=getSharedPreferences("evgenium",0).getInt("lab-udp-port",443);
+      int directPort = 443;
+      if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
+        directPort = getSharedPreferences("evgenium", 0).getInt("lab-udp-port", 443);
       p.setPort(route == 0 ? 24550 : route == 1 ? directPort : 24573);
       p.setRemoteId(route == 0 ? Credentials.RU : Credentials.EE);
       p.setLocalId(credentials.getString("identity"));
@@ -282,6 +328,9 @@ public class Engine extends Service {
           throw new IOException("unexpected_exit");
         checkNetwork();
         connectedNetwork = operationNetwork;
+        if (cancel || instance != this)
+          throw new InterruptedException();
+        verified = true;
         set("Подключено: " + LABELS[route]);
         record
         ("connected", current,
@@ -297,6 +346,7 @@ public class Engine extends Service {
     throw new IOException("ike_timeout");
   }
   private void noRoutes() {
+    verified = false;
     exhausted = true;
     TunnelCarrier.stopCurrent();
     set("Маршруты исчерпаны. Нажмите «Проверить маршруты» или «Отключить».");
@@ -372,10 +422,13 @@ public class Engine extends Service {
     long deadline = SystemClock.elapsedRealtime() + 70000;
     try {
       while (SystemClock.elapsedRealtime() < deadline) {
-        if (cancel) throw new InterruptedException();
+        if (cancel)
+          throw new InterruptedException();
         checkNetwork();
-        try { return task.get(500, TimeUnit.MILLISECONDS); }
-        catch (TimeoutException pending) { /* Check network/cancellation again. */ }
+        try {
+          return task.get(500, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException pending) { /* Check network/cancellation again. */
+        }
       }
       throw new IOException("measurement_deadline");
     } finally {
@@ -384,7 +437,9 @@ public class Engine extends Service {
   }
   private JSONObject measureBlocking() throws Exception {
     final int size = 4 * 1024 * 1024;
-    boolean privateLab = (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0 && getSharedPreferences("evgenium", 0).getBoolean("lab-private-speed", false);
+    boolean privateLab =
+        (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        && getSharedPreferences("evgenium", 0).getBoolean("lab-private-speed", false);
     String origin = privateLab ? "https://10.77.0.1:24583" : "https://speed.cloudflare.com";
     long t = SystemClock.elapsedRealtime();
     String discord = "ok";
@@ -393,7 +448,8 @@ public class Engine extends Service {
     } catch (Exception e) {
       discord = safe(e); // An individual service outage is not a broken VPN route.
     }
-    if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+    if (Thread.currentThread().isInterrupted())
+      throw new InterruptedException();
     long latency;
     try (Socket probe = new Socket()) {
       t = SystemClock.elapsedRealtime();
@@ -402,9 +458,9 @@ public class Engine extends Service {
     }
     t = SystemClock.elapsedRealtime();
     HttpsURLConnection down =
-        (HttpsURLConnection) new URL(origin + "/__down?bytes=" + size)
-            .openConnection();
-    if (privateLab) down.setSSLSocketFactory(Credentials.tls(this, true).getSocketFactory());
+        (HttpsURLConnection) new URL(origin + "/__down?bytes=" + size).openConnection();
+    if (privateLab)
+      down.setSSLSocketFactory(Credentials.tls(this, true).getSocketFactory());
     down.setConnectTimeout(5000);
     down.setReadTimeout(10000);
     down.setInstanceFollowRedirects(false);
@@ -414,7 +470,8 @@ public class Engine extends Service {
     try {
       if (down.getResponseCode() != 200)
         throw new IOException("download_http");
-      if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+      if (Thread.currentThread().isInterrupted())
+        throw new InterruptedException();
       // Measure body transfer separately from TLS/DNS setup.
       t = SystemClock.elapsedRealtime();
       try (InputStream in = down.getInputStream()) {
@@ -422,7 +479,8 @@ public class Engine extends Service {
         byte[] buffer = new byte[32768];
         int n;
         while ((n = in.read(buffer)) != -1) {
-          if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+          if (Thread.currentThread().isInterrupted())
+            throw new InterruptedException();
           count += n;
           if (count > size)
             throw new IOException("download_size");
@@ -435,12 +493,13 @@ public class Engine extends Service {
     if (count != size)
       throw new IOException("download_size");
     double d = size * 8.0 / Math.max(1, SystemClock.elapsedRealtime() - t) / 1000;
-    if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+    if (Thread.currentThread().isInterrupted())
+      throw new InterruptedException();
     byte[] data = new byte[size];
     new java.security.SecureRandom().nextBytes(data);
-    HttpsURLConnection up =
-        (HttpsURLConnection) new URL(origin + "/__up").openConnection();
-    if (privateLab) up.setSSLSocketFactory(Credentials.tls(this, true).getSocketFactory());
+    HttpsURLConnection up = (HttpsURLConnection) new URL(origin + "/__up").openConnection();
+    if (privateLab)
+      up.setSSLSocketFactory(Credentials.tls(this, true).getSocketFactory());
     up.setConnectTimeout(5000);
     up.setReadTimeout(10000);
     up.setRequestMethod("POST");
@@ -451,10 +510,12 @@ public class Engine extends Service {
     ScheduledFuture<?> upDeadline = httpDeadlines.schedule(up::disconnect, 25, TimeUnit.SECONDS);
     try {
       try (OutputStream out = up.getOutputStream()) {
-        if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+        if (Thread.currentThread().isInterrupted())
+          throw new InterruptedException();
         t = SystemClock.elapsedRealtime();
         for (int offset = 0; offset < data.length; offset += 32768) {
-          if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+          if (Thread.currentThread().isInterrupted())
+            throw new InterruptedException();
           out.write(data, offset, Math.min(32768, data.length - offset));
         }
       }
@@ -519,8 +580,9 @@ public class Engine extends Service {
     try {
       JSONArray paths = ranking().getJSONArray("paths");
       java.util.Set<String> found = new java.util.HashSet<>();
-      for (int i=0;i<paths.length();i++) found.add(paths.getJSONObject(i).getString("id"));
-      return paths.length() == IDS.length && found.equals(new java.util.HashSet<>(java.util.Arrays.asList(IDS)));
+      for (int i = 0; i < paths.length(); i++) found.add(paths.getJSONObject(i).getString("id"));
+      return paths.length() == IDS.length
+          && found.equals(new java.util.HashSet<>(java.util.Arrays.asList(IDS)));
     } catch (Exception e) {
       return false;
     }
@@ -615,16 +677,18 @@ public class Engine extends Service {
   }
   private void record(String phase, String route, JSONObject values, String error) {
     try {
-      JSONObject r = new JSONObject()
-                         .put("time", System.currentTimeMillis())
-                         .put("phase", phase)
-                         .put("route", route)
-                         .put("network", networkKind())
-                         .put("screen_on", getSystemService(android.os.PowerManager.class).isInteractive())
-                         .put("device_idle", getSystemService(android.os.PowerManager.class).isDeviceIdleMode())
-                         .put("values", values)
-                         .put("carrier", TunnelCarrier.activeMetrics())
-                         .put("error", error);
+      JSONObject r =
+          new JSONObject()
+              .put("time", System.currentTimeMillis())
+              .put("phase", phase)
+              .put("route", route)
+              .put("network", networkKind())
+              .put("screen_on", getSystemService(android.os.PowerManager.class).isInteractive())
+              .put(
+                  "device_idle", getSystemService(android.os.PowerManager.class).isDeviceIdleMode())
+              .put("values", values)
+              .put("carrier", TunnelCarrier.activeMetrics())
+              .put("error", error);
       File file = new File(getFilesDir(), "diagnostics.jsonl");
       if (file.length() > 1024 * 1024)
         file.renameTo(new File(getFilesDir(), "diagnostics.previous.jsonl"));
@@ -641,6 +705,11 @@ public class Engine extends Service {
   }
   @Override
   public void onDestroy() {
+    if (instance == this) {
+      instance = null;
+      running = false;
+      verified = false;
+    }
     cancel = true;
     handler.removeCallbacksAndMessages(null);
     worker.shutdownNow();
@@ -648,7 +717,8 @@ public class Engine extends Service {
       unbindService(connection);
     } catch (Exception ignored) {
     }
-    if (labWake != null && labWake.isHeld()) labWake.release();
+    if (labWake != null && labWake.isHeld())
+      labWake.release();
     super.onDestroy();
   }
 }
