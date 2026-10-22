@@ -26,6 +26,6 @@ class Candidate(unittest.TestCase):
    path=Path(folder)/('evgenium-tunnel-'+t.EVGT_VERSION);path.write_bytes(b'old')
    with self.assertRaisesRegex(RuntimeError,'checksum'):t.ensure_evgt_binary()
    self.assertEqual(path.read_bytes(),b'old')
- def test_reports_accept_four_paths_without_credentials(self):
+ def test_reports_accept_all_paths_without_credentials(self):
   report={'schema':1,'event':'support_bundle','consent':True,'report_id':'a'*32,'manager':'0.5.1','architecture':'x86_64','system':'arch','time':1,'paths':{x['id']:{'score':10,'token':'secret'} for x in t.CANDIDATES}}
-  clean=reports.clean_bundle(report);self.assertEqual(len(clean['paths']),4);self.assertNotIn('secret',json.dumps(clean))
+  clean=reports.clean_bundle(report);self.assertEqual(len(clean['paths']),len(t.CANDIDATES));self.assertNotIn('secret',json.dumps(clean))

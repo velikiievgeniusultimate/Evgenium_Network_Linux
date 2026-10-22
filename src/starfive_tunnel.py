@@ -40,6 +40,7 @@ CANDIDATES = (
  {'id':'ee-udp','address':'38.180.164.67','identity':'38.180.164.67','port':443,'tls':False,'label':'Эстония напрямую'},
  {'id':'ee-tls','address':'38.180.164.67','identity':'38.180.164.67','port':443,'tls':True,'label':'Эстония через TLS'},
  {'id':'ee-evgt','address':'38.180.164.67','identity':'38.180.164.67','port':443,'tls':False,'evgt':True,'label':'Эстония через EvgeniumTunnel'},
+ {'id':'ee-evgt-ru','address':'38.180.164.67','identity':'38.180.164.67','port':443,'tls':False,'evgt':True,'transport_address':SERVER,'transport_port':24579,'label':'EvgeniumTunnel · HSVDS → Эстония'},
 )
 ACTIVE = CANDIDATES[0]
 rank_api = None
@@ -166,6 +167,7 @@ def full_firewall():
   iifname "{HOST}" ip saddr {CLIENT} ip daddr {{ {SERVER} }} udp dport {IKE_PORT} accept
   iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 udp dport 443 accept
   iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 tcp dport {{ 24571, 24578 }} accept
+  iifname "{HOST}" ip saddr {CLIENT} ip daddr 195.209.211.163 tcp dport 24579 accept
   iifname "{HOST}" ip saddr {CLIENT} ip daddr {{ {SERVER} }} tcp dport 8443 accept
   oifname "{HOST}" ip daddr {CLIENT} ct state established,related accept
   meta nfproto ipv4 oifname "{FULL_HOST}" accept
@@ -227,6 +229,7 @@ table netdev evn_full_wire {{
   ether type arp accept
   ip daddr {address} udp dport {ACTIVE['port']} accept
   ip daddr 38.180.164.67 tcp dport {{ 24571, 24578 }} accept
+  ip daddr 195.209.211.163 tcp dport 24579 accept
   ip daddr {address} tcp dport 8443 accept
  }}
 }}'''
@@ -555,6 +558,7 @@ def host_rules(iface, previous_forward=True):
   iifname "{HOST}" ip daddr {{ {SERVER} }} udp dport {IKE_PORT} accept
   iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 udp dport 443 accept
   iifname "{HOST}" ip saddr {CLIENT} ip daddr 38.180.164.67 tcp dport {{ 24571, 24578 }} accept
+  iifname "{HOST}" ip saddr {CLIENT} ip daddr 195.209.211.163 tcp dport 24579 accept
   iifname "{HOST}" ip daddr {{ {SERVER} }} tcp dport 8443 accept
   iifname "{HOST}" drop
   oifname "{HOST}" ip saddr {{ {SERVER}, 38.180.164.67 }} ct state established,related accept
@@ -777,6 +781,7 @@ secrets {{ private-client {{ file = {ROOT}/client-key.pem }} }}
   oifname "{FULL_PEER}" ip daddr 172.29.247.1 meta l4proto {{ tcp, udp }} th sport 53 accept
   ip daddr {address} udp dport {ACTIVE['port']} accept
   ip daddr 38.180.164.67 tcp dport {{ 24571, 24578 }} accept
+  ip daddr 195.209.211.163 tcp dport 24579 accept
   meta skuid 0 ip daddr {address} tcp dport 8443 accept
   meta nfproto ipv4 ipsec out reqid {REQID} accept
  }}
@@ -1009,7 +1014,7 @@ def start_candidate(candidate,identity):
     if candidate['tls'] or candidate.get('evgt'):
         if candidate.get('evgt'):
             binary=ensure_evgt_binary()
-            carrier=[str(binary),'-mode','client','-server',candidate['address']+':24578','-server-name',candidate['identity'],
+            carrier=[str(binary),'-mode','client','-server',candidate.get('transport_address',candidate['address'])+':'+str(candidate.get('transport_port',24578)),'-server-name',candidate['identity'],
                      '-udp-listen','127.0.0.1:24573','-udp-peer',CLIENT+':4500',
                      '-ca',str(ROOT/'ca.pem'),'-cert',str(ROOT/'client.pem'),'-key',str(ROOT/'client-key.pem')]
         else:carrier=['/usr/local/sbin/vpnctl','internal-tls-client']
