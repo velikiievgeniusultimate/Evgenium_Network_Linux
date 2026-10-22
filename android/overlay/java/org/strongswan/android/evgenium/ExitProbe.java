@@ -4,7 +4,10 @@ import java.net.*;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import javax.net.ssl.*;
-/** No DNS dependency: ordinary unprotected socket, inside the VPN, authenticated HTTPS. */
+/**
+ * No DNS dependency: ordinary unprotected socket, inside the VPN,
+ * authenticated HTTPS.
+ */
 public final class ExitProbe {
   private static volatile SSLSocketFactory factory;
   private static synchronized SSLSocketFactory factory(android.content.Context context)
@@ -35,18 +38,30 @@ public final class ExitProbe {
     return factory = tls.getSocketFactory();
   }
   public static String get(android.content.Context context) throws Exception {
-    try (Socket raw = new Socket()) {
-      raw.connect(new InetSocketAddress("1.1.1.1", 443), 3000);
+    try {
+      return get(context, "1.1.1.1");
+    } catch (Exception first) {
+      try {
+        return get(context, "1.0.0.1");
+      } catch (Exception second) {
+        second.addSuppressed(first);
+        throw second;
+      }
+    }
+  }
+  private static String get(android.content.Context context, String host) throws Exception {
+    try (Socket raw = new Socket(); SocketDeadline deadline = new SocketDeadline(raw, 4500)) {
+      raw.connect(new InetSocketAddress(host, 443), 3000);
       raw.setSoTimeout(3000);
-      try (SSLSocket tls = (SSLSocket) factory(context).createSocket(raw, "1.1.1.1", 443, true)) {
+      try (SSLSocket tls = (SSLSocket) factory(context).createSocket(raw, host, 443, true)) {
         tls.setSoTimeout(3000);
         SSLParameters parameters = tls.getSSLParameters();
         parameters.setEndpointIdentificationAlgorithm("HTTPS");
         tls.setSSLParameters(parameters);
         tls.startHandshake();
         tls.getOutputStream().write(
-            "GET /cdn-cgi/trace HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n".getBytes(
-                StandardCharsets.US_ASCII));
+            ("GET /cdn-cgi/trace HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n")
+                .getBytes(StandardCharsets.US_ASCII));
         String reply =
             new String(Credentials.read(tls.getInputStream(), 32768), StandardCharsets.US_ASCII);
         if (!reply.startsWith("HTTP/1.1 200 "))

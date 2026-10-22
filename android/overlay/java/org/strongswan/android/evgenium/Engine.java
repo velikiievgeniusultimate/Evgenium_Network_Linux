@@ -15,7 +15,10 @@ import java.util.*;
 import java.util.concurrent.*;
 import javax.net.ssl.HttpsURLConnection;
 
-/** Single owner of connection orchestration; UI only sends commands and displays state. */
+/**
+ * Single owner of connection orchestration; UI only sends commands and
+ * displays state.
+ */
 public class Engine extends Service {
   public static final String[] IDS = {"ru-udp", "ee-udp", "ee-tls", "ee-evgt"};
   public static final String[] LABELS = {
@@ -26,8 +29,10 @@ public class Engine extends Service {
   private volatile boolean cancel;
   private final ExecutorService worker = Executors.newSingleThreadExecutor();
   private final Handler handler = new Handler(Looper.getMainLooper());
-  private String connectedNetwork = "";
-  private long generation;
+  private Network connectedNetwork;
+  private Network operationNetwork;
+  private String operationKind = "unknown";
+  private volatile long generation;
   private int consecutive;
   private volatile boolean busy;
   private volatile boolean exhausted;
@@ -90,20 +95,35 @@ public class Engine extends Service {
     long mine = ++generation;
     worker.execute(() -> {
       try {
-        if ("rank".equals(cmd) || (route < 0 && !hasRanking()))
+        beginNetwork();
+        if ("measure".equals(cmd)
+            && (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)
+                != 0) {
+          checkNetwork();
+          if (!Credentials.EE.equals(ExitProbe.get(this)))
+            throw new IOException("unexpected_exit");
+          JSONObject m = measure();
+          checkNetwork();
+          record
+          ("measurement", current, m, "");
+          set("Замер завершён: " + label(current));
+        } else if ("rank".equals(cmd) || (route < 0 && !hasRanking()))
           rank();
         else if (route >= 0)
           connectRoute(route);
         else
           connectRanked(best());
-        if (!cancel && mine == generation)
-          handler.postDelayed(() -> monitor(mine), 15000);
+      } catch (NetworkChanged e) {
+        connectedNetwork = null;
+        set("Сеть изменилась. Ожидаю подключение…");
       } catch (Exception e) {
         set("Ошибка: " + safe(e));
         record
         ("failed", current, new JSONObject(), safe(e));
       } finally {
         busy = false;
+        if (!cancel && mine == generation)
+          handler.postDelayed(() -> monitor(mine), 15000);
       }
     });
     return START_NOT_STICKY;
@@ -118,25 +138,11 @@ public class Engine extends Service {
     busy = true;
     worker.execute(() -> {
       try {
-        ConnectivityManager cm = getSystemService(ConnectivityManager.class);
-        boolean internet = false;
-        for (Network n : cm.getAllNetworks()) {
-          NetworkCapabilities cap = cm.getNetworkCapabilities(n);
-          if (cap != null && !cap.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
-              && cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))
-            internet = true;
-        }
-        if (!internet) {
-          consecutive = 0;
-          set("Ожидаю доступную сеть");
-          return;
-        }
-        String kind = networkKind();
-        if (!kind.equals(connectedNetwork) && !"unknown".equals(kind)) {
+        beginNetwork();
+        if (!operationNetwork.equals(connectedNetwork)) {
           consecutive = 0;
           record
           ("network_changed", current, new JSONObject(), "");
-          connectedNetwork = kind;
           if (hasRanking())
             connectRanked(best());
           else
@@ -145,12 +151,19 @@ public class Engine extends Service {
         }
         if (vpn != null && vpn.getState() == VpnStateService.State.CONNECTED
             && Credentials.EE.equals(ExitProbe.get(this))) {
+          checkNetwork();
           consecutive = 0;
           set("Подключено: " + label(current));
           return;
         }
         throw new IOException("health_failed");
       } catch (Exception e) {
+        if (cancel || !sameNetwork()) {
+          connectedNetwork = null;
+          consecutive = 0;
+          set("Ожидаю доступную сеть");
+          return;
+        }
         record
         ("health_failed", current, new JSONObject(), safe(e));
         if (++consecutive >= 2) {
@@ -188,6 +201,7 @@ public class Engine extends Service {
   private void connectRoute(int route) throws Exception {
     if (cancel)
       throw new InterruptedException();
+    checkNetwork();
     if (route < 0 || route >= IDS.length)
       throw new IOException("no_available_route");
     JSONObject credentials = Credentials.profile(this);
@@ -236,6 +250,7 @@ public class Engine extends Service {
       if (cancel)
         throw new InterruptedException();
       Thread.sleep(250);
+      checkNetwork();
       VpnStateService v = vpn;
       if (v == null || v.getProfile() == null || !uuid.equals(v.getProfile().getUUID()))
         continue;
@@ -243,7 +258,8 @@ public class Engine extends Service {
         String ip = ExitProbe.get(this);
         if (!Credentials.EE.equals(ip))
           throw new IOException("unexpected_exit");
-        connectedNetwork = networkKind();
+        checkNetwork();
+        connectedNetwork = operationNetwork;
         set("Подключено: " + LABELS[route]);
         record
         ("connected", current,
@@ -271,6 +287,7 @@ public class Engine extends Service {
       } catch (Exception e) {
         if (cancel)
           throw e;
+        checkNetwork();
         lose(IDS[route]);
         record
         ("candidate_failed", IDS[route], new JSONObject(), safe(e));
@@ -282,7 +299,7 @@ public class Engine extends Service {
   }
   private void rank() throws Exception {
     JSONObject ranking =
-        new JSONObject().put("created", System.currentTimeMillis()).put("network", networkKind());
+        new JSONObject().put("created", System.currentTimeMillis()).put("network", operationKind);
     JSONArray results = new JSONArray();
     for (int i = 0; i < IDS.length && !cancel; i++) {
       JSONObject r = new JSONObject().put("id", IDS[i]).put("losses", 0);
@@ -290,25 +307,38 @@ public class Engine extends Service {
       try {
         connectRoute(i);
         set("Измеряю: " + LABELS[i]);
-        JSONObject m = measure();
-        r.put("metrics", m)
-            .put("score",
-                2 * m.getDouble("down") * m.getDouble("up")
-                    / (m.getDouble("down") + m.getDouble("up"))
-                    / (1 + m.getDouble("latency") / 200));
+        JSONObject m;
+        try {
+          m = measure();
+        } catch (Exception benchmark) {
+          checkNetwork();
+          if (!Credentials.EE.equals(ExitProbe.get(this)))
+            throw benchmark;
+          r.put("score", 0.001).put("warning", "speed_test_unavailable:" + safe(benchmark));
+          m = null;
+        }
+        if (m != null)
+          r.put("metrics", m)
+              .put("score",
+                  2 * m.getDouble("down") * m.getDouble("up")
+                      / (m.getDouble("down") + m.getDouble("up"))
+                      / (1 + m.getDouble("latency") / 200));
       } catch (Exception e) {
         if (cancel)
           throw e;
+        checkNetwork();
         r.put("score", 0).put("losses", 1).put("error", safe(e));
       }
+      checkNetwork();
       r.put("elapsed_ms", SystemClock.elapsedRealtime() - start);
       results.put(r);
       record
       ("rank", IDS[i], r, "");
-      ranking.put("paths", results);
-      saveRanking(ranking);
     }
     if (!cancel) {
+      checkNetwork();
+      ranking.put("paths", results);
+      saveRanking(ranking);
       if (best() < 0)
         noRoutes();
       else
@@ -316,9 +346,30 @@ public class Engine extends Service {
     }
   }
   private JSONObject measure() throws Exception {
-    final int size = 1024 * 1024;
+    Future<JSONObject> task = requests.submit(this::measureBlocking);
+    long deadline = SystemClock.elapsedRealtime() + 70000;
+    try {
+      while (SystemClock.elapsedRealtime() < deadline) {
+        if (cancel) throw new InterruptedException();
+        checkNetwork();
+        try { return task.get(500, TimeUnit.MILLISECONDS); }
+        catch (TimeoutException pending) { /* Check network/cancellation again. */ }
+      }
+      throw new IOException("measurement_deadline");
+    } finally {
+      task.cancel(true);
+    }
+  }
+  private JSONObject measureBlocking() throws Exception {
+    final int size = 4 * 1024 * 1024;
     long t = SystemClock.elapsedRealtime();
-    textGet("https://discord.com/api/v10/gateway", 4096);
+    String discord = "ok";
+    try {
+      textGet("https://discord.com/api/v10/gateway", 4096);
+    } catch (Exception e) {
+      discord = safe(e); // An individual service outage is not a broken VPN route.
+    }
+    if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
     long latency;
     try (Socket probe = new Socket()) {
       t = SystemClock.elapsedRealtime();
@@ -333,18 +384,33 @@ public class Engine extends Service {
     down.setReadTimeout(10000);
     down.setInstanceFollowRedirects(false);
     int count;
+    ScheduledFuture<?> downDeadline =
+        httpDeadlines.schedule(down::disconnect, 25, TimeUnit.SECONDS);
     try {
       if (down.getResponseCode() != 200)
         throw new IOException("download_http");
+      if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+      // Measure body transfer separately from TLS/DNS setup.
+      t = SystemClock.elapsedRealtime();
       try (InputStream in = down.getInputStream()) {
-        count = Credentials.read(in, size + 1).length;
+        count = 0;
+        byte[] buffer = new byte[32768];
+        int n;
+        while ((n = in.read(buffer)) != -1) {
+          if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+          count += n;
+          if (count > size)
+            throw new IOException("download_size");
+        }
       }
     } finally {
+      downDeadline.cancel(false);
       down.disconnect();
     }
     if (count != size)
       throw new IOException("download_size");
     double d = size * 8.0 / Math.max(1, SystemClock.elapsedRealtime() - t) / 1000;
+    if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
     byte[] data = new byte[size];
     new java.security.SecureRandom().nextBytes(data);
     HttpsURLConnection up =
@@ -356,9 +422,15 @@ public class Engine extends Service {
     up.setFixedLengthStreamingMode(size);
     up.setInstanceFollowRedirects(false);
     t = SystemClock.elapsedRealtime();
+    ScheduledFuture<?> upDeadline = httpDeadlines.schedule(up::disconnect, 25, TimeUnit.SECONDS);
     try {
       try (OutputStream out = up.getOutputStream()) {
-        out.write(data);
+        if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+        t = SystemClock.elapsedRealtime();
+        for (int offset = 0; offset < data.length; offset += 32768) {
+          if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+          out.write(data, offset, Math.min(32768, data.length - offset));
+        }
       }
       if (up.getResponseCode() != 200)
         throw new IOException("upload_http");
@@ -366,6 +438,7 @@ public class Engine extends Service {
         Credentials.read(in, 65536);
       }
     } finally {
+      upDeadline.cancel(false);
       up.disconnect();
     }
     double u = size * 8.0 / Math.max(1, SystemClock.elapsedRealtime() - t) / 1000;
@@ -373,34 +446,44 @@ public class Engine extends Service {
         .put("down", d)
         .put("up", u)
         .put("latency", latency)
-        .put("bytes_per_direction", size);
+        .put("bytes_per_direction", size)
+        .put("method", "body-4mib-v2")
+        .put("discord", discord);
+  }
+  private static final class NetworkChanged extends IOException {}
+  private void beginNetwork() throws NetworkChanged {
+    operationNetwork = NetworkAccess.select(this);
+    operationKind = NetworkAccess.kind(this, operationNetwork);
+    checkNetwork();
+  }
+  private boolean sameNetwork() {
+    return operationNetwork != null && operationNetwork.equals(NetworkAccess.select(this));
+  }
+  private void checkNetwork() throws NetworkChanged {
+    if (!sameNetwork())
+      throw new NetworkChanged();
   }
   private String networkKind() {
-    ConnectivityManager cm = getSystemService(ConnectivityManager.class);
-    boolean cell = false;
-    for (Network n : cm.getAllNetworks()) {
-      NetworkCapabilities cap = cm.getNetworkCapabilities(n);
-      if (cap != null && !cap.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
-          && cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
-        if (cap.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))
-          return "wifi";
-        if (cap.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR))
-          cell = true;
-      }
-    }
-    return cell ? "cellular" : "unknown";
+    return NetworkAccess.kind(this, NetworkAccess.select(this));
   }
-
   private JSONObject ranking() throws Exception {
-    try (InputStream in = openFileInput("ranking-" + networkKind() + ".json")) {
+    android.util.AtomicFile file =
+        new android.util.AtomicFile(new File(getFilesDir(), "ranking-" + operationKind + ".json"));
+    try (InputStream in = file.openRead()) {
       return new JSONObject(new String(Credentials.read(in, 65536), StandardCharsets.UTF_8));
     }
   }
   private void saveRanking(JSONObject r) throws Exception {
-    try (FileOutputStream out = openFileOutput(
-             "ranking-" + r.optString("network", networkKind()) + ".json", MODE_PRIVATE)) {
+    checkNetwork();
+    android.util.AtomicFile file = new android.util.AtomicFile(
+        new File(getFilesDir(), "ranking-" + r.getString("network") + ".json"));
+    FileOutputStream out = file.startWrite();
+    try {
       out.write(r.toString(2).getBytes(StandardCharsets.UTF_8));
-      out.getFD().sync();
+      file.finishWrite(out);
+    } catch (Exception e) {
+      file.failWrite(out);
+      throw e;
     }
   }
   private boolean hasRanking() {
@@ -448,6 +531,12 @@ public class Engine extends Service {
         return policy().after(i);
     return -1;
   }
+  private static final ScheduledExecutorService httpDeadlines =
+      Executors.newScheduledThreadPool(2, r -> {
+        Thread t = new Thread(r, "evgenium-http-deadline");
+        t.setDaemon(true);
+        return t;
+      });
   private static final ThreadPoolExecutor requests =
       new ThreadPoolExecutor(2, 2, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(2), r -> {
         Thread t = new Thread(r, "evgenium-http");

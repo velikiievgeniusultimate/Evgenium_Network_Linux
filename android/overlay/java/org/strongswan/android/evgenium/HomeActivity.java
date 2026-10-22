@@ -40,7 +40,7 @@ public class HomeActivity extends Activity {
     scroll.addView(root);
     setContentView(scroll);
     title(root, "EVGENIUM", 30);
-    title(root, "Android · 0.1.0 alpha", 14);
+    title(root, "Android · 0.1.1 alpha", 14);
     status = title(root, Engine.status, 22);
     status.setPadding(0, 35, 0, 25);
     deviceName = title(root, "Устройство ещё не зарегистрировано", 18);
@@ -151,6 +151,8 @@ public class HomeActivity extends Activity {
             out.append(String.format(java.util.Locale.ROOT,
                 "↓ %.1f · ↑ %.1f Мбит/с · %d мс\nРейтинг %.2f · сбоев %d/3\n", m.optDouble("down"),
                 m.optDouble("up"), m.optLong("latency"), p.optDouble("score"), p.optInt("losses")));
+          else if (p.has("warning"))
+            out.append("Подключение работает; скорость не измерена.\n");
           else
             out.append("Не прошёл проверку: ").append(p.optString("error")).append("\n");
           out.append("\n");
@@ -312,7 +314,7 @@ public class HomeActivity extends Activity {
       route.setSelection(i.getIntExtra("route", -1) + 1);
     if ("connect".equals(cmd) || "rank".equals(cmd))
       prepare(cmd);
-    else if ("stop".equals(cmd))
+    else if ("stop".equals(cmd) || "measure".equals(cmd))
       command(cmd);
   }
 }

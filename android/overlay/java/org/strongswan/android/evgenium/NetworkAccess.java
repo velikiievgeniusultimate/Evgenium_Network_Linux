@@ -3,7 +3,10 @@ package org.strongswan.android.evgenium;
 import android.content.Context;
 import android.net.*;
 import android.os.ParcelFileDescriptor;
-/** Never select IMS/emergency/carrier provisioning networks as Internet transport. */
+/**
+ * Never select IMS/emergency/carrier provisioning networks as Internet
+ * transport.
+ */
 public final class NetworkAccess {
   public static Network select(Context context) {
     ConnectivityManager cm = context.getSystemService(ConnectivityManager.class);
@@ -24,6 +27,17 @@ public final class NetworkAccess {
       }
     }
     return candidate;
+  }
+  public static String kind(Context context, Network network) {
+    ConnectivityManager cm = context.getSystemService(ConnectivityManager.class);
+    NetworkCapabilities c = network == null ? null : cm.getNetworkCapabilities(network);
+    if (c == null)
+      return "unknown";
+    if (c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))
+      return "wifi";
+    if (c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR))
+      return "cellular";
+    return "other";
   }
   public static boolean bind(VpnService service, int fd) {
     Network network = select(service);

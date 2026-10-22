@@ -52,6 +52,26 @@ public class FrameCodecTest {
     assertEquals(4096, FrameCodec.read(new DataInputStream(partial), true, 0).data.length);
   }
   @Test
+  public void coalescedFramesPreserveDatagramsAndSequences() throws Exception {
+    ByteArrayOutputStream wire = new ByteArrayOutputStream();
+    DataOutputStream out = new DataOutputStream(new BufferedOutputStream(wire, 16384));
+    for (int i = 1; i <= 16; i++) {
+      byte[] packet = new byte[1280];
+      new Random(i).nextBytes(packet);
+      FrameCodec.write(out, 1, i, packet);
+    }
+    out.flush();
+    DataInputStream in = new DataInputStream(new ByteArrayInputStream(wire.toByteArray()));
+    for (int i = 1; i <= 16; i++) {
+      FrameCodec.Frame frame = FrameCodec.read(in, true, i - 1);
+      byte[] expected = new byte[1280];
+      new Random(i).nextBytes(expected);
+      assertEquals(i, frame.sequence);
+      assertArrayEquals(expected, frame.data);
+    }
+    assertEquals(-1, in.read());
+  }
+  @Test
   public void boundedRandomInputs() throws Exception {
     Random random = new Random(17);
     for (int n = 0; n < 20000; n++) {
