@@ -315,21 +315,64 @@ C.ApplicationWindow {
     component RibbonMark: Canvas {
         onPaint: {
             const ctx = getContext("2d")
-            ctx.reset()
-            ctx.scale(width / 100, height / 120)
-            ctx.fillStyle = root.accent
+            ctx.reset(); ctx.scale(width / 110, height / 120)
             for (let side = 0; side < 2; side++) {
                 ctx.save()
-                if (side) { ctx.translate(100, 0); ctx.scale(-1, 1) }
-                ctx.beginPath()
-                ctx.moveTo(44,4); ctx.bezierCurveTo(4,12,0,39,35,47)
-                ctx.lineTo(12,67); ctx.lineTo(37,81); ctx.lineTo(21,110)
-                ctx.lineTo(48,88); ctx.lineTo(27,67); ctx.lineTo(49,45)
-                ctx.bezierCurveTo(16,36,18,20,44,4); ctx.closePath(); ctx.fill()
-                ctx.restore()
-            }
-        }
-    }
+                if (side) { ctx.translate(110, 0); ctx.scale(-1, 1) }
+ctx.beginPath();
+ctx.moveTo(10, 6);
+ctx.bezierCurveTo(-4, 17, 1, 29, 12, 38);
+ctx.bezierCurveTo(4, 52, 13, 63, 22, 70);
+ctx.bezierCurveTo(17, 82, 28, 98, 34, 112);
+ctx.bezierCurveTo(37, 95, 44, 82, 37, 68);
+ctx.bezierCurveTo(48, 55, 49, 46, 41, 36);
+ctx.bezierCurveTo(58, 13, 40, -4, 10, 6);
+ctx.closePath();
+ctx.fillStyle = "#702a40"; ctx.fill();
+ctx.beginPath();
+ctx.moveTo(44, 7);
+ctx.bezierCurveTo(10, -4, -8, 12, 8, 27);
+ctx.bezierCurveTo(15, 34, 32, 38, 41, 43);
+ctx.lineTo(46, 31);
+ctx.bezierCurveTo(33, 24, 13, 22, 12, 15);
+ctx.bezierCurveTo(18, 9, 31, 8, 44, 7);
+ctx.closePath();
+ctx.fillStyle = root.accent; ctx.fill();
+ctx.beginPath();
+ctx.moveTo(5, 26);
+ctx.bezierCurveTo(-3, 44, 13, 53, 34, 59);
+ctx.bezierCurveTo(38, 61, 40, 64, 41, 67);
+ctx.lineTo(45, 53);
+ctx.bezierCurveTo(31, 44, 10, 42, 11, 34);
+ctx.closePath();
+ctx.fillStyle = root.accent; ctx.fill();
+ctx.beginPath();
+ctx.moveTo(12, 51);
+ctx.bezierCurveTo(8, 67, 21, 77, 33, 80);
+ctx.lineTo(38, 90);
+ctx.lineTo(41, 75);
+ctx.bezierCurveTo(30, 66, 19, 63, 18, 58);
+ctx.closePath();
+ctx.fillStyle = root.accent; ctx.fill();
+ctx.beginPath();
+ctx.moveTo(22, 76);
+ctx.bezierCurveTo(20, 89, 31, 101, 34, 112);
+ctx.lineTo(39, 93);
+ctx.bezierCurveTo(31, 88, 29, 83, 29, 81);
+ctx.closePath();
+ctx.fillStyle = root.accent; ctx.fill();
+ctx.beginPath();
+ctx.moveTo(39, 8);
+ctx.bezierCurveTo(21, 3, 4, 11, 8, 20);
+ctx.moveTo(7, 34);
+ctx.bezierCurveTo(7, 43, 23, 48, 34, 52);
+ctx.moveTo(16, 60);
+ctx.bezierCurveTo(17, 67, 27, 71, 33, 73);
+ctx.strokeStyle = "#ffacb8"; ctx.lineWidth = 1.2; ctx.stroke();
+ctx.restore()
+}
+}
+}
 
     component Card: Rectangle {
         radius: 7
