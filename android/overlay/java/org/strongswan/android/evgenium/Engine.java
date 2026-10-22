@@ -114,7 +114,7 @@ public class Engine extends Service {
     running = true;
     if (!"measure".equals(cmd))
       verified = false;
-    diagnosing = "diagnose".equals(cmd);
+    diagnosing = DiagnosticFlow.isDiagnostic(cmd);
     busy = true;
     cancel = false;
     exhausted = false;
@@ -134,7 +134,8 @@ public class Engine extends Service {
           record
           ("measurement", current, m, "");
           set("Замер завершён: " + label(current));
-        } else if ("rank".equals(cmd) || "diagnose".equals(cmd) || (route < 0 && !hasRanking()))
+        } else if ("rank".equals(cmd) || DiagnosticFlow.isDiagnostic(cmd)
+            || (route < 0 && !hasRanking()))
           rank();
         else if (route >= 0)
           connectRoute(route);
@@ -151,16 +152,19 @@ public class Engine extends Service {
         record
         ("failed", current, new JSONObject(), safe(e));
       } finally {
-        if ("diagnose".equals(cmd)) {
-          try {
-            DiagnosticReports.prepare(this,
-                cancel         ? "cancelled"
-                    : verified ? "completed"
-                               : "incomplete");
-          } catch (Exception reportError) {
-            DiagnosticReports.progress = "Не удалось сохранить отчёт. Повторите сбор данных.";
-          }
+        if (DiagnosticFlow.isDiagnostic(cmd)) {
           diagnosing = false;
+          try {
+            DiagnosticFlow.finish(cmd,
+                ()
+                    -> DiagnosticReports.prepare(this,
+                        cancel         ? "cancelled"
+                            : verified ? "completed"
+                                       : "incomplete"),
+                () -> !cancel && mine == generation, () -> DiagnosticReports.send(this));
+          } catch (Exception reportError) {
+            DiagnosticReports.progress = "Не удалось сохранить отчёт. Повторите проверку.";
+          }
         }
         busy = false;
         if (!cancel && mine == generation) {

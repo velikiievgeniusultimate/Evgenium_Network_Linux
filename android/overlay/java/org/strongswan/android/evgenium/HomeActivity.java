@@ -19,7 +19,7 @@ public class HomeActivity extends Activity {
   private EditText token;
   private Spinner route;
   private PowerControl power;
-  private Button runDiagnostic, collectDiagnostic, sendDiagnostic;
+  private Button runDiagnostic;
   private String pending = "connect", page = "home";
   private final Handler ui = new Handler(Looper.getMainLooper());
   private final Runnable refresh = new Runnable() {
@@ -30,16 +30,13 @@ public class HomeActivity extends Activity {
         power.state(Engine.verified, Engine.running);
       if (diagnosticStatus != null)
         diagnosticStatus.setText(DiagnosticReports.summary(HomeActivity.this));
-      if (runDiagnostic != null)
+      if (runDiagnostic != null) {
         runDiagnostic.setEnabled(!Engine.working() && !DiagnosticReports.sending);
-      if (collectDiagnostic != null)
-        collectDiagnostic.setEnabled(!Engine.diagnosing && !DiagnosticReports.sending);
-      if (sendDiagnostic != null)
-        sendDiagnostic.setEnabled(DiagnosticReports.exists(HomeActivity.this) && !Engine.diagnosing
-            && !DiagnosticReports.sending);
-      for (Button b : new Button[] {runDiagnostic, collectDiagnostic, sendDiagnostic})
-        if (b != null)
-          b.setAlpha(b.isEnabled() ? 1f : .4f);
+        runDiagnostic.setText(DiagnosticReports.pendingUpload(HomeActivity.this)
+                ? "Повторить отправку отчёта"
+                : "Проверить и отправить отчёт");
+        runDiagnostic.setAlpha(runDiagnostic.isEnabled() ? 1f : .4f);
+      }
       ui.postDelayed(this, 1000);
     }
   };
@@ -64,8 +61,6 @@ public class HomeActivity extends Activity {
     deviceName = null;
     diagnosticStatus = null;
     runDiagnostic = null;
-    collectDiagnostic = null;
-    sendDiagnostic = null;
     LinearLayout root = column();
     root.setBackgroundColor(BG);
     root.setPadding(dp(24), dp(12), dp(24), dp(16));
@@ -257,40 +252,22 @@ public class HomeActivity extends Activity {
     LinearLayout c = content("Диагностика");
     title(c, "Помогите сделать связь лучше", 25);
     title(c,
-        "Проверим все 5 маршрутов, скорость в обе стороны и доступность сервисов. Отчёт сначала "
-            + "сохраняется на телефоне. Отправка — только по вашему подтверждению.",
+        "Проверим все 5 маршрутов, скорость и доступность сервисов. После проверки отчёт "
+            + "автоматически отправится разработчику. Здесь появится подтверждение сервера.",
         15)
         .setTextColor(MUTED);
     diagnosticStatus = title(c, DiagnosticReports.summary(this), 16);
-    runDiagnostic = button(c, "Начать полную проверку", () -> confirmTests(true));
-    collectDiagnostic = button(c, "Собрать отчёт без новых тестов", () -> {
-      try {
-        DiagnosticReports.prepare(this, "snapshot");
-      } catch (Exception e) {
-        toast("Не удалось собрать отчёт");
-      }
+    runDiagnostic = button(c, "Проверить и отправить отчёт", () -> {
+      if (Engine.working() || DiagnosticReports.sending)
+        return;
+      if (DiagnosticReports.pendingUpload(this))
+        DiagnosticReports.send(this);
+      else
+        confirmTests(true);
     });
-    button(c, "Просмотреть отчёт", () -> {
-      try {
-        textDialog("Содержимое отчёта", DiagnosticReports.preview(this).toString(2));
-      } catch (Exception e) {
-        toast("Сначала соберите отчёт");
-      }
-    });
-    sendDiagnostic = button(c, "Отправить отчёт",
-        ()
-            -> new AlertDialog.Builder(this)
-                .setTitle("Отправить разработчику?")
-                .setMessage("Будут переданы модель и версия Android, результаты тестов, события "
-                    + "VPN и технические счётчики. Сервер свяжет отчёт с сертификатом "
-                    + "этого устройства. Токены, ключи, содержимое трафика и история "
-                    + "посещений не передаются.")
-                .setNegativeButton("Отмена", null)
-                .setPositiveButton("Отправить", (d, w) -> DiagnosticReports.send(this))
-                .show());
     title(c,
-        "Если связь пропала, соберите текущий отчёт. Он останется здесь; отправьте его после "
-            + "восстановления сети. Автоматической отправки нет.",
+        "Если отправка не удалась, отчёт останется на телефоне. Эта же кнопка повторит "
+            + "отправку без нового прогона тестов.",
         13)
         .setTextColor(MUTED);
   }
@@ -300,14 +277,21 @@ public class HomeActivity extends Activity {
       return;
     }
     new AlertDialog.Builder(this)
-        .setTitle(diagnostic ? "Полная диагностика" : "Перепроверить маршруты?")
+        .setTitle(diagnostic ? "Проверить и отправить отчёт?" : "Перепроверить маршруты?")
         .setMessage("Проверка займёт несколько минут и обновит рейтинг. Во время переключений "
-            + "возможны паузы связи. Расход — около 60 МБ, при повторах больше. Отчёт не "
-            + "отправляется автоматически.")
+            + "возможны паузы связи. Расход — около 60 МБ, при повторах больше."
+            + (diagnostic ? "\n\nПосле проверки автоматически отправим модель и версию Android, "
+                        + "результаты тестов, события VPN и технические счётчики. Сервер свяжет "
+                          + "отчёт "
+                        + "с сертификатом устройства. Токены, ключи, содержимое трафика и история "
+                        + "посещений не передаются."
+                          : ""))
         .setNegativeButton("Отмена", null)
-        .setPositiveButton("Начать", (d, w) -> prepare(diagnostic ? "diagnose" : "rank"))
+        .setPositiveButton(diagnostic ? "Проверить и отправить" : "Начать",
+            (d, w) -> prepare(diagnostic ? "diagnose-send" : "rank"))
         .show();
   }
+
   private void enroll() {
     if (Engine.running) {
       toast("Сначала отключите VPN");

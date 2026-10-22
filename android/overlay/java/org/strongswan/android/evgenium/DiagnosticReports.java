@@ -196,7 +196,17 @@ public final class DiagnosticReports {
       af.failWrite(out);
       throw e;
     }
-    progress = "Отчёт готов. Вы можете посмотреть и отправить его.";
+    progress = "Отчёт сохранён.";
+  }
+  public static boolean pendingUpload(Context c) {
+    try {
+      String id = preview(c).getString("report_id");
+      android.content.SharedPreferences prefs = c.getSharedPreferences("evgenium-reports", 0);
+      return id.equals(prefs.getString("pending", ""))
+          && !id.equals(prefs.getString("acknowledged", ""));
+    } catch (Exception e) {
+      return false;
+    }
   }
   public static String summary(Context c) {
     if (Engine.diagnosing)
@@ -206,10 +216,12 @@ public final class DiagnosticReports {
     try {
       JSONObject r = preview(c);
       String saved = c.getSharedPreferences("evgenium-reports", 0).getString("acknowledged", "");
-      return (progress.isEmpty() ? (r.getString("report_id").equals(saved)
-                                           ? "Сервер подтвердил получение отчёта."
-                                           : "Сохранён отчёт")
-                                 : progress)
+      return (progress.isEmpty()
+                     ? (r.getString("report_id").equals(saved)
+                               ? "Сервер подтвердил получение отчёта."
+                               : pendingUpload(c) ? "Отчёт не отправлен. Повторите отправку."
+                                                  : "Сохранён отчёт")
+                     : progress)
           + "\n"
           + java.text.DateFormat.getDateTimeInstance().format(new Date(r.getLong("time") * 1000))
           + "\n№ " + r.getString("report_id");
@@ -252,12 +264,23 @@ public final class DiagnosticReports {
   public static synchronized void send(Context context) {
     if (sending || Engine.diagnosing)
       return;
-    sending = true;
     Context c = context.getApplicationContext();
+    final JSONObject r;
+    try {
+      r = preview(c);
+      r.put("consent", true);
+      if (!c.getSharedPreferences("evgenium-reports", 0)
+              .edit()
+              .putString("pending", r.getString("report_id"))
+              .commit())
+        throw new IOException("pending_not_saved");
+    } catch (Exception e) {
+      progress = "Не удалось подготовить отчёт к отправке. Повторите проверку.";
+      return;
+    }
+    sending = true;
     new Thread(() -> {
       try {
-        JSONObject r = preview(c);
-        r.put("consent", true);
         JSONObject reply = upload(c, Engine.running ? "10.77.0.1" : Credentials.RU, r);
         if (!reply.optBoolean("accepted")
             || !r.getString("report_id").equals(reply.optString("report_id")))
@@ -265,10 +288,12 @@ public final class DiagnosticReports {
         c.getSharedPreferences("evgenium-reports", 0)
             .edit()
             .putString("acknowledged", r.getString("report_id"))
+            .remove("pending")
             .apply();
         progress = "Сервер подтвердил получение отчёта.";
       } catch (Exception e) {
-        progress = "Не удалось отправить. Отчёт сохранён; повторите после восстановления сети.";
+        progress = "Не удалось отправить. Отчёт сохранён. Нажмите «Повторить отправку отчёта» "
+                   + "после восстановления сети.";
       } finally {
         sending = false;
       }
