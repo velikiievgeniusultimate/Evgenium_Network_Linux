@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -108,4 +109,75 @@ func TestMutualTLS(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A real authenticated peer keeps sending data but never acknowledges our probe.
+// This used to remain alive indefinitely because every frame renewed ReadDeadline.
+func TestHalfBrokenAuthenticatedPeerCannotHideBehindData(t *testing.T) {
+	s, c := credentials(t)
+	sc, _ := tlsConfig(s)
+	cc, _ := tlsConfig(c)
+	listener, e := tls.Listen("tcp4", "127.0.0.1:0", sc)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer listener.Close()
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		peer, e := listener.Accept()
+		if e != nil {
+			return
+		}
+		defer peer.Close()
+		peer.SetDeadline(time.Now().Add(18 * time.Second))
+		if e := peer.(*tls.Conn).Handshake(); e != nil {
+			return
+		}
+		peer.Write([]byte(magic))
+		b := make([]byte, len(magic))
+		if _, e = io.ReadFull(peer, b); e != nil {
+			return
+		}
+		readerDone := make(chan struct{})
+		go func() {
+			defer close(readerDone)
+			for {
+				if _, e := decode(peer); e != nil {
+					return
+				}
+			}
+		}()
+		for n := uint64(1); ; n++ {
+			if e := encode(peer, packet{kind: dataFrame, seq: n, data: []byte("still downloading")}); e != nil {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		peer.Close()
+		<-readerDone
+	}()
+	sink, e := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer sink.Close()
+	u, e := net.DialUDP("udp4", nil, sink.LocalAddr().(*net.UDPAddr))
+	if e != nil {
+		t.Fatal(e)
+	}
+	conn, e := tls.DialWithDialer(&net.Dialer{Timeout: time.Second}, "tcp4", listener.Addr().String(), cc)
+	if e != nil {
+		t.Fatal(e)
+	}
+	start := time.Now()
+	e = session(conn, u, c)
+	elapsed := time.Since(start)
+	if e == nil || e.Error() != "heartbeat_roundtrip_timeout" {
+		t.Fatal("half-broken path not detected", e)
+	}
+	if elapsed > 15*time.Second {
+		t.Fatal("late detection", elapsed)
+	}
+	<-serverDone
 }

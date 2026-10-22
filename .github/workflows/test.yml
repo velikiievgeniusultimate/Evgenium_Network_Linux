@@ -50,3 +50,4 @@ jobs:
           sudo env EVG_TEST_XRAY=/tmp/evg-policy-xray python3 scripts/test-unified-policy.py
           sudo python3 scripts/test-dns-transition.py
           sudo python3 scripts/test-local-dns-guard.py
+          sudo python3 scripts/test-relay-reconnect-route.py
