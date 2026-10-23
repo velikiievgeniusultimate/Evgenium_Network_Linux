@@ -102,6 +102,7 @@ public class Engine extends Service {
       getSharedPreferences("evgenium", 0).edit().putBoolean("connection-wanted", false).commit();
       running = false;
       verified = false;
+      diagnosing = false;
       cancel = true;
       generation++;
       handler.removeCallbacksAndMessages(null);
@@ -150,17 +151,20 @@ public class Engine extends Service {
         else
           connectRanked(best());
       } catch (NetworkChanged e) {
-        verified = false;
-        connectedNetwork = null;
-        set("Сеть изменилась. Ожидаю подключение…");
+        if (!cancel && instance == this && mine == generation) {
+          verified = false;
+          connectedNetwork = null;
+          set("Сеть изменилась. Ожидаю подключение…");
+        }
       } catch (Exception e) {
-        verified = false;
-        if (!cancel)
-          set("Ошибка: " + safe(e));
+        if (!cancel && instance == this && mine == generation) {
+          verified = false;
+          set(UserMessages.connection(safe(e)));
+        }
         record
         ("failed", current, new JSONObject(), safe(e));
       } finally {
-        if (DiagnosticFlow.isDiagnostic(cmd)) {
+        if (DiagnosticFlow.isDiagnostic(cmd) && !cancel && instance == this && mine == generation) {
           diagnosing = false;
           try {
             DiagnosticFlow.finish(cmd,
@@ -231,7 +235,8 @@ public class Engine extends Service {
         }
         throw new IOException("health_failed");
       } catch (Exception e) {
-        if (cancel || !sameNetwork()) {
+        if (cancel || instance != this || mine != generation) return;
+        if (!sameNetwork()) {
           verified = false;
           connectedNetwork = null;
           consecutive = 0;
@@ -266,6 +271,7 @@ public class Engine extends Service {
     });
   }
   private void set(String s) {
+    if (cancel || instance != this) return;
     status = s;
     Log.i("Evgenium", s);
   }
@@ -276,9 +282,9 @@ public class Engine extends Service {
     return id;
   }
   private void connectRoute(int route) throws Exception {
-    verified = false;
-    if (cancel)
+    if (cancel || instance != this)
       throw new InterruptedException();
+    verified = false;
     checkNetwork();
     if (route < 0 || route >= IDS.length)
       throw new IOException("no_available_route");
@@ -363,7 +369,7 @@ public class Engine extends Service {
     verified = false;
     exhausted = true;
     TunnelCarrier.stopCurrent();
-    set("Маршруты исчерпаны. Нажмите «Проверить маршруты» или «Отключить».");
+    set("Нет рабочего маршрута. Откройте настройки → «Восстановить · проверить маршруты». Проверьте доступность интернета.");
   }
   private void connectRanked(int route) throws Exception {
     for (int attempts = 0; route >= 0 && attempts < IDS.length && !cancel; attempts++) {
@@ -789,6 +795,7 @@ public class Engine extends Service {
       instance = null;
       running = false;
       verified = false;
+      diagnosing = false;
     }
     cancel = true;
     handler.removeCallbacksAndMessages(null);

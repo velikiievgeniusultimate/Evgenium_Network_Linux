@@ -6,6 +6,14 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.Test;
 public class DiagnosticFlowTest {
+  @Test public void reportCannotMoveBetweenAccountsOrLegacyUnknownOwners() {
+    String a="device-0123456789abcdef01234567",b="device-1123456789abcdef01234567";
+    assertTrue(DiagnosticFlow.sameOwner(a,a));
+    assertFalse(DiagnosticFlow.sameOwner(a,b));
+    assertFalse(DiagnosticFlow.sameOwner(a,""));
+    assertFalse(DiagnosticFlow.sameOwner(null,null));
+    assertFalse(DiagnosticFlow.sameOwner("", ""));
+  }
   @Test
   public void explicitWorkflowSavesBeforeSending() throws Exception {
     List<String> events = new ArrayList<>();

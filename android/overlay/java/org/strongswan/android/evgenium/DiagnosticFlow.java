@@ -3,6 +3,9 @@ package org.strongswan.android.evgenium;
 import java.util.function.BooleanSupplier;
 /** Consent belongs to one explicit diagnose-send command, never ordinary ranking. */
 final class DiagnosticFlow {
+  static boolean sameOwner(String current, String saved) {
+    return current != null && current.matches("device-[a-f0-9]{24}") && current.equals(saved);
+  }
   interface Save {
     void run() throws Exception;
   }

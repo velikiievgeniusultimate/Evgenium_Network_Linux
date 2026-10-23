@@ -143,6 +143,7 @@ final class AppUpdates {
     }, "evgenium-update").start();
   }
   static void install(Activity a, File apk) {
+    if (a.isDestroyed() || a.isFinishing()) { status = "Обновление готово — нажмите для установки"; return; }
     try {
       if (!a.getPackageManager().canRequestPackageInstalls()) {
         status = "Разрешите установку и нажмите обновление ещё раз";
