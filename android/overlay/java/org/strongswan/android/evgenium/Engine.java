@@ -33,6 +33,7 @@ public class Engine extends Service {
   }
   private volatile VpnStateService vpn;
   private volatile boolean cancel;
+  private volatile String diagnosticRun = "";
   private final ExecutorService worker = Executors.newSingleThreadExecutor();
   private final Handler handler = new Handler(Looper.getMainLooper());
   private Network connectedNetwork;
@@ -130,6 +131,8 @@ public class Engine extends Service {
     consecutive = 0;
     long mine = ++generation;
     worker.execute(() -> {
+      final String reportRun = DiagnosticFlow.isDiagnostic(cmd) ? UUID.randomUUID().toString() : "";
+      diagnosticRun = reportRun;
       try {
         beginNetwork();
         if ("measure".equals(cmd)
@@ -172,12 +175,13 @@ public class Engine extends Service {
                     -> DiagnosticReports.prepare(this,
                         cancel         ? "cancelled"
                             : verified ? "completed"
-                                       : "incomplete"),
+                                       : "incomplete", reportRun),
                 () -> !cancel && mine == generation, () -> DiagnosticReports.send(this));
           } catch (Exception reportError) {
             DiagnosticReports.progress = "Не удалось сохранить отчёт. Повторите проверку.";
           }
         }
+        diagnosticRun = "";
         busy = false;
         if (!cancel && mine == generation) {
           nextHealthAt = SystemClock.elapsedRealtime() + 15000;
@@ -391,7 +395,8 @@ public class Engine extends Service {
   }
   private void rank() throws Exception {
     JSONObject ranking =
-        new JSONObject().put("created", System.currentTimeMillis()).put("network", operationKind);
+        new JSONObject().put("created", System.currentTimeMillis()).put("network", operationKind)
+            .put("run_id", diagnosticRun);
     JSONArray results = new JSONArray();
     for (int i = 0; i < IDS.length && !cancel; i++) {
       JSONObject r = new JSONObject().put("id", IDS[i]).put("losses", 0);
@@ -473,6 +478,7 @@ public class Engine extends Service {
   }
   private JSONObject measureBlocking() throws Exception {
     final String measuredRoute = current;
+    final String measuredRun = diagnosticRun;
     final boolean detailed = diagnosing;
     final long measurementStart = SystemClock.elapsedRealtime();
     JSONObject timing = new JSONObject();
@@ -612,16 +618,16 @@ public class Engine extends Service {
       transferError = safe(e);
       throw e;
     } finally {
-      if (detailed) {
+      if (load != null) load.close();
+      if (detailed && measuredRun.equals(diagnosticRun)) {
         if (load != null) {
-          load.close();
           record
-          ("load", measuredRoute, load.metrics(), "");
+          ("load", measuredRoute, load.metrics(), "", measuredRun);
         }
         timing.put("stage", stage)
             .put("elapsed_ms", SystemClock.elapsedRealtime() - measurementStart);
         record
-        ("transfer", measuredRoute, timing, transferError);
+        ("transfer", measuredRoute, timing, transferError, measuredRun);
       }
     }
   }
@@ -762,18 +768,22 @@ public class Engine extends Service {
     }
   }
   private void record(String phase, String route, JSONObject values, String error) {
+    record(phase, route, values, error, diagnosticRun);
+  }
+  private synchronized void record(String phase, String route, JSONObject values, String error, String runId) {
     try {
       JSONObject r =
           new JSONObject()
               .put("time", System.currentTimeMillis())
               .put("phase", phase)
+              .put("run_id", runId)
               .put("route", route)
               .put("network", networkKind())
               .put("screen_on", getSystemService(android.os.PowerManager.class).isInteractive())
               .put(
                   "device_idle", getSystemService(android.os.PowerManager.class).isDeviceIdleMode())
               .put("values", values)
-              .put("carrier", TunnelCarrier.activeMetrics())
+              .put("carrier", phase.equals("start") ? new JSONObject() : TunnelCarrier.activeMetrics())
               .put("error", error);
       File file = new File(getFilesDir(), "diagnostics.jsonl");
       if (file.length() > 1024 * 1024)

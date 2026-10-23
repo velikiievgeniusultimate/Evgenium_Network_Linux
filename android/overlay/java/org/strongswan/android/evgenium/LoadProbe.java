@@ -49,6 +49,8 @@ final class LoadProbe implements AutoCloseable {
         .put("tcp_attempts", attempts)
         .put("tcp_success", samples.received)
         .put("tcp_failed", failures)
+        .put("tcp_pending", closed ? 0 : Math.max(0, attempts - samples.received - failures))
+        .put("tcp_cancelled", closed ? Math.max(0, attempts - samples.received - failures) : 0)
         .put("tcp_p50_ms", samples.percentile(.5))
         .put("tcp_p95_ms", samples.percentile(.95))
         .put("tcp_max_ms", samples.percentile(1));

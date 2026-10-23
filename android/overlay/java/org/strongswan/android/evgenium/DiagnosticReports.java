@@ -31,15 +31,9 @@ public final class DiagnosticReports {
     }
   }
   static String error(String s) {
-    String e = s.toLowerCase(Locale.ROOT);
-    if (e.isEmpty())
-      return "none";
-    for (String k : new String[] {"timeout", "dns", "certificate", "authentication", "network",
-             "cancel", "unexpected_exit", "carrier", "http"})
-      if (e.contains(k))
-        return k;
-    return "other";
+    return DiagnosticErrors.classify(s);
   }
+
   static String path(String s) {
     return Arrays.asList(Engine.IDS).contains(s) ? s : "";
   }
@@ -68,7 +62,7 @@ public final class DiagnosticReports {
              "reordered", "invalid", "loss_percent", "rtt_p50_ms", "rtt_p95_ms", "rtt_max_ms",
              "jitter_ms", "control_ms", "server_received", "server_replies", "server_duplicates",
              "dns_queries", "dns_success", "dns_timeouts", "dns_total_ms", "tcp_attempts",
-             "tcp_success", "tcp_failed", "tcp_p50_ms", "tcp_p95_ms", "tcp_max_ms",
+             "tcp_success", "tcp_failed", "tcp_pending", "tcp_cancelled", "tcp_p50_ms", "tcp_p95_ms", "tcp_max_ms",
              "down_max_read_ms", "up_max_write_ms", "discord_ms", "down_setup_ms", "down_body_ms",
              "up_setup_ms", "up_write_ms", "up_body_ack_ms", "stage"})
       metric(out, k, source.opt(k));
@@ -79,7 +73,10 @@ public final class DiagnosticReports {
       out.put("metrics", values(m));
     return out;
   }
-  public static synchronized void prepare(Context context, String outcome) throws Exception {
+  public static void prepare(Context context, String outcome) throws Exception {
+    prepare(context, outcome, "");
+  }
+  public static synchronized void prepare(Context context, String outcome, String runId) throws Exception {
     if (sending)
       throw new IOException("report_sending");
     Context c = context.getApplicationContext();
@@ -96,9 +93,10 @@ public final class DiagnosticReports {
             continue;
           try {
             JSONObject r = new JSONObject(line);
-            if (PHASES.contains(r.optString("phase"))) {
+            if (PHASES.contains(r.optString("phase"))
+                && (runId.isEmpty() || runId.equals(r.optString("run_id")))) {
               tail.add(r);
-              while (tail.size() > 96) tail.removeFirst();
+              while (tail.size() > 128) tail.removeFirst();
             }
           } catch (JSONException ignored) {
           }
@@ -142,6 +140,7 @@ public final class DiagnosticReports {
       try (InputStream in = c.openFileInput("ranking-" + kind + ".json")) {
         JSONObject rank =
             new JSONObject(new String(Credentials.read(in, 65536), StandardCharsets.UTF_8));
+        if (!runId.isEmpty() && !runId.equals(rank.optString("run_id"))) continue;
         JSONArray safe = new JSONArray(), rows = rank.getJSONArray("paths");
         for (int i = 0; i < Math.min(rows.length(), 5); i++) {
           JSONObject r = rows.getJSONObject(i);
@@ -196,7 +195,7 @@ public final class DiagnosticReports {
                                     .put("samples", samples)
                                     .put("rankings", rankings));
     report.put("local_identity", Credentials.profile(c).getString("identity"));
-    byte[] data = report.toString(2).getBytes(StandardCharsets.UTF_8);
+    byte[] data = report.toString().getBytes(StandardCharsets.UTF_8);
     if (data.length > 131072)
       throw new IOException("report_size");
     AtomicFile af = new AtomicFile(file(c));
