@@ -580,7 +580,9 @@ public class Engine extends Service {
       if (privateLab)
         up.setSSLSocketFactory(Credentials.tls(this, true).getSocketFactory());
       up.setConnectTimeout(5000);
-      up.setReadTimeout(10000);
+      // A locally buffered upload can still be crossing a slow carrier. The
+      // existing 25-second total deadline bounds write + response together.
+      up.setReadTimeout(25000);
       up.setRequestMethod("POST");
       up.setDoOutput(true);
       up.setFixedLengthStreamingMode(size);

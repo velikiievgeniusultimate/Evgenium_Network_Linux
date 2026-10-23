@@ -34,3 +34,7 @@ class AndroidReports(unittest.TestCase):
   safe=clean_android(b)['android']['samples'][0]['values'];self.assertEqual(safe['flow_server_received'],17001);self.assertEqual(safe['flow_id'],'b'*32);self.assertNotIn('secret',json.dumps(safe))
   row['values']['flow_id']='EVN1-secret'
   with self.assertRaises(ValueError):clean_android(b)
+
+ def test_upload_wait_stage_and_duration_are_preserved(self):
+  b=self.bundle();row=b['android']['samples'][0];row.update(phase='flow',error='timeout',values={'flow_stage':4,'flow_elapsed_ms':30000,'flow_response_wait_ms':29890,'raw_response':'secret'})
+  safe=clean_android(b)['android']['samples'][0]['values'];self.assertEqual(safe,{'flow_stage':4,'flow_elapsed_ms':30000,'flow_response_wait_ms':29890})

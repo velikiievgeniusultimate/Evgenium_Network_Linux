@@ -17,27 +17,39 @@ final class TransferProbe {
   }
   private static JSONObject post(Context c,String host,String path,byte[] payload,String session,int deadlineMs,JSONObject metrics) throws Exception {
     if(Thread.currentThread().isInterrupted())throw new InterruptedException();
+    long operationStart=SystemClock.elapsedRealtime(),responseStart=0;
+    if(metrics!=null)metrics.put("flow_stage",1);
     try(Socket raw=new Socket();SocketDeadline deadline=new SocketDeadline(raw,deadlineMs)) {
       raw.connect(new InetSocketAddress(host,8443),Math.min(3000,deadlineMs));raw.setSoTimeout(Math.min(8000,deadlineMs));
       try(SSLSocket tls=(SSLSocket)Credentials.tls(c,true).getSocketFactory().createSocket(raw,host,8443,true)) {
+        if(metrics!=null)metrics.put("flow_stage",2);
         SSLParameters p=tls.getSSLParameters();p.setEndpointIdentificationAlgorithm("HTTPS");tls.setSSLParameters(p);tls.startHandshake();
         OutputStream out=tls.getOutputStream();
         out.write(("POST "+path+" HTTP/1.0\r\nHost: "+host+"\r\nContent-Type: application/octet-stream\r\nContent-Length: "+payload.length+"\r\nConnection: close\r\n"+(session.isEmpty()?"":"X-Evgenium-Session: "+session+"\r\n")+"\r\n").getBytes(StandardCharsets.US_ASCII));
         long began=SystemClock.elapsedRealtime();int written=0;
+        if(metrics!=null)metrics.put("flow_stage",3);
         for(int offset=0;offset<payload.length;offset+=16384) {
           if(Thread.currentThread().isInterrupted())throw new InterruptedException();
           int n=Math.min(16384,payload.length-offset);out.write(payload,offset,n);written+=n;
           if(metrics!=null)metrics.put("flow_client_written",written);
         }
         out.flush();if(metrics!=null)metrics.put("flow_write_ms",SystemClock.elapsedRealtime()-began);
+        responseStart=SystemClock.elapsedRealtime();
+        if(metrics!=null)metrics.put("flow_stage",4);
+        deadline.awaitResponse(tls);
         JSONObject result;
         try {result=new JSONObject(BootstrapResponse.read(tls.getInputStream()));}
         catch(IOException e) {
           if ("bootstrap_rejected".equals(e.getMessage())) throw new TransferHealth.ServiceUnavailable();
           throw e;
         }
-        if(metrics!=null)metrics.put("flow_ack_ms",SystemClock.elapsedRealtime()-began);
+        if(metrics!=null)metrics.put("flow_ack_ms",SystemClock.elapsedRealtime()-began).put("flow_stage",5);
         return result;
+      }
+    } finally {
+      if(metrics!=null) {
+        metrics.put("flow_elapsed_ms",SystemClock.elapsedRealtime()-operationStart);
+        if(responseStart!=0)metrics.put("flow_response_wait_ms",SystemClock.elapsedRealtime()-responseStart);
       }
     }
   }

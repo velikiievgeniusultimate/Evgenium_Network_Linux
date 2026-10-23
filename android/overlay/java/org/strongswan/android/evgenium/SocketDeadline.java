@@ -45,13 +45,27 @@ public final class SocketDeadline implements AutoCloseable {
     }
   }
   private final ScheduledFuture<?> task;
+  private final long expires;
   public SocketDeadline(Socket socket, long millis) {
+    if (millis <= 0) throw new IllegalArgumentException("socket deadline");
+    expires = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
     task = timers.schedule(() -> {
       try {
         socket.close();
       } catch (IOException ignored) {
       }
     }, millis, TimeUnit.MILLISECONDS);
+  }
+  /** Upload write completion only means buffered locally. Wait for the peer
+   * within the original operation budget, without starting a new deadline. */
+  public int remainingMillis() throws java.net.SocketTimeoutException {
+    long remaining = expires - System.nanoTime();
+    if (remaining <= 0) throw new java.net.SocketTimeoutException("transfer_deadline");
+    return (int)Math.min(Integer.MAX_VALUE, Math.max(1,
+        TimeUnit.NANOSECONDS.toMillis(remaining)));
+  }
+  public void awaitResponse(Socket socket) throws IOException {
+    socket.setSoTimeout(remainingMillis());
   }
   public void close() { task.cancel(false); }
 }
