@@ -195,6 +195,7 @@ public final class DiagnosticReports {
                                     .put("outcome", outcome)
                                     .put("samples", samples)
                                     .put("rankings", rankings));
+    report.put("local_identity", Credentials.profile(c).getString("identity"));
     byte[] data = report.toString(2).getBytes(StandardCharsets.UTF_8);
     if (data.length > 131072)
       throw new IOException("report_size");
@@ -211,7 +212,9 @@ public final class DiagnosticReports {
   }
   public static boolean pendingUpload(Context c) {
     try {
-      String id = preview(c).getString("report_id");
+      JSONObject report = preview(c);
+      if (!DiagnosticFlow.sameOwner(Credentials.profile(c).getString("identity"), report.optString("local_identity"))) return false;
+      String id = report.getString("report_id");
       android.content.SharedPreferences prefs = c.getSharedPreferences("evgenium-reports", 0);
       return id.equals(prefs.getString("pending", ""))
           && !id.equals(prefs.getString("acknowledged", ""));
@@ -279,6 +282,9 @@ public final class DiagnosticReports {
     final JSONObject r;
     try {
       r = preview(c);
+      if (!DiagnosticFlow.sameOwner(Credentials.profile(c).getString("identity"), r.optString("local_identity")))
+        throw new IOException("report_owner_changed");
+      r.remove("local_identity"); // local binding is never uploaded
       r.put("consent", true);
       if (!c.getSharedPreferences("evgenium-reports", 0)
               .edit()

@@ -20,33 +20,48 @@ public class HomeActivity extends Activity {
   private Spinner route;
   private PowerControl power;
   private Button runDiagnostic, tokenAction, updateAction;
-  private boolean editingToken, enrollingToken;
+  private boolean editingToken;
+  private static volatile boolean enrollingToken;
+  private boolean permissionPending;
+  private static volatile int enrollmentRevision;
+  private static volatile String enrollmentMessage = "";
+  private int observedEnrollment;
   private String pending = "connect", page = "home";
   private final Handler ui = new Handler(Looper.getMainLooper());
   private final Runnable refresh = new Runnable() {
     public void run() {
-      if (protectionStatus != null) protectionStatus.setText(Protection.summary(HomeActivity.this));
+      if (observedEnrollment != enrollmentRevision) {
+        observedEnrollment = enrollmentRevision;
+        if ("settings".equals(page)) settings();
+        toast(enrollmentMessage);
+      }
+      if (protectionStatus != null) textIfChanged(protectionStatus, Protection.summary(HomeActivity.this));
       if (status != null)
-        status.setText(Engine.status + ("home".equals(page) && Engine.running ? "\n" + Protection.summary(HomeActivity.this) : ""));
+        textIfChanged(status, Engine.status + ("home".equals(page) && Engine.running ? "\n" + Protection.summary(HomeActivity.this) : ""));
       if (power != null)
         power.state(Engine.verified, Engine.running);
       if (diagnosticStatus != null)
-        diagnosticStatus.setText(DiagnosticReports.summary(HomeActivity.this));
+        textIfChanged(diagnosticStatus, DiagnosticReports.summary(HomeActivity.this));
       if (runDiagnostic != null) {
         runDiagnostic.setEnabled(!Engine.working() && !DiagnosticReports.sending);
-        runDiagnostic.setText(DiagnosticReports.pendingUpload(HomeActivity.this)
+        textIfChanged(runDiagnostic, DiagnosticReports.pendingUpload(HomeActivity.this)
                 ? "Повторить отправку отчёта"
                 : "Полная диагностика");
         runDiagnostic.setAlpha(runDiagnostic.isEnabled() ? 1f : .4f);
       }
-      if (updateAction != null) { updateAction.setText(AppUpdates.status); updateAction.setEnabled(!AppUpdates.busy.get()); }
+      if (updateAction != null) { textIfChanged(updateAction, AppUpdates.status); updateAction.setEnabled(!AppUpdates.busy.get()); }
       if (tokenAction != null) {
-        tokenAction.setEnabled(!enrollingToken && (!editingToken || !Engine.running));
+        tokenAction.setEnabled(!enrollingToken);
+        textIfChanged(tokenAction, enrollingToken ? "Проверяю…" : editingToken ? "Подтвердить" : "Изменить");
+        if (token != null) token.setEnabled(editingToken && !enrollingToken);
         tokenAction.setAlpha(tokenAction.isEnabled() ? 1f : .4f);
       }
       ui.postDelayed(this, 1000);
     }
   };
+  private static void textIfChanged(TextView view, String value) {
+    if (!value.contentEquals(view.getText())) view.setText(value);
+  }
   private int dp(float n) {
     return Math.round(n * getResources().getDisplayMetrics().density);
   }
@@ -73,6 +88,7 @@ public class HomeActivity extends Activity {
     updateAction = null;
     token = null;
     editingToken = false;
+    getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
     LinearLayout root = column();
     root.setBackgroundColor(BG);
     root.setPadding(dp(24), dp(12), dp(24), dp(16));
@@ -126,6 +142,9 @@ public class HomeActivity extends Activity {
     getWindow().setStatusBarColor(BG);
     getWindow().setNavigationBarColor(BG);
     getWindow().getDecorView().setSystemUiVisibility(0);
+    if (Build.VERSION.SDK_INT >= 33)
+      getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+          android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::navigateBack);
     route = new Spinner(this);
     String[] options = new String[Engine.LABELS.length + 1];
     options[0] = "Автоматически по рейтингу";
@@ -134,26 +153,49 @@ public class HomeActivity extends Activity {
         new ArrayAdapter<String>(this, android.R.layout.simple_spinner_dropdown_item, options));
     route.setSelection(Math.min(
         Engine.IDS.length, Math.max(0, getPreferences(0).getInt("selected-route", -1) + 1)));
+    route.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+      public void onItemSelected(AdapterView<?> p, View v, int position, long id) {
+        getPreferences(0).edit().putInt("selected-route", position - 1).apply();
+      }
+      public void onNothingSelected(AdapterView<?> p) {}
+    });
+    if (state != null) {
+      pending = state.getString("pending", "connect");
+      permissionPending = state.getBoolean("permission-pending", false);
+    }
+    observedEnrollment = state == null ? enrollmentRevision : state.getInt("enrollment-revision", enrollmentRevision);
     home();
     if (state != null && "settings".equals(state.getString("page")))
       settings();
     else if (state != null && "diagnostics".equals(state.getString("page")))
       settings();
-    if (Build.VERSION.SDK_INT >= 33
+    if (!getPreferences(0).getBoolean("notifications-asked", false) && Build.VERSION.SDK_INT >= 33
         && checkSelfPermission("android.permission.POST_NOTIFICATIONS")
             != getPackageManager().PERMISSION_GRANTED)
+    {
+      getPreferences(0).edit().putBoolean("notifications-asked", true).apply();
       requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, 2);
+    }
     handleDebug(getIntent());
     importReleaseToken(getIntent());
+    notificationAction(getIntent());
   }
   private boolean enrolled() {
-    return new File(getFilesDir(), "device.json").isFile();
+    try {
+      return Credentials.profile(this).optString("identity").matches("device-[a-f0-9]{24}")
+          && Credentials.key() != null
+          && java.util.Arrays.equals(Credentials.certificate(this).getPublicKey().getEncoded(),
+              Credentials.store().getCertificate(Credentials.ALIAS).getPublicKey().getEncoded());
+    } catch (Exception e) { return false; }
   }
   private void home() {
     page = "home";
     LinearLayout root = frame(null);
     LinearLayout body = column();
-    root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
+    ScrollView homeScroll = new ScrollView(this);
+    homeScroll.setFillViewport(true);
+    homeScroll.addView(body);
+    root.addView(homeScroll, new LinearLayout.LayoutParams(-1, 0, 1));
     power = new PowerControl(this);
     power.setContentDescription("Включить VPN");
     boolean landscape = getResources().getConfiguration().orientation
@@ -161,14 +203,15 @@ public class HomeActivity extends Activity {
     if (landscape)
       body.setOrientation(LinearLayout.HORIZONTAL);
     body.addView(power,
-        landscape ? new LinearLayout.LayoutParams(0, -1, 6)
-                  : new LinearLayout.LayoutParams(-1, 0, 6));
+        landscape ? new LinearLayout.LayoutParams(0, dp(260), 6)
+                  : new LinearLayout.LayoutParams(-1, dp(Math.max(220, getResources().getConfiguration().screenHeightDp * .50f))));
     power.state(Engine.verified, Engine.running);
     power.setOnClickListener(v -> {
       if (Engine.running) {
-        command("stop");
+        requestStop();
         return;
       }
+      if (enrollingToken) { toast("Дождитесь подтверждения токена"); return; }
       if (!enrolled()) {
         settings();
         new AlertDialog.Builder(this)
@@ -184,10 +227,8 @@ public class HomeActivity extends Activity {
     LinearLayout bottom = column();
     bottom.setGravity(Gravity.BOTTOM);
     body.addView(bottom,
-        landscape ? new LinearLayout.LayoutParams(0, -1, 4)
-            : getResources().getConfiguration().screenHeightDp < 700
-            ? new LinearLayout.LayoutParams(-1, -2)
-            : new LinearLayout.LayoutParams(-1, 0, 4));
+        landscape ? new LinearLayout.LayoutParams(0, -2, 4)
+                  : new LinearLayout.LayoutParams(-1, -2));
     TextView word = title(bottom, "СВЯЗЬ В ВАШЕМ РИТМЕ", 11);
     word.setLetterSpacing(.16f);
     word.setTextColor(ACCENT);
@@ -199,6 +240,21 @@ public class HomeActivity extends Activity {
     status = title(card, Engine.status, 19);
     status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
     title(bottom, "Тестовая версия · " + version(), 12).setTextColor(MUTED);
+  }
+  private void requestStop() {
+    if (!Engine.running) return;
+    if (Protection.lockdown(this)) {
+      new AlertDialog.Builder(this).setTitle("Отключить VPN?")
+        .setMessage("Android блокирует соединения без VPN. После отключения интернет останется заблокирован до подключения VPN или отключения блокировки в системных настройках.")
+        .setNegativeButton("Остаться", null)
+        .setPositiveButton("Отключить", (d,w) -> command("stop")).show();
+    } else command("stop");
+  }
+  private void notificationAction(Intent intent) {
+    if (intent == null) return;
+    if (org.strongswan.android.ui.VpnProfileControlActivity.DISCONNECT.equals(intent.getAction())) {
+      intent.setAction(null); requestStop();
+    }
   }
   private LinearLayout content(String name) {
     LinearLayout root = frame(name);
@@ -233,6 +289,7 @@ public class HomeActivity extends Activity {
     token.setHint(editingToken ? "Введите токен" : "Токен подтверждён");
     token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+    token.setFilters(new android.text.InputFilter[] {new android.text.InputFilter.LengthFilter(256)});
     token.setSaveEnabled(false);
     token.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
     token.setEnabled(editingToken);
@@ -242,11 +299,15 @@ public class HomeActivity extends Activity {
     tokenAction = button(tokenRow, editingToken ? "Подтвердить" : "Изменить", () -> {
       if (enrollingToken)
         return;
+      if (Engine.running || DiagnosticReports.sending) {
+        toast("Сначала отключите VPN и дождитесь отправки отчёта"); return;
+      }
       if (editingToken) {
         enroll();
         return;
       }
       try {
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         token.setText(Credentials.token(this));
         editingToken = true;
         token.setEnabled(true);
@@ -254,7 +315,13 @@ public class HomeActivity extends Activity {
         token.requestFocus();
         token.setSelection(token.length());
       } catch (Exception e) {
-        toast("Не удалось прочитать сохранённый токен");
+        editingToken = true;
+        token.setText("");
+        token.setHint("Введите токен");
+        token.setEnabled(true);
+        tokenAction.setText("Подтвердить");
+        token.requestFocus();
+        toast("Сохранённый токен недоступен. Вставьте его заново.");
       }
     });
     tokenAction.setTextSize(13);
@@ -265,6 +332,7 @@ public class HomeActivity extends Activity {
     tokenAction.setLayoutParams(actionParams);
     c.addView(tokenRow, new LinearLayout.LayoutParams(-1, dp(54)));
     title(c, "Маршрут", 18);
+    title(c, "Выбор применяется при следующем подключении. Автоматический режим перебирает маршруты по рейтингу.", 13).setTextColor(MUTED);
     if (route.getParent() != null)
       ((android.view.ViewGroup) route.getParent()).removeView(route);
     c.addView(route, new LinearLayout.LayoutParams(-1, dp(54)));
@@ -330,6 +398,7 @@ public class HomeActivity extends Activity {
       }).show();
   }
   private void confirmTests(boolean diagnostic) {
+    if (enrollingToken || Engine.working() || DiagnosticReports.sending) { toast("Дождитесь завершения текущей операции"); return; }
     if (!enrolled()) {
       toast("Сначала подтвердите токен в настройках");
       return;
@@ -352,55 +421,70 @@ public class HomeActivity extends Activity {
   }
 
   private void enroll() {
+    if (DiagnosticReports.sending) { toast("Дождитесь отправки отчёта"); return; }
     if (Engine.running) {
       toast("Сначала отключите VPN");
       return;
     }
     if (enrollingToken)
       return;
+    final EditText field = token;
+    final String value;
+    try { value = UserInput.token(field.getText().toString()); }
+    catch (IllegalArgumentException e) { field.requestFocus(); field.setError(e.getMessage()); return; }
+    final boolean hadAccess = enrolled();
     enrollingToken = true;
     tokenAction.setEnabled(false);
-    final EditText field = token;
-    String value = field.getText().toString().trim();
+    tokenAction.setText("Проверяю…");
+    field.setEnabled(false);
     new Thread(() -> {
       try {
-        Credentials.enroll(this, value);
-        runOnUiThread(() -> {
-          enrollingToken = false;
-          field.setText("");
-          settings();
-          toast("Токен подтверждён");
-        });
+        Credentials.enroll(getApplicationContext(), value);
+        enrollmentMessage = "Токен подтверждён";
       } catch (Exception e) {
-        runOnUiThread(() -> {
-          enrollingToken = false;
-          android.util.Log.w("Evgenium", "enrollment_failed_"+e.getClass().getSimpleName());
-          toast("Не удалось подтвердить токен. Проверьте токен и подключение.");
-        });
+        android.util.Log.w("Evgenium", "enrollment_failed_"+e.getClass().getSimpleName());
+        enrollmentMessage = "Не удалось подтвердить токен. Проверьте токен и подключение."
+            + (hadAccess ? " Предыдущий доступ сохранён." : "");
+      } finally {
+        enrollingToken = false;
+        enrollmentRevision++;
       }
     }).start();
   }
   private void rename() {
+    if (enrollingToken) { toast("Дождитесь подтверждения токена"); return; }
     EditText field = new EditText(this);
     field.setSingleLine(true);
     field.setText(deviceName.getText());
-    new AlertDialog.Builder(this)
+    field.setFilters(new android.text.InputFilter[] {new android.text.InputFilter.LengthFilter(128)});
+    AlertDialog dialog = new AlertDialog.Builder(this)
         .setTitle("Имя устройства")
         .setView(field)
         .setNegativeButton("Отмена", null)
-        .setPositiveButton("Сохранить", (d, w) -> new Thread(() -> {
-          try {
-            String value = Credentials.rename(this, field.getText().toString());
-            runOnUiThread(() -> {
-              if (deviceName != null)
-                deviceName.setText(value);
-              toast("Имя сохранено");
-            });
-          } catch (Exception e) {
-            runOnUiThread(() -> toast("Не удалось сохранить имя"));
-          }
-        }).start())
-        .show();
+        .setPositiveButton("Сохранить", null).create();
+    dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+      final String name;
+      try { name = UserInput.name(field.getText().toString()); }
+      catch (IllegalArgumentException e) { field.requestFocus(); field.setError(e.getMessage()); return; }
+      dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+      new Thread(() -> {
+        try {
+          String value = Credentials.rename(getApplicationContext(), name);
+          runOnUiThread(() -> {
+            if (isDestroyed() || isFinishing()) return;
+            if (deviceName != null) deviceName.setText(value);
+            dialog.dismiss(); toast("Имя сохранено");
+          });
+        } catch (Exception e) {
+          runOnUiThread(() -> {
+            if (isDestroyed() || isFinishing()) return;
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+            field.setError("Не удалось сохранить. Проверьте соединение и повторите.");
+          });
+        }
+      }).start();
+    }));
+    dialog.show();
   }
   private String version() {
     try {
@@ -451,11 +535,13 @@ public class HomeActivity extends Activity {
     return b;
   }
   private void prepare(String cmd) {
+    if (permissionPending || enrollingToken) return;
     pending = cmd;
     Intent permission = VpnService.prepare(this);
-    if (permission != null)
+    if (permission != null) {
+      permissionPending = true;
       startActivityForResult(permission, 1);
-    else
+    } else
       command(cmd);
   }
   private void command(String cmd) {
@@ -467,21 +553,25 @@ public class HomeActivity extends Activity {
   @Override
   protected void onActivityResult(int request, int result, Intent data) {
     super.onActivityResult(request, result, data);
-    if (request == 1 && result == RESULT_OK)
-      command(pending);
+    if (request == 1) {
+      permissionPending = false;
+      if (result == RESULT_OK) command(pending);
+      else toast("Разрешение VPN не выдано. Нажмите включение ещё раз и разрешите подключение.");
+    }
   }
   @Override
   protected void onSaveInstanceState(Bundle state) {
     state.putString("page", page);
+    state.putInt("enrollment-revision", observedEnrollment);
+    state.putString("pending", pending);
+    state.putBoolean("permission-pending", permissionPending);
     super.onSaveInstanceState(state);
   }
   @Override
-  public void onBackPressed() {
-    if (!"home".equals(page)) {
-      home();
-      return;
-    }
-    super.onBackPressed();
+  public void onBackPressed() { navigateBack(); }
+  private void navigateBack() {
+    if (!"home".equals(page)) home();
+    else finish(); // leaving the screen does not stop the VPN service
   }
   @Override
   protected void onResume() {
@@ -498,6 +588,7 @@ public class HomeActivity extends Activity {
   protected void onNewIntent(Intent i) {
     super.onNewIntent(i);
     importReleaseToken(i);
+    notificationAction(i);
     setIntent(i);
     handleDebug(i);
   }
@@ -528,7 +619,7 @@ public class HomeActivity extends Activity {
           else if (p.has("warning"))
             out.append("Подключение работает; скорость не измерена.\n");
           else
-            out.append("Не прошёл проверку: ").append(p.optString("error")).append("\n");
+            out.append(UserMessages.connection(p.optString("error"))).append("\n");
           out.append("\n");
         }
       } catch (Exception ignored) {

@@ -11,7 +11,7 @@ for path in (root/'overlay').rglob('*'):
  if path.is_file():target=main/path.relative_to(root/'overlay');target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(path,target)
 for path in (root/'tests').rglob('*.java'):
  target=app/'src/test/java'/path.relative_to(root/'tests');target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(path,target)
-f=app/'build.gradle';s=original(f).replace('applicationId "org.strongswan.android"','applicationId "'+package+'"').replace('minSdkVersion 21','minSdkVersion 26').replace('versionCode 96','versionCode 11').replace('versionName "2.6.2"','versionName "0.2.0-beta"');abis=os.environ.get('EVG_ANDROID_ABIS','arm64-v8a armeabi-v7a x86_64').split();assert set(abis)<= {'arm64-v8a','armeabi-v7a','x86_64'};s=s.replace("arguments '-j' + Runtime.runtime.availableProcessors()","arguments '-j4'\n                abiFilters "+', '.join(repr(x) for x in abis));s=s.replace("dependencies {", "dependencies {\n    implementation 'org.conscrypt:conscrypt-android:2.7.0'")
+f=app/'build.gradle';s=original(f).replace('applicationId "org.strongswan.android"','applicationId "'+package+'"').replace('minSdkVersion 21','minSdkVersion 26').replace('versionCode 96','versionCode 12').replace('versionName "2.6.2"','versionName "0.2.1-beta"');abis=os.environ.get('EVG_ANDROID_ABIS','arm64-v8a armeabi-v7a x86_64').split();assert set(abis)<= {'arm64-v8a','armeabi-v7a','x86_64'};s=s.replace("arguments '-j' + Runtime.runtime.availableProcessors()","arguments '-j4'\n                abiFilters "+', '.join(repr(x) for x in abis));s=s.replace("dependencies {", "dependencies {\n    implementation 'org.conscrypt:conscrypt-android:2.7.0'")
 s=s.replace('defaultConfig {', 'defaultConfig {\n        ndk { abiFilters '+', '.join(repr(x) for x in abis)+' }', 1)
 f.write_text(s)
 f=main/'jni/Android.mk';f.write_text(original(f).replace('-DHAVE_STDBOOL_H', '-DHAVE_STDBOOL_H -DHAVE_SIGWAITINFO'))
@@ -28,6 +28,12 @@ for permission in ('READ_EXTERNAL_STORAGE','SYSTEM_ALERT_WINDOW','QUERY_ALL_PACK
 # Keep upstream native namespace; use a distinct application ID and component names.
 s=s.replace('android:name=".','android:name="org.strongswan.android.')
 s=s.replace('android:authorities="org.strongswan.android', 'android:authorities="'+package)
+# Evgenium has one token-based control surface. Do not expose upstream import/control UIs.
+for component in ('ui.VpnProfileControlActivity', 'ui.VpnProfileSelectActivity',
+                  'ui.VpnProfileImportActivity', 'ui.TrustedCertificateImportActivity'):
+ s=re.sub(r'(<activity\s+android:name="org\.strongswan\.android\.'+re.escape(component)+r'"[^>]*?)android:exported="true"', r'\1android:exported="false"', s)
+s=s.replace('android:label="@string/tile_default"', 'android:label="Evgenium VPN"')
+s=re.sub(r'(<provider\s+android:name="org\.strongswan\.android\.data\.LogContentProvider"[^>]*?)android:exported="true"',r'\1android:exported="false"',s)
 f.write_text(s)
 f=main/'java/org/strongswan/android/logic/CharonVpnService.java';s=original(f)
 s=s.replace('public class CharonVpnService extends VpnService', 'public class CharonVpnService extends VpnService')
@@ -81,6 +87,8 @@ s=s.replace('setNextProfile(null);\n\t}\n\n\t@Override\n\tpublic void onDestroy(
 
     @Override
     public void onDestroy()''',1)
+s=s.replace('new Intent(getApplicationContext(), MainActivity.class)', 'new Intent(getApplicationContext(), org.strongswan.android.evgenium.HomeActivity.class)')
+s=s.replace('new Intent(getApplicationContext(), VpnProfileControlActivity.class)', 'new Intent(getApplicationContext(), org.strongswan.android.evgenium.HomeActivity.class)')
 f.write_text(s)
 # Engine owns route retries and the three-loss budget for Evgenium profiles.
 f=main/'java/org/strongswan/android/logic/VpnStateService.java';s2=original(f)

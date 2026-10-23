@@ -32,7 +32,7 @@ public final class Credentials {
     }
   }
   public static JSONObject profile(Context c) throws Exception {
-    try (InputStream in = c.openFileInput("device.json")) {
+    try (InputStream in = new android.util.AtomicFile(new File(c.getFilesDir(), "device.json")).openRead()) {
       return new JSONObject(new String(read(in, 32768), StandardCharsets.UTF_8));
     }
   }
@@ -130,8 +130,7 @@ public static synchronized void ensureFresh(Context c) throws Exception {
   }
 }
 public static synchronized void enroll(Context c, String token) throws Exception {
-  if (!token.matches("EVN1-[A-Za-z0-9_-]{43}"))
-    throw new IllegalArgumentException("Неверный формат токена");
+  token = UserInput.token(token);
   KeyStore ks = store();
   if (!ks.containsAlias(ALIAS)) {
     KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA", "AndroidKeyStore");
@@ -146,6 +145,8 @@ public static synchronized void enroll(Context c, String token) throws Exception
                 KeyProperties.SIGNATURE_PADDING_RSA_PKCS1, KeyProperties.SIGNATURE_PADDING_RSA_PSS)
             .build());
     gen.generateKeyPair();
+    // A lost hardware key is a new device, never a replacement key for an old identity.
+    c.getSharedPreferences("evgenium", 0).edit().remove("device-v2").commit();
   }
   String device = c.getSharedPreferences("evgenium", 0).getString("device-v2", null);
   if (device == null) {
@@ -189,16 +190,30 @@ public static synchronized void enroll(Context c, String token) throws Exception
   cert.verify(ca(c).getPublicKey());
   if (!Arrays.equals(cert.getPublicKey().getEncoded(), pub))
     throw new IOException("certificate_key_mismatch");
-  File tmp = new File(c.getFilesDir(), "device.json.tmp");
-  try (FileOutputStream out = new FileOutputStream(tmp)) {
-    out.write(p.toString().getBytes(StandardCharsets.UTF_8));
-    out.getFD().sync();
+  String previousIdentity = "";
+  try { previousIdentity = profile(c).optString("identity", ""); } catch (Exception ignored) {}
+  // Commit the certificate and encrypted token together. A crash must not mix accounts.
+  p.put("sealed_token", Base64.encodeToString(sealToken(token), Base64.NO_WRAP));
+  writeProfile(c, p);
+  new File(c.getFilesDir(), "token.sealed").delete(); // migrated legacy storage
+  if (!previousIdentity.isEmpty() && !previousIdentity.equals(p.getString("identity"))) {
+    // Do not attribute the previous account's pending diagnostics to the new account.
+    for (String name : new String[] {"support-preview.json", "support-preview.json.bak",
+        "diagnostics.jsonl", "diagnostics.previous.jsonl", "ranking-wifi.json", "ranking-cellular.json"})
+      new File(c.getFilesDir(), name).delete();
+    c.getSharedPreferences("evgenium-reports", 0).edit().clear().commit();
+    DiagnosticReports.progress = "";
   }
-  if (!tmp.renameTo(new File(c.getFilesDir(), "device.json")))
-    throw new IOException("profile_save_failed");
-  saveToken(c, token);
 }
-public static void saveToken(Context c, String token) throws Exception {
+private static void writeProfile(Context c, JSONObject p) throws Exception {
+  android.util.AtomicFile file = new android.util.AtomicFile(new File(c.getFilesDir(), "device.json"));
+  FileOutputStream out = file.startWrite();
+  try {
+    out.write(p.toString().getBytes(StandardCharsets.UTF_8));
+    file.finishWrite(out);
+  } catch (Exception e) { file.failWrite(out); throw e; }
+}
+private static byte[] sealToken(String token) throws Exception {
   final String alias = "evgenium-token-storage";
   KeyStore ks = store();
   if (!ks.containsAlias(alias)) {
@@ -212,15 +227,13 @@ public static void saveToken(Context c, String token) throws Exception {
   }
   javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
   cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, store().getKey(alias, null));
-  byte[] sealed = concat(cipher.getIV(), cipher.doFinal(token.getBytes(StandardCharsets.UTF_8)));
-  try (FileOutputStream out = c.openFileOutput("token.sealed", Context.MODE_PRIVATE)) {
-    out.write(sealed);
-    out.getFD().sync();
-  }
+  return concat(cipher.getIV(), cipher.doFinal(token.getBytes(StandardCharsets.UTF_8)));
 }
 public static String token(Context c) throws Exception {
   byte[] sealed;
-  try (InputStream in = c.openFileInput("token.sealed")) {
+  String embedded = profile(c).optString("sealed_token", "");
+  if (!embedded.isEmpty()) sealed = Base64.decode(embedded, Base64.NO_WRAP);
+  else try (InputStream in = c.openFileInput("token.sealed")) {
     sealed = read(in, 512);
   }
   if (sealed.length < 28)
@@ -232,9 +245,7 @@ public static String token(Context c) throws Exception {
       cipher.doFinal(Arrays.copyOfRange(sealed, 12, sealed.length)), StandardCharsets.UTF_8);
 }
 public static synchronized String rename(Context c, String name) throws Exception {
-  name = name.trim();
-  if (name.isEmpty() || name.length() > 64 || name.chars().anyMatch(Character::isISOControl))
-    throw new IllegalArgumentException("Имя: от 1 до 64 символов без управляющих знаков");
+  name = UserInput.name(name);
   String device = c.getSharedPreferences("evgenium", 0).getString("device-v2", null);
   JSONObject response = request(c, RU, "/device",
       new JSONObject().put("token", token(c)).put("device", device).put("name", name), false);
@@ -243,13 +254,7 @@ public static synchronized String rename(Context c, String name) throws Exceptio
   String actual = response.getJSONObject("device").getString("name");
   JSONObject p = profile(c);
   p.put("device_name", actual);
-  File temp = new File(c.getFilesDir(), "device.json.tmp");
-  try (FileOutputStream out = new FileOutputStream(temp)) {
-    out.write(p.toString().getBytes(StandardCharsets.UTF_8));
-    out.getFD().sync();
-  }
-  if (!temp.renameTo(new File(c.getFilesDir(), "device.json")))
-    throw new IOException("profile_save_failed");
+  writeProfile(c, p);
   return actual;
 }
 public static byte[] read(InputStream in, int limit) throws IOException {
