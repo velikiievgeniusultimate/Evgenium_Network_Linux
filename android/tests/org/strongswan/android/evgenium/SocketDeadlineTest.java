@@ -95,4 +95,47 @@ public class SocketDeadlineTest {
       assertFalse(client.isClosed());
     }
   }
+  @Test(timeout = 3000)
+  public void bufferedUploadMayReceiveAckAfterShortReadTimeout() throws Exception {
+    try (ServerSocket server = new ServerSocket(0);
+         Socket client = new Socket("127.0.0.1", server.getLocalPort());
+         Socket peer = server.accept();
+         SocketDeadline deadline = new SocketDeadline(client, 1500)) {
+      client.setSoTimeout(50);
+      client.getOutputStream().write(42);
+      assertEquals(42, peer.getInputStream().read());
+      Thread response = new Thread(() -> {
+        try { Thread.sleep(250); peer.getOutputStream().write(7); }
+        catch (Exception e) { throw new AssertionError(e); }
+      });
+      response.start();
+      deadline.awaitResponse(client);
+      assertEquals(7, client.getInputStream().read());
+      response.join();
+    }
+  }
+  @Test(timeout = 3000)
+  public void waitingForAckDoesNotRestartWholeBudget() throws Exception {
+    try (ServerSocket server = new ServerSocket(0);
+         Socket client = new Socket("127.0.0.1", server.getLocalPort());
+         Socket peer = server.accept();
+         SocketDeadline deadline = new SocketDeadline(client, 400)) {
+      Thread.sleep(250); // part of the budget already spent uploading
+      deadline.awaitResponse(client);
+      assertTrue(client.getSoTimeout() <= 200);
+      long began = System.nanoTime();
+      try { client.getInputStream().read(); fail("stalled ACK accepted"); }
+      catch (IOException expected) {
+        assertTrue(java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-began) < 350);
+      }
+    }
+  }
+  @Test(timeout = 3000)
+  public void expiredBudgetCannotBecomeInfiniteSocketRead() throws Exception {
+    try (Socket socket = new Socket(); SocketDeadline deadline = new SocketDeadline(socket, 20)) {
+      Thread.sleep(80);
+      try { deadline.awaitResponse(socket); fail("expired budget reused"); }
+      catch (java.net.SocketTimeoutException expected) {}
+    }
+  }
 }

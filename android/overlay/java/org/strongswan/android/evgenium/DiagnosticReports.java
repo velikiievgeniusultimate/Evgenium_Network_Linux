@@ -64,7 +64,7 @@ public final class DiagnosticReports {
              "dns_queries", "dns_success", "dns_timeouts", "dns_total_ms", "tcp_attempts",
              "tcp_success", "tcp_failed", "tcp_pending", "tcp_cancelled", "tcp_p50_ms", "tcp_p95_ms", "tcp_max_ms",
              "down_max_read_ms", "up_max_write_ms", "discord_ms", "down_setup_ms", "down_body_ms",
-             "up_setup_ms", "up_write_ms", "up_body_ack_ms", "stage", "flow_size", "flow_client_written", "flow_write_ms", "flow_ack_ms", "flow_server_received", "flow_server_complete", "flow_server_ms", "flow_server_max_read_ms", "flow_result_available", "flow_endpoint"})
+             "up_setup_ms", "up_write_ms", "up_body_ack_ms", "stage", "flow_size", "flow_client_written", "flow_write_ms", "flow_ack_ms", "flow_server_received", "flow_server_complete", "flow_server_ms", "flow_server_max_read_ms", "flow_result_available", "flow_endpoint", "flow_stage", "flow_elapsed_ms", "flow_response_wait_ms"})
       metric(out, k, source.opt(k));
     if (source.optString("flow_id").matches("[a-f0-9]{32}")) out.put("flow_id", source.getString("flow_id"));
     if (source.has("discord"))
