@@ -239,6 +239,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+    def transfer_receipt(self, sid, result):
+        # This event can only be produced here, never submitted through /report.
+        record = {'event':'transfer_receipt','flow_id':sid,'received_at':int(time.time()),
+                  'device':hashlib.sha256(self.connection.getpeercert(binary_form=True)).hexdigest()[:24],
+                  **{k:result[k] for k in ('size','received','complete','elapsed_ms','max_read_ms')}}
+        with LOCK:
+            prune()
+            path=LOG/(time.strftime('%Y-%m-%d',time.gmtime())+'.jsonl')
+            if path.exists() and path.stat().st_size>=MAX_SIZE:return
+            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_APPEND|os.O_NOFOLLOW,0o600)
+            with os.fdopen(fd,'a') as f:f.write(json.dumps(record,separators=(',',':'))+'\n')
     def do_GET(self):
         if getattr(self.server,'direct_only',False):
             self.reply(404,{}); return
@@ -303,6 +314,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not Path('/etc/evgenium-diagnostics-enabled').exists():
             self.reply(403, {}); return
         try:
+            if self.path in ('/transfer-start', '/transfer-upload', '/transfer-result'):
+                from transfer_probe import handle
+                handle(self); return
             if self.path in ('/packet-session', '/packet-result'):
                 if getattr(self.server, 'direct_only', False):
                     self.reply(404, {}); return
