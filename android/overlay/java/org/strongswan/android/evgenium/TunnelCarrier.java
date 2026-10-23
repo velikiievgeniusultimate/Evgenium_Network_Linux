@@ -52,7 +52,7 @@ public final class TunnelCarrier implements AutoCloseable {
   private final VpnService service;
   private final boolean evgt;
   private final int endpointPort, batchPackets, udpBuffer;
-  private final int maxAgeMs, requestedSendBuffer;
+  private final int requestedSendBuffer;
   private volatile int tcpSendBuffer, tcpReceiveBuffer, dialAttempts;
   private volatile long connectMs;
   final int localPort;
@@ -87,7 +87,7 @@ public final class TunnelCarrier implements AutoCloseable {
         .put("reconnects", reconnects)
         .put("udp_receive_buffer", udpBuffer)
         .put("batch_packets", batchPackets)
-        .put("max_age_ms", maxAgeMs)
+        .put("max_age_ms", 0) // live sessions do not expire opaque IPsec packets
         .put("transfer_cpu_lock", power.held())
         .put("dial_attempts", dialAttempts)
         .put("connect_ms", connectMs)
@@ -139,17 +139,11 @@ public final class TunnelCarrier implements AutoCloseable {
     TunnelCarrier a = active;
     return a == null || a.closed || a.offlineSince == 0 ? 0 : Math.max(0, SystemClock.elapsedRealtime() - a.offlineSince);
   }
-  private final ArrayBlockingQueue<Packet> queue =
-      new ArrayBlockingQueue<>(1024);
+  private final CarrierQueue queue = new CarrierQueue(1024);
   private final ExecutorService threads = Executors.newFixedThreadPool(4);
   private long seq;
   public volatile long sent, received, dropped, reconnects;
   private static final byte[] MAGIC = {69, 86, 71, 84, 0, 1, 0, 0};
-  private static class Packet {
-    final byte[] bytes;
-    final long at = SystemClock.elapsedRealtime();
-    Packet(byte[] b) { bytes = b; }
-  }
   private static int debugBatch(VpnService s,boolean evgt) {
     if(!evgt || (s.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0)return 1;
     int n=s.getSharedPreferences("evgenium",0).getInt("lab-batch",1);
@@ -166,8 +160,6 @@ public final class TunnelCarrier implements AutoCloseable {
     batchPackets = batch;
     laboratory = lab;
     boolean debug = (s.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
-    int age = debug ? s.getSharedPreferences("evgenium", 0).getInt("lab-age", 500) : 500;
-    maxAgeMs = age == 1500 || age == 3000 ? age : 500;
     int buffer = debug ? s.getSharedPreferences("evgenium", 0).getInt("lab-send-buffer", 0) : 0;
     requestedSendBuffer = buffer == 1048576 || buffer == 4194304 ? buffer : 0;
     power = new TrafficPower(s, debug && s.getSharedPreferences("evgenium", 0).getBoolean("lab-traffic-power", false));
@@ -211,7 +203,7 @@ public final class TunnelCarrier implements AutoCloseable {
         if (!peer.equals(p.getSocketAddress()))
           continue;
         if ((evgt && p.getLength() > 4096) ||
-            !queue.offer(new Packet(Arrays.copyOf(buf, p.getLength())))) {
+            !queue.offer(Arrays.copyOf(buf, p.getLength()), SystemClock.elapsedRealtime())) {
           dropped++;
           fullDrops.incrementAndGet();
         } else
@@ -362,7 +354,7 @@ public final class TunnelCarrier implements AutoCloseable {
                          SocketDeadline.Writes deadline) {
     try {
       while (!closed && !session.isClosed()) {
-        Packet p = queue.poll(evgt ? 1 : 5, TimeUnit.SECONDS);
+        CarrierQueue.Packet p = queue.poll(evgt ? 1 : 5, TimeUnit.SECONDS);
         Heartbeat h = heartbeat;
         byte[] probe = h == null ? null : h.probe(SystemClock.uptimeMillis());
         if (p == null && evgt && probe == null) continue;
@@ -378,19 +370,16 @@ public final class TunnelCarrier implements AutoCloseable {
               do {
                 long age = SystemClock.elapsedRealtime() - p.at;
                 maxQueueMs = Math.max(maxQueueMs, age);
-                if (age > maxAgeMs) {
-                  dropped++;
-                  staleDrops.incrementAndGet();
-                } else {
-                  if (evgt)
-                    frame(out, 1, ++seq, p.bytes);
-                  else {
-                    out.writeShort(p.bytes.length);
-                    out.write(p.bytes);
-                  }
-                  sent += p.bytes.length;
-                  sentPackets.incrementAndGet();
+                // Opaque IPsec can contain TCP ACKs or IKE. Dropping a whole
+                // delayed burst amplifies congestion; keep FIFO until session reset.
+                if (evgt)
+                  frame(out, 1, ++seq, p.bytes);
+                else {
+                  out.writeShort(p.bytes.length);
+                  out.write(p.bytes);
                 }
+                sent += p.bytes.length;
+                sentPackets.incrementAndGet();
                 count++;
               } while (count < batchPackets && (p = queue.poll()) != null);
             }
