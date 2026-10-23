@@ -32,7 +32,7 @@ s=s.replace('android:authorities="org.strongswan.android', 'android:authorities=
 for component in ('ui.VpnProfileControlActivity', 'ui.VpnProfileSelectActivity',
                   'ui.VpnProfileImportActivity', 'ui.TrustedCertificateImportActivity'):
  s=re.sub(r'(<activity\s+android:name="org\.strongswan\.android\.'+re.escape(component)+r'"[^>]*?)android:exported="true"', r'\1android:exported="false"', s)
-s=s.replace('android:name="org.strongswan.android.ui.VpnTileService"', 'android:name="org.strongswan.android.evgenium.QuickTile"').replace('android:label="@string/tile_default"', 'android:label="Evgenium VPN"')
+s=s.replace('android:label="@string/tile_default"', 'android:label="Evgenium VPN"')
 s=re.sub(r'(<provider\s+android:name="org\.strongswan\.android\.data\.LogContentProvider"[^>]*?)android:exported="true"',r'\1android:exported="false"',s)
 f.write_text(s)
 f=main/'java/org/strongswan/android/logic/CharonVpnService.java';s=original(f)
