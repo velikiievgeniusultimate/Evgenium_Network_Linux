@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Private mTLS collector: bounded pseudonymous reports; no HTTP access logging."""
+import calendar
 import hashlib
 import http.server
 import ipaddress
@@ -77,6 +78,9 @@ def clean_report(body):
     if not isinstance(body, dict) or body.get('schema') != 1:
         raise ValueError('schema')
     if body.get('event') == 'support_bundle':
+        if body.get('system') == 'android':
+            from android_reports import clean_android
+            return clean_android(body)
         from support_reports import clean_bundle
         return clean_bundle(body)
     if body.get('event') == 'global_test':
@@ -184,7 +188,11 @@ def prune():
     LOG.mkdir(mode=0o700, parents=True, exist_ok=True)
     now = time.time()
     for path in LOG.glob('*.jsonl'):
-        if now - path.stat().st_mtime > MAX_AGE:
+        try:
+            created = calendar.timegm(time.strptime(path.stem, '%Y-%m-%d'))
+        except ValueError:
+            created = path.stat().st_mtime
+        if now - created > MAX_AGE:
             path.unlink()
 
 
@@ -295,6 +303,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not Path('/etc/evgenium-diagnostics-enabled').exists():
             self.reply(403, {}); return
         try:
+            if self.path in ('/packet-session', '/packet-result'):
+                if getattr(self.server, 'direct_only', False):
+                    self.reply(404, {}); return
+                size = int(self.headers.get('Content-Length', '0'))
+                if not 0 < size <= 128 or self.headers.get('Transfer-Encoding'): raise ValueError('size')
+                from packet_probe import request
+                result = request(self.path, json.loads(self.rfile.read(size)),
+                                 self.connection.getpeercert(binary_form=True), self.client_address[0])
+                self.reply(200, result); return
             if getattr(self.server,'direct_only',False) and self.path != '/report':
                 self.reply(404,{}); return
             size=int(self.headers.get('Content-Length','0'))
@@ -358,4 +375,13 @@ if __name__ == '__main__':
     context.load_verify_locations(str(Path(args.pki_dir)/'devices.pem') if args.pki_dir else '/etc/swanctl/x509crl/devices.pem')
     context.verify_flags |= ssl.VERIFY_CRL_CHECK_LEAF
     server.context = context
+    def retention_worker():
+        while True:
+            time.sleep(3600)
+            try:
+                with LOCK:
+                    prune()
+            except OSError:
+                print('report_retention_failed', flush=True)
+    threading.Thread(target=retention_worker, name='report-retention', daemon=True).start()
     server.serve_forever()

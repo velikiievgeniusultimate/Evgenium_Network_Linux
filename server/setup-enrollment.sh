@@ -19,6 +19,9 @@ rollback() {
 trap rollback ERR
 install -m 755 "$base/token_issuer.py" /usr/local/sbin/evgenium-token-issuer
 install -m 755 "$base/diagnostic_collector.py" /usr/local/sbin/evgenium-diagnostic-collector
+install -m 644 "$base/android_reports.py" /usr/local/sbin/android_reports.py
+install -m 644 "$base/packet_probe.py" /usr/local/sbin/packet_probe.py
+install -m 644 "$base/../src/support_reports.py" /usr/local/sbin/support_reports.py
 install -d -m 700 /var/lib/evgenium-enrollment
 cat > /etc/systemd/system/evgenium-enrollment.service <<'EOF'
 [Unit]
