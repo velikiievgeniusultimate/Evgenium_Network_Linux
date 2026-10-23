@@ -34,6 +34,7 @@ public class Engine extends Service {
   private volatile VpnStateService vpn;
   private volatile boolean cancel;
   private volatile String diagnosticRun = "";
+  private long nextTransferAt;
   private final ExecutorService worker = Executors.newSingleThreadExecutor();
   private final Handler handler = new Handler(Looper.getMainLooper());
   private Network connectedNetwork;
@@ -228,6 +229,12 @@ public class Engine extends Service {
             && Credentials.EE.equals(ExitProbe.get(this))) {
           checkNetwork();
           Credentials.ensureFresh(this);
+          if (SystemClock.elapsedRealtime() >= nextTransferAt) {
+            JSONObject health = TransferProbe.health(this);
+            checkNetwork();
+            record("flow_health", current, health == null ? new JSONObject() : health, health == null ? "http_service_unavailable" : "");
+            nextTransferAt = SystemClock.elapsedRealtime() + 120000;
+          }
           consecutive = 0;
           record
           ("health_ok", current, new JSONObject(), "");
@@ -352,6 +359,7 @@ public class Engine extends Service {
           throw new IOException("unexpected_exit");
         checkNetwork();
         connectedNetwork = operationNetwork;
+        nextTransferAt = 0;
         if (cancel || instance != this)
           throw new InterruptedException();
         verified = true;
@@ -419,6 +427,10 @@ public class Engine extends Service {
             ("packet", current, new JSONObject(), safe(diagnosticError));
           }
         }
+        if (diagnosing) TransferProbe.diagnose(this, () -> {
+          if (cancel) throw new InterruptedException();
+          checkNetwork();
+        }, (phase, values, error) -> record(phase, current, values, error));
         set("Измеряю: " + LABELS[i]);
         JSONObject m;
         try {
@@ -427,15 +439,17 @@ public class Engine extends Service {
           checkNetwork();
           if (!Credentials.EE.equals(ExitProbe.get(this)))
             throw benchmark;
-          r.put("score", 0.001).put("warning", "speed_test_unavailable:" + safe(benchmark));
+          r.put("score", 0.001).put("losses", 1).put("warning", "speed_test_unavailable:" + safe(benchmark));
           m = null;
         }
-        if (m != null)
-          r.put("metrics", m)
-              .put("score",
-                  2 * m.getDouble("down") * m.getDouble("up")
-                      / (m.getDouble("down") + m.getDouble("up"))
-                      / (1 + m.getDouble("latency") / 200));
+        if (m != null) {
+          JSONObject load = m.optJSONObject("load");
+          boolean degraded = load != null && RouteQuality.degraded(false,
+              load.optInt("tcp_attempts"), load.optInt("tcp_failed"));
+          r.put("metrics", m).put("score", RouteQuality.score(m.getDouble("down"),
+              m.getDouble("up"), m.getDouble("latency"), degraded));
+          if (degraded) r.put("losses", 1).put("warning", "network_degraded_under_load");
+        }
       } catch (Exception e) {
         if (cancel)
           throw e;
@@ -483,6 +497,7 @@ public class Engine extends Service {
     final long measurementStart = SystemClock.elapsedRealtime();
     JSONObject timing = new JSONObject();
     LoadProbe load = null;
+    JSONObject measured = null;
     int stage = 1;
     String transferError = "";
     try {
@@ -528,8 +543,7 @@ public class Engine extends Service {
           throw new InterruptedException();
         timing.put("down_setup_ms", SystemClock.elapsedRealtime() - t);
         stage = 4;
-        if (detailed)
-          load = new LoadProbe(32);
+        load = new LoadProbe(32);
         // Measure body transfer separately from TLS/DNS setup.
         t = SystemClock.elapsedRealtime();
         try (InputStream in = down.getInputStream()) {
@@ -602,7 +616,7 @@ public class Engine extends Service {
       timing.put("up_body_ack_ms", SystemClock.elapsedRealtime() - t);
       stage = 8;
       double u = size * 8.0 / Math.max(1, SystemClock.elapsedRealtime() - t) / 1000;
-      return new JSONObject()
+      measured = new JSONObject()
           .put("screen_on", getSystemService(android.os.PowerManager.class).isInteractive())
           .put("cpu_lock", labWake != null && labWake.isHeld())
           .put("endpoint", privateLab ? "private-estonia" : "cloudflare")
@@ -614,11 +628,15 @@ public class Engine extends Service {
           .put("bytes_per_direction", size)
           .put("method", "body-4mib-v2")
           .put("discord", discord);
+      return measured;
     } catch (Exception e) {
       transferError = safe(e);
       throw e;
     } finally {
-      if (load != null) load.close();
+      if (load != null) {
+        load.close();
+        if (measured != null) measured.put("load", load.metrics());
+      }
       if (detailed && measuredRun.equals(diagnosticRun)) {
         if (load != null) {
           record

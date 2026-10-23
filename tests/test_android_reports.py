@@ -28,3 +28,9 @@ class AndroidReports(unittest.TestCase):
   for state in ('unreachable','auth_failed','peer_auth_failed','lookup_failed','generic_error','password_missing','certificate_unavailable','timeout'):
    b=self.bundle();b['android']['samples'][0]['error']='ike_'+state
    self.assertEqual(clean_android(b)['android']['samples'][0]['error'],'ike_'+state)
+
+ def test_transfer_receipts_keep_only_bounded_correlation_and_counters(self):
+  b=self.bundle();row=b['android']['samples'][0];row.update(phase='flow',values={'flow_id':'b'*32,'flow_server_received':17001,'flow_server_complete':0,'sha256':'secret','payload':'secret'})
+  safe=clean_android(b)['android']['samples'][0]['values'];self.assertEqual(safe['flow_server_received'],17001);self.assertEqual(safe['flow_id'],'b'*32);self.assertNotIn('secret',json.dumps(safe))
+  row['values']['flow_id']='EVN1-secret'
+  with self.assertRaises(ValueError):clean_android(b)
