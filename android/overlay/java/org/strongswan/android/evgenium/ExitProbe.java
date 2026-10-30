@@ -76,7 +76,7 @@ public final class ExitProbe {
         tls.getOutputStream().write(
             ("GET "+(index==1?"/":"/cdn-cgi/trace")+" HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n")
                 .getBytes(StandardCharsets.US_ASCII));
-        String reply = new String(Credentials.read(tls.getInputStream(), 32768), StandardCharsets.US_ASCII);
+        String reply = new String(HttpResponseReader.read(tls.getInputStream(), 32768), StandardCharsets.US_ASCII);
         return ExitChecks.parse(reply,index!=1);
       }
     }
