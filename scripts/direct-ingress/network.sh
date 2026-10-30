@@ -27,6 +27,10 @@ sysctl -qw net.ipv4.conf.evg-dir-host.forwarding=1
 nft -f - <<'NFT'
 table inet evg_direct {
  set permit { type ipv4_addr; }
+ chain local_ingress {
+  type filter hook output priority -6; policy accept;
+  ip daddr 10.203.93.2 tcp dport 24578 ip daddr != @permit counter drop comment "evgenium-device-cf-crl"
+ }
  chain input { type filter hook input priority -6; policy accept;
   iifname "evg-dir-host" ct state established,related accept
   iifname "evg-dir-host" drop

@@ -77,7 +77,51 @@ func bridge(ctx context.Context, a, b net.Conn, idle time.Duration) {
 	go copyOne(b, a)
 	wg.Wait()
 }
+
+// backendSelector only chooses before any client bytes are forwarded. A failed
+// connection is never replayed onto another backend: TLS remains end-to-end.
+// Cooldown avoids making every new client wait for a known-dead primary.
+type backendSelector struct {
+	mu                sync.Mutex
+	primary, fallback string
+	cooldown          time.Duration
+	retryAt           time.Time
+	probing           bool
+	dial              func(context.Context, string, string) (net.Conn, error)
+	now               func() time.Time
+}
+
+func (s *backendSelector) connect(ctx context.Context) (net.Conn, error) {
+	s.mu.Lock()
+	tryPrimary := s.fallback == "" || (!s.now().Before(s.retryAt) && !s.probing)
+	recoveryProbe := tryPrimary && !s.retryAt.IsZero() && s.fallback != ""
+	if recoveryProbe {
+		s.probing = true
+	}
+	s.mu.Unlock()
+	if tryPrimary {
+		c, err := s.dial(ctx, "tcp4", s.primary)
+		s.mu.Lock()
+		if recoveryProbe {
+			s.probing = false
+		}
+		if err == nil {
+			s.retryAt = time.Time{}
+		} else if ctx.Err() == nil {
+			s.retryAt = s.now().Add(s.cooldown)
+		}
+		s.mu.Unlock()
+		if err == nil || s.fallback == "" || ctx.Err() != nil {
+			return c, err
+		}
+	}
+	return s.dial(ctx, "tcp4", s.fallback)
+}
+
 func serve(ctx context.Context, listener net.Listener, backend string, maximum, perIP int, idle time.Duration, congestion string) error {
+	return serveWithFallback(ctx, listener, backend, "", time.Minute, maximum, perIP, idle, congestion)
+}
+func serveWithFallback(ctx context.Context, listener net.Listener, backend, fallback string, cooldown time.Duration, maximum, perIP int, idle time.Duration, congestion string) error {
 	lim := limits{ips: make(map[string]int), maximum: maximum, perIP: perIP}
 	var wg sync.WaitGroup
 	stop := context.AfterFunc(ctx, func() { listener.Close() })
@@ -93,6 +137,7 @@ func serve(ctx context.Context, listener net.Listener, backend string, maximum, 
 			})
 		}
 	}
+	selector := backendSelector{primary: backend, fallback: fallback, cooldown: cooldown, dial: dialer.DialContext, now: time.Now}
 	for {
 		c, e := listener.Accept()
 		if e != nil {
@@ -116,7 +161,7 @@ func serve(ctx context.Context, listener net.Listener, backend string, maximum, 
 				tcp.SetKeepAlivePeriod(15 * time.Second)
 				tcp.SetNoDelay(true)
 			}
-			remote, e := dialer.DialContext(ctx, "tcp4", backend)
+			remote, e := selector.connect(ctx)
 			if e != nil {
 				log.Print("backend unavailable")
 				return
@@ -128,12 +173,14 @@ func serve(ctx context.Context, listener net.Listener, backend string, maximum, 
 func main() {
 	listen := flag.String("listen", "0.0.0.0:24579", "TCP listener")
 	backend := flag.String("backend", "38.180.164.67:24578", "fixed authenticated TLS backend")
+	fallback := flag.String("fallback-backend", "", "optional fixed TLS passthrough backend, used only when primary connect fails")
+	cooldown := flag.Duration("primary-retry", time.Minute, "retry failed primary after this cooldown")
 	maximum := flag.Int("max-connections", 128, "global connection limit")
 	perIP := flag.Int("max-per-ip", 32, "connection limit per public IP (including CGNAT)")
 	idle := flag.Duration("idle-timeout", 60*time.Second, "close when neither direction carries data")
 	cc := flag.String("backend-congestion", "bbr", "per-socket congestion control; empty uses system default")
 	flag.Parse()
-	if *maximum < 1 || *perIP < 1 || *idle < time.Second {
+	if *maximum < 1 || *perIP < 1 || *idle < time.Second || *cooldown < time.Second {
 		log.Fatal("invalid limits")
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -144,7 +191,7 @@ func main() {
 	}
 	defer listener.Close()
 	log.Print("fixed-backend TLS passthrough ready")
-	if e = serve(ctx, listener, *backend, *maximum, *perIP, *idle, *cc); e != nil {
+	if e = serveWithFallback(ctx, listener, *backend, *fallback, *cooldown, *maximum, *perIP, *idle, *cc); e != nil {
 		log.Fatal(e)
 	}
 }
