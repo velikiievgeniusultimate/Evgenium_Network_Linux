@@ -37,7 +37,7 @@ def up(http_only=False):
         if run(['nft','list','table','inet',TABLE],False).returncode==0:rules+=f'delete table inet {TABLE}\n'
         rules+=f'''table inet {TABLE} {{
  chain prerouting {{ type nat hook prerouting priority dstnat - 1; policy accept;
-  iifname "enp3s0" ip daddr 195.209.211.163 tcp dport 443 counter redirect to :9444
+  iifname {{ "enp3s0", "evg-clients" }} ip daddr 195.209.211.163 tcp dport 443 counter dnat ip to 195.209.211.163:9444
  }}
 }}
 '''

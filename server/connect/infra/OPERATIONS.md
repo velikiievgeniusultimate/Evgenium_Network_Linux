@@ -130,3 +130,10 @@ profiles use the additional validated `addresses` list.
 after a firewall reload while the front service is active. It never starts a
 front service that the operator stopped; inactive fronts have their own redirect
 removed so the original443 listener remains available.
+
+The public enrollment hostname must also work while the client VPN is active.
+The shared443 redirect therefore also accepts incoming evg-clients packets to
+the server's own public IPv4. An early input exception permits only its already
+public control endpoints80/8443 and the redirected original443 connection. SSH,
+metadata, private services and unsolicited9444 remain blocked. This is encrypted
+client-to-entry control traffic; it does not create an Internet WAN fallback.

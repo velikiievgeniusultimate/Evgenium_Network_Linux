@@ -68,6 +68,8 @@ def up():
         run(['ip', '-4', 'rule', 'add', 'priority', '211', 'from', '10.78.0.0/24', 'lookup', '51828'])
     replace_table(TABLE, f'''table inet {TABLE} {{
  chain input {{ type filter hook input priority -40; policy accept;
+  iifname "{IF}" ip saddr 10.78.0.0/24 ip daddr 195.209.211.163 tcp dport {{ 80, 8443 }} counter accept
+  iifname "{IF}" ip saddr 10.78.0.0/24 ip daddr 195.209.211.163 tcp dport 9444 ct original proto-dst 443 counter accept
   iifname "{IF}" counter drop
  }}
  chain forward {{ type filter hook forward priority -40; policy accept;
