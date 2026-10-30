@@ -14,7 +14,7 @@ $null=New-Item -ItemType Directory -Force -Path $package
 foreach ($gui in @($true,$false)) {
     $name=if ($gui) { 'Evgenium.exe' } else { 'EvgeniumCLI.exe' }
     $target=if ($gui) { '/target:winexe' } else { '/target:exe' }
-    $arguments=@('/nologo','/optimize+','/platform:x64',$target,('/out:'+(Join-Path $package $name)),('/reference:'+$automation),'/reference:System.Windows.Forms.dll',('/resource:'+(Join-Path $root 'Evgenium.ps1')+',Evgenium.ps1'),(Join-Path $root 'Host.cs'))
+    $arguments=@('/nologo','/optimize+','/platform:x64',$target,('/out:'+(Join-Path $package $name)),('/reference:'+$automation),'/reference:System.Windows.Forms.dll',('/resource:'+(Join-Path $root 'Evgenium.ps1')+',Evgenium.ps1'),(Join-Path $root 'Host.cs'),(Join-Path $root 'WgProcess.cs'))
     if (!$gui) { $arguments+= '/define:CONSOLE' }
     & $compiler @arguments
     if ($LASTEXITCODE -ne 0) { throw 'C# compilation failed' }
