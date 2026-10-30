@@ -1,0 +1,28 @@
+[Unit]
+Description=Evgenium public device enrollment on HSVDS
+After=evgenium-wireguard-issuer.service
+Requires=evgenium-wireguard-issuer.service
+[Service]
+User=evg-connect
+Group=evg-portal
+WorkingDirectory=/opt/evgenium-connect
+ExecStart=/usr/bin/python3 -m gunicorn --bind 127.0.0.1:9082 --workers 2 --threads 2 --timeout 30 --limit-request-line 2048 --limit-request-field_size 4096 wsgi:app
+Environment=EVG_CONNECT_CONFIG=/etc/evgenium-connect/config.json
+StateDirectory=evgenium-connect
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+InaccessiblePaths=/root /var/lib/evgenium-enrollment /var/lib/evgenium-panel /var/lib/evgenium-panel-broker /etc/evgenium-wireguard -/run/evgenium-enrollment -/run/evgenium-panel-broker
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+MemoryMax=192M
+CPUQuota=40%
+[Install]
+WantedBy=multi-user.target

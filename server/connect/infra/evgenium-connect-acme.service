@@ -1,0 +1,18 @@
+[Unit]
+Description=Evgenium ACME validation files only
+After=network.target
+[Service]
+User=nobody
+Group=nogroup
+WorkingDirectory=/var/lib/evgenium-connect-acme
+ExecStart=/usr/bin/python3 -m http.server 9083 --bind 127.0.0.1 --directory /var/lib/evgenium-connect-acme
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=48M
+CPUQuota=10%
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,30 @@
+[Unit]
+Description=Evgenium public HTTPS hostname multiplexing, existing TLS unchanged
+After=network-online.target evgenium-connect-acme.service evgenium-connect.service
+Wants=evgenium-connect-acme.service evgenium-connect.service
+[Service]
+Type=notify
+Environment=LD_LIBRARY_PATH=/opt/evgenium-connect-infra/root/usr/lib/x86_64-linux-gnu
+ExecStartPre=/opt/evgenium-connect-infra/root/usr/sbin/haproxy -c -f /opt/evgenium-connect-infra/haproxy.cfg
+ExecStart=/opt/evgenium-connect-infra/root/usr/sbin/haproxy -Ws -f /opt/evgenium-connect-infra/haproxy.cfg -p /run/evgenium-connect-front/haproxy.pid
+ExecStartPost=/usr/bin/python3 /opt/evgenium-connect-infra/public_front.py up
+ExecReload=/bin/kill -USR2 $MAINPID
+ExecStopPost=/usr/bin/python3 /opt/evgenium-connect-infra/public_front.py down
+RuntimeDirectory=evgenium-connect-front
+RuntimeDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=2
+KillMode=mixed
+TimeoutStartSec=30
+TimeoutStopSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/evgenium-connect-infra
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+MemoryMax=192M
+TasksMax=32
+[Install]
+WantedBy=multi-user.target

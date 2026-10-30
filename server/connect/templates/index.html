@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Подключить устройство · Evgenium Network</title>
+  <link rel="stylesheet" href="/static/connect.css">
+  <script defer src="/static/vendor/wireguard.js"></script>
+  <script defer src="/static/connect.js"></script>
+</head>
+<body>
+<main>
+  <header><span class="mark" aria-hidden="true">E</span><span>EVGENIUM<span class="subbrand">NETWORK</span></span></header>
+  <section class="card">
+    <p class="eyebrow">ВАША СЕТЬ. ВАШИ УСТРОЙСТВА.</p>
+    <h1>Подключить устройство</h1>
+    <p class="lead">Один токен для всех ваших устройств. Для каждого создаётся отдельный профиль.</p>
+    <form id="enroll-form">
+      <label for="token">Токен клиента</label>
+      <div class="token-row">
+        <input id="token" type="password" placeholder="Введите токен EVN1-…" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="128" required>
+        <button class="secondary" id="token-toggle" type="button" aria-label="Показать токен" aria-pressed="false">Показать</button>
+      </div>
+      <p class="hint">Токен выдаёт владелец сети. Не передавайте его другим людям.</p>
+      <label for="device-name">Имя устройства <span class="optional">необязательно</span></label>
+      <input id="device-name" type="text" placeholder="Например, мой iPhone" autocomplete="off" maxlength="64">
+      <p class="hint">Без имени сервер назначит «Устройство-1», «Устройство-2» и далее.</p>
+      <button class="primary" id="create-profile" type="submit">Создать профиль</button>
+    </form>
+    <p id="status" role="status" aria-live="polite"></p>
+    <section id="result" hidden>
+      <div class="success-dot" aria-hidden="true"></div><h2>Профиль готов</h2>
+      <p id="profile-name"></p>
+      <button class="primary" id="download-profile" type="button">Скачать профиль .conf</button>
+      <button class="secondary" id="change-token" type="button">Изменить токен</button>
+      <p class="hint">Скачанный файл содержит секретный ключ. Не отправляйте его другим людям. После закрытия страницы повторно скачать этот же профиль здесь нельзя.</p>
+    </section>
+  </section>
+  <section class="instructions card">
+    <h2>Как включить на iPhone</h2>
+    <ol>
+      <li>Установите бесплатное приложение <strong>WireGuard</strong> из App Store. Разработчик — <strong>WireGuard Development Team</strong>.</li>
+      <li>Введите токен выше и скачайте профиль. Safari сохранит его в «Файлы» → «Загрузки».</li>
+      <li>Откройте WireGuard, нажмите <strong>«+» → «Создать из файла или архива»</strong> и выберите скачанный файл.</li>
+      <li>Разрешите добавление VPN-конфигурации и включите переключатель профиля.</li>
+    </ol>
+    <p class="hint">Если названия пунктов отличаются, выберите импорт туннеля из файла. Удалив файл из «Загрузок» после импорта, вы сохраните ключ только в приложении.</p>
+    <details><summary>Другие устройства и ограничения</summary><p>Профиль можно импортировать в официальный WireGuard для macOS, Windows, Android и Linux. Для нового устройства создайте свой профиль: одновременное использование одного файла на нескольких устройствах нарушает соединение.</p><p>Сайт выдаёт профиль; для VPN нужен работающий UDP-канал. При блокировке WireGuard оператором профиль не сможет подключиться. Это первая версия подключения для iPhone, без автоматического выбора туннелей.</p><p>Внешний трафик идёт через российский сервер в Эстонию. Маршрут IPv6 включён в профиль, но выход IPv6 пока недоступен: такой трафик блокируется вместо прямого выхода к оператору. Доступ к локальной сети зависит от системных маршрутов WireGuard.</p></details>
+  </section>
+  <footer>Ключ устройства создаётся в вашем браузере. На сервер отправляются только его открытая часть, токен и имя устройства.</footer>
+</main>
+</body>
+</html>

@@ -88,3 +88,15 @@ commonName=supplied
     def test_ike_id_parser_never_uses_child_id(self):
         with self.assertRaises(RuntimeError):self.i.session_ids('list-sa event {x {remote-id='+self.names[0]+' child-sas {a {uniqueid=4}}}}',set(self.names))
         self.assertEqual(self.i.session_ids('list-sa event {x {uniqueid=3 remote-id=other}}',set(self.names)),[])
+
+    def test_individual_certificate_device_revocation_preserves_account_and_other_user(self):
+        with patch.object(self.i,'run',side_effect=self.fake_run),patch.object(self.i.subprocess,'run',side_effect=self.fake_subprocess):
+            self.assertTrue(self.i.revoke_device(self.ids[0],'0'*32)['revoked'])
+        data=self.i.accounts();self.assertTrue(data[self.ids[0]]['enabled'])
+        self.assertTrue(data[self.ids[0]]['devices']['0'*32]['disabled'])
+        self.assertFalse(data[self.ids[1]]['devices']['1'*32].get('disabled',False))
+        self.assertEqual(self.i.authenticate(data,self.tokens[0])[0],self.ids[0])
+        for cert in self.certs[:2]:
+            result=subprocess.run(['openssl','verify','-CAfile',str(self.i.PKI/'ca.pem'),'-CRLfile',str(self.i.CRL),'-crl_check',str(cert)],capture_output=True)
+            self.assertIn(b'certificate revoked',result.stderr)
+        self.cmd(['openssl','verify','-CAfile',str(self.i.PKI/'ca.pem'),'-CRLfile',str(self.i.CRL),'-crl_check',str(self.certs[2])])

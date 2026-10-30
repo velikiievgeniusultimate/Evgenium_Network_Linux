@@ -1,0 +1,14 @@
+[Unit]
+Description=Evgenium token clients through the Estonia relay
+After=network-online.target evgenium-relay.service evgenium-link.service
+Requires=evgenium-relay.service evgenium-link.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /opt/evgenium-connect-infra/ingress.py up
+ExecStop=/usr/bin/python3 /opt/evgenium-connect-infra/ingress.py down
+TimeoutStartSec=90
+TimeoutStopSec=30
+UMask=0077
+[Install]
+WantedBy=multi-user.target

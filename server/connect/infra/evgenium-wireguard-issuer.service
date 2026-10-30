@@ -1,0 +1,22 @@
+[Unit]
+Description=Evgenium restricted token to WireGuard enrollment
+After=evgenium-wireguard-ingress.service
+Requires=evgenium-wireguard-ingress.service
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/sbin/evgenium-token-issuer serve-wireguard --group evg-portal
+RuntimeDirectory=evgenium-wireguard
+RuntimeDirectoryMode=0750
+UMask=0077
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/evgenium-enrollment
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+MemoryMax=128M
+CPUQuota=30%
+[Install]
+WantedBy=multi-user.target

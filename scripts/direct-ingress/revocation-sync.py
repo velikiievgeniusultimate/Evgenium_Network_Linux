@@ -39,7 +39,7 @@ def send_snapshot(body):
 def sync():
     data = json.loads(Path('/var/lib/evgenium-enrollment/accounts.json').read_text())
     disabled = sorted({d['identity'] for a in data.values() for d in a.get('devices', {}).values()
-                       if not a.get('enabled') or d.get('disabled')})
+                       if d.get('type', 'ikev2') == 'ikev2' and (not a.get('enabled') or d.get('disabled'))})
     body = {'issued': int(time.time()), 'disabled': disabled,
             'crl': Path('/etc/swanctl/x509crl/devices.pem').read_text()}
     return send_snapshot(body)

@@ -1,0 +1,7 @@
+{
+  "state_dir": "/var/lib/evgenium-connect",
+  "allowed_hosts": ["connect.velikiievgenius.com"],
+  "https_proxy": true,
+  "issuer_socket": "/run/evgenium-wireguard/enroll.sock",
+  "endpoint": "195.209.211.163:51820"
+}

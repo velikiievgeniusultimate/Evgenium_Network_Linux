@@ -83,6 +83,29 @@ commonName=supplied
                 with self.assertRaises(PermissionError):issuer.enroll({'token':value,'device':'c'*32,'csr':self.csrs[0]})
             sign.assert_not_called()
 
+    def test_ike_enrollment_after_twelve_revoked_devices_preserves_history(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(issuer,'ROOT',Path(tmp)),patch.object(issuer,'PKI',self.pki):
+            token=issuer.issue('replacement');account_id=next(iter(issuer.accounts()))
+            data=issuer.accounts();account=data[account_id]
+            for number in range(1,13):
+                account['devices'][f'{number:032x}']={'identity':'device-'+f'{number:024x}', 'enrolled':number,
+                                                       'disabled':True,'revoked':100}
+            issuer.ensure_device_names(account);issuer.write_json(Path(tmp)/'accounts.json',data)
+            profile=issuer.enroll({'token':token,'device':f'{13:032x}','csr':self.csrs[0]})
+            self.assertEqual(profile['device_name'],'Устройство-13')
+            self.assertEqual(profile['device_number'],13)
+            self.assertEqual(len(issuer.accounts()[account_id]['devices']),13)
+            with self.assertRaisesRegex(PermissionError,'device_disabled'):
+                issuer.enroll({'token':token,'device':f'{1:032x}','csr':self.csrs[0]})
+
+    def test_ike_enrollment_counts_name_reservations_before_signing(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(issuer,'ROOT',Path(tmp)),patch.object(issuer,'run') as sign:
+            token=issuer.issue('reserved')
+            for number in range(1,13):issuer.device_info({'token':token,'device':f'{number:032x}'})
+            with self.assertRaisesRegex(PermissionError,'device_limit'):
+                issuer.enroll({'token':token,'device':f'{13:032x}','csr':self.csrs[0]})
+            sign.assert_not_called()
+
 
 class IsolatedClientTests(unittest.TestCase):
     def test_token_reaches_privileged_action_via_stdin_not_process_arguments(self):

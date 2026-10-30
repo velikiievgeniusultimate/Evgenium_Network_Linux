@@ -1,0 +1,8 @@
+[Unit]
+Description=Honor resource hold for own direct GRE
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/evgenium-direct-gre/link.py hold
+TimeoutStartSec=40
+MemoryMax=48M
+UMask=0077

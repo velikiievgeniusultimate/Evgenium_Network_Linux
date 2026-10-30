@@ -20,7 +20,7 @@ if cfg['side'] == 'client':
         prefix = ['ip', 'netns', 'exec', ns]
         command(*prefix, cfg['wg'], 'set', interface, 'private-key', p['key'],
                 'listen-port', str(p['listen']), 'peer', cfg['peer_key'],
-                'allowed-ips', cfg['peer_ip']+'/32', 'endpoint', '127.0.0.1:'+str(p['port']),
+                'allowed-ips', cfg['peer_ip']+'/32', 'endpoint', ('['+p['address']+']' if ':' in p.get('address','') else p.get('address','127.0.0.1'))+':'+str(p['port']),
                 'persistent-keepalive', '5')
         command('ip', '-n', ns, 'addr', 'replace', p['ip']+'/32', 'dev', interface)
         command('ip', '-n', ns, 'link', 'set', 'lo', 'up')

@@ -1,0 +1,9 @@
+[Unit]
+Description=Retry interrupted client revocations and restore own routing
+[Timer]
+OnBootSec=90
+OnUnitInactiveSec=60
+RandomizedDelaySec=5
+Unit=evgenium-wireguard-sync.service
+[Install]
+WantedBy=timers.target

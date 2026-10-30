@@ -116,6 +116,21 @@ class Accounts:
             if not account or not account.get('deleted'):raise ValueError('delete_incomplete')
             vault=self.tokens();vault.pop(account_id,None);atomic_json(self.vault/'tokens.json',vault)
         return {'deleted':True}
+    def revoke_device(self,account_id,device):
+        if not isinstance(account_id,str) or not re.fullmatch('[a-f0-9]{24}',account_id):raise ValueError('invalid_account')
+        if not isinstance(device,str) or not re.fullmatch('[a-f0-9]{32}',device):raise ValueError('device_missing')
+        try:
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(90);client.connect(str(self.issuer.SOCKET))
+                client.sendall(json.dumps({'operation':'admin-revoke-device','id':account_id,'device':device}).encode()+b'\n')
+                with client.makefile('rb') as reader:raw=reader.readline(4097)
+            if len(raw)>4096 or not raw.endswith(b'\n') or not json.loads(raw).get('ok'):raise ValueError('revoke_incomplete')
+        except (OSError,ValueError):raise ValueError('revoke_incomplete') from None
+        with self.issuer.locked():
+            account=self.issuer.accounts().get(account_id,{})
+            record=account.get('devices',{}).get(device,{})
+            if not record.get('revoked') or record.get('revoke_pending'):raise ValueError('revoke_incomplete')
+        return {'revoked':True}
     def listing(self):
         with self.issuer.locked():
             data=self.issuer.accounts();vault=self.tokens()
@@ -125,7 +140,8 @@ class Accounts:
             return [{'id':key,'name':a['name'],'enabled':bool(a.get('enabled')),'created':a.get('created'),
                      'token_hint':a['token_hash'][:8],'token_available':key in vault,'delete_pending':bool(a.get('delete_pending')),
                      'devices':[{'id':device,'identity':d['identity'],'name':a['device_names'][device]['name'],'number':a['device_names'][device]['number'],'enrolled':d.get('enrolled'),
-                                 'disabled':bool(d.get('disabled'))} for device,d in a.get('devices',{}).items()]}
+                                 'disabled':bool(d.get('disabled')),'type':d.get('type','ikev2'),'address':d.get('address'),
+                                 'revoke_pending':bool(d.get('revoke_pending')),'enroll_pending':bool(d.get('enroll_pending'))} for device,d in a.get('devices',{}).items()]}
                     for key,a in data.items() if not a.get('deleted')]
 
 
@@ -156,6 +172,13 @@ def connections():
         if result.returncode or len(result.stdout)>4*1024*1024:raise ValueError('vici_unavailable')
         return {'available':True,'items':parse_connections(result.stdout),'sampled_at':int(time.time())}
     except Exception:return {'available':False,'items':[],'sampled_at':int(time.time())}
+
+
+def all_connections(issuer):
+    ike=connections();wg=issuer.wireguard.connections()
+    return {'available':ike['available'] and wg['available'],
+            'sources':{'ikev2':ike['available'],'wireguard':wg['available']},
+            'items':ike['items']+wg['items'],'sampled_at':int(time.time())}
 
 
 def last_record(path,keys):
@@ -196,17 +219,18 @@ class Handler(socketserver.StreamRequestHandler):
             data=json.loads(raw)
             if not isinstance(data,dict):raise ValueError('invalid_request')
             op=data.get('op');accounts=self.server.accounts
-            if op=='snapshot':result={'accounts':accounts.listing(),'connections':connections(),'health':health()}
+            if op=='snapshot':result={'accounts':accounts.listing(),'connections':all_connections(accounts.issuer),'health':health()}
             elif op=='issue':result=accounts.issue(data.get('name'))
             elif op=='reveal':result=accounts.token(data.get('id'))
             elif op=='import':result=accounts.token(data.get('id'),data.get('token',''))
             elif op=='rename':result=accounts.rename(data.get('id'),data.get('name'))
             elif op=='rename-device':result=accounts.rename(data.get('id'),data.get('name'),data.get('device',''))
+            elif op=='revoke-device':result=accounts.revoke_device(data.get('id'),data.get('device'))
             elif op=='delete':result=accounts.delete(data.get('id'))
             else:raise ValueError('operation_not_allowed')
             response={'ok':True,'data':result}
         except ValueError as error:
-            allowed={'invalid_name','invalid_device_name','device_missing','delete_incomplete','person_exists','invalid_account','account_missing','token_mismatch','legacy_token_unavailable','token_changed_outside_panel','operation_not_allowed','request_size'}
+            allowed={'revoke_incomplete','invalid_name','invalid_device_name','device_missing','delete_incomplete','person_exists','invalid_account','account_missing','token_mismatch','legacy_token_unavailable','token_changed_outside_panel','operation_not_allowed','request_size'}
             response={'ok':False,'error':str(error) if str(error) in allowed else 'invalid_request'}
         except Exception:response={'ok':False,'error':'broker_unavailable'}
         self.wfile.write(json.dumps(response,separators=(',',':')).encode()+b'\n')

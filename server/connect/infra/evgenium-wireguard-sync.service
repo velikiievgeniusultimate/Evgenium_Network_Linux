@@ -1,0 +1,9 @@
+[Unit]
+Description=Reconcile only Evgenium WireGuard client peers and fail-closed routes
+After=evgenium-wireguard-ingress.service
+Requires=evgenium-wireguard-ingress.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/evgenium-connect-infra/ingress.py up
+UMask=0077
+TimeoutStartSec=90

@@ -48,7 +48,7 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 ReadWritePaths=/var/lib/evgenium-enrollment /var/lib/evgenium-panel-broker
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
@@ -91,6 +91,8 @@ install -d -m 755 /etc/systemd/system/evgenium-enrollment.service.d
 cat > /etc/systemd/system/evgenium-enrollment.service.d/panel-revocation.conf <<'EOF'
 [Service]
 ReadWritePaths=/etc/swanctl/x509crl
+RestrictAddressFamilies=
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
 EOF
 systemctl daemon-reload
 systemctl restart evgenium-enrollment

@@ -1,0 +1,7 @@
+[Unit]
+Description=Watch existing resource-hold for own direct GRE
+[Path]
+PathChanged=/var/lib/evgenium-link/resource-hold
+Unit=evgenium-direct-gre-hold.service
+[Install]
+WantedBy=multi-user.target

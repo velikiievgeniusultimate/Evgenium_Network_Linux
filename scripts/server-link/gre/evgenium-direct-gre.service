@@ -1,0 +1,30 @@
+[Unit]
+Description=Evgenium direct GRE carrier for authenticated WireGuard
+Wants=network-online.target
+After=network-online.target nftables.service evgenium-link.service
+ConditionPathExists=!/var/lib/evgenium-link/resource-hold
+StartLimitIntervalSec=120
+StartLimitBurst=20
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /opt/evgenium-direct-gre/link.py up
+ExecStop=/usr/bin/python3 /opt/evgenium-direct-gre/link.py down
+ExecStopPost=/usr/bin/python3 /opt/evgenium-direct-gre/link.py down
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/evgenium-direct-gre
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+MemoryMax=64M
+TasksMax=16
+CPUQuota=50%
+TimeoutStartSec=45
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+UMask=0077
+[Install]
+WantedBy=multi-user.target

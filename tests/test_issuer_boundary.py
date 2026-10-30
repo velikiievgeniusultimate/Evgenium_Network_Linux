@@ -31,3 +31,11 @@ class IssuerBoundaryTests(unittest.TestCase):
         with patch.object(issuer,'delete_account') as delete,patch.object(issuer.time,'sleep'):
             handler.handle();delete.assert_not_called()
         self.assertFalse(json.loads(handler.wfile.getvalue())['ok'])
+
+    def test_device_revocation_operation_requires_root_peer(self):
+        issuer=load('issuer_revoke','token_issuer.py');handler=object.__new__(issuer.Handler)
+        handler.connection=MagicMock();handler.connection.getsockopt.return_value=struct.pack('3i',123,1000,1000)
+        handler.rfile=io.BytesIO(json.dumps({'operation':'admin-revoke-device','id':'a'*24,'device':'b'*32}).encode()+b'\n');handler.wfile=io.BytesIO()
+        with patch.object(issuer,'revoke_device') as revoke,patch.object(issuer.time,'sleep'):
+            handler.handle();revoke.assert_not_called()
+        self.assertFalse(json.loads(handler.wfile.getvalue())['ok'])

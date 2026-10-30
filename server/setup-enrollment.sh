@@ -3,7 +3,7 @@
 set -euo pipefail
 base=$(cd -- "$(dirname -- "$0")" && pwd)
 [[ -f /root/evgenium-ikev2-pki/ca.conf ]] || { echo 'Existing StarFive PKI required' >&2; exit 1; }
-python3 -m py_compile "$base/token_issuer.py" "$base/diagnostic_collector.py"
+python3 -m py_compile "$base/token_issuer.py" "$base/wireguard_backend.py" "$base/diagnostic_collector.py"
 backup="/root/evgenium-before-enrollment-$(date +%Y%m%d%H%M%S)"
 mkdir -m 700 "$backup"
 cp -a /usr/local/sbin/evgenium-diagnostic-collector "$backup/"
@@ -18,6 +18,7 @@ rollback() {
 }
 trap rollback ERR
 install -m 755 "$base/token_issuer.py" /usr/local/sbin/evgenium-token-issuer
+install -m 644 "$base/wireguard_backend.py" /usr/local/sbin/wireguard_backend.py
 install -m 755 "$base/diagnostic_collector.py" /usr/local/sbin/evgenium-diagnostic-collector
 install -m 644 "$base/android_reports.py" /usr/local/sbin/android_reports.py
 install -m 644 "$base/packet_probe.py" /usr/local/sbin/packet_probe.py

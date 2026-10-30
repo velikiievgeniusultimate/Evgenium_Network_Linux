@@ -245,6 +245,11 @@ def create_app(config=None,broker_call=None):
     def rename(account_id):return call({'op':'rename','id':account_id,'name':request.get_json().get('name')},'account_renamed')
     @app.post('/api/accounts/<account_id>/devices/<device_id>/rename')
     def rename_device(account_id,device_id):return call({'op':'rename-device','id':account_id,'device':device_id,'name':request.get_json().get('name')},'device_renamed')
+    @app.post('/api/accounts/<account_id>/devices/<device_id>/revoke')
+    def revoke_device(account_id,device_id):
+        owner_required()
+        if request.get_json().get('confirm') is not True:return jsonify(error='confirmation_required'),400
+        return call({'op':'revoke-device','id':account_id,'device':device_id},'device_revoked')
     @app.post('/api/accounts/<account_id>/delete')
     def delete_account(account_id):return call({'op':'delete','id':account_id},'account_deleted')
     @app.get('/api/audit')

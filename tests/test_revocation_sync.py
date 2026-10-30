@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import unittest
@@ -40,6 +41,15 @@ class RevocationDelivery(unittest.TestCase):
         with patch.object(sync.subprocess, 'run', side_effect=OSError('unavailable')):
             with self.assertRaises(RuntimeError):
                 sync.send_snapshot({'issued': 1})
+
+    def test_wireguard_revocations_never_poison_certificate_snapshot(self):
+        data={'a':{'enabled':True,'devices':{'first':{'identity':'device-first','disabled':True},
+                 'second':{'identity':'wg:public-key','type':'wireguard','disabled':True}}}}
+        def read(path):
+            return json.dumps(data) if path.name=='accounts.json' else 'test-crl'
+        with patch.object(sync.Path,'read_text',autospec=True,side_effect=read),patch.object(sync,'send_snapshot',return_value='wireguard') as send:
+            self.assertEqual(sync.sync(),'wireguard')
+        self.assertEqual(send.call_args.args[0]['disabled'],['device-first'])
 
 
 if __name__ == '__main__':

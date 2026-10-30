@@ -88,3 +88,40 @@ class ManagementTests(base.AccountTests):
         data[a]['deleted']=123;self.issuer.write_json(self.issuer.ROOT/'accounts.json',data)
         self.assertEqual(self.accounts.listing(),[])
         self.accounts.issue('First')
+
+
+class DeviceRevokeRouteTests(base.AuthenticationTests):
+    def test_revoke_requires_owner_csrf_and_explicit_confirmation(self):
+        path='/api/accounts/'+'a'*24+'/devices/'+'b'*32+'/revoke'
+        self.assertEqual(self.post(path,{'confirm':True}).status_code,401)
+        self.assertEqual(self.calls,[])
+        self.setup_owner()
+        self.assertEqual(self.client.post(path,json={'confirm':True},base_url='https://localhost').status_code,403)
+        for body in ({},{'confirm':'true'},{'confirm':1}):
+            self.assertEqual(self.post(path,body).status_code,400)
+        self.assertEqual(self.calls,[])
+        self.assertEqual(self.post(path,{'confirm':True}).status_code,200)
+        self.assertEqual(self.calls,[{'op':'revoke-device','id':'a'*24,'device':'b'*32}])
+
+class WireGuardManagementTests(base.AccountTests):
+    def test_wireguard_device_is_listed_and_renamed_without_changing_public_key(self):
+        account=self.accounts.issue('iPhone')['id'];token=self.accounts.token(account)['token'];device='c'*32
+        data=self.issuer.accounts();data[account]['devices'][device]={'type':'wireguard','identity':'wg:public',
+            'public_key':'public','address':'10.78.0.2/32','enrolled':1,'revoke_pending':True,'disabled':True}
+        self.issuer.write_json(self.issuer.ROOT/'accounts.json',data)
+        self.accounts.rename(account,'Телефон',device)
+        row=self.accounts.listing()[0]['devices'][0]
+        self.assertEqual(row['type'],'wireguard');self.assertEqual(row['name'],'Телефон')
+        self.assertTrue(row['revoke_pending']);self.assertEqual(row['address'],'10.78.0.2/32')
+        self.assertEqual(self.issuer.accounts()[account]['devices'][device]['public_key'],'public')
+        self.assertEqual(self.accounts.token(account)['token'],token)
+
+    def test_wireguard_status_failure_keeps_certificate_status_available(self):
+        from unittest.mock import patch
+        from test_panel import broker
+        ike={'available':True,'items':[{'identity':'device-test','state':'ESTABLISHED'}]}
+        wg={'available':False,'items':[]}
+        with patch.object(broker,'connections',return_value=ike),patch.object(self.issuer.wireguard,'connections',return_value=wg):
+            result=broker.all_connections(self.issuer)
+        self.assertFalse(result['available']);self.assertTrue(result['sources']['ikev2'])
+        self.assertFalse(result['sources']['wireguard']);self.assertEqual(result['items'],ike['items'])

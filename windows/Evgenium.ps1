@@ -94,10 +94,18 @@ function Invoke-Wg([string]$Arguments, [string]$InputText = '') {
     $info.RedirectStandardInput=$true; $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
     $p=New-Object Diagnostics.Process; $p.StartInfo=$info
     try {
-        $null=$p.Start(); if ($InputText) { $p.StandardInput.WriteLine($InputText) }; $p.StandardInput.Close()
+        $null=$p.Start()
+        # Binary ASCII input avoids the UTF-8 BOM inherited from a host console.
+        # wg pubkey reads exactly 44 base64 bytes; a BOM corrupts that input.
+        if ($InputText) { $inputBytes=[Text.Encoding]::ASCII.GetBytes($InputText+"`n"); $p.StandardInput.BaseStream.Write($inputBytes,0,$inputBytes.Length) }
+        $p.StandardInput.BaseStream.Flush(); $p.StandardInput.BaseStream.Close()
         $outputTask=$p.StandardOutput.ReadToEndAsync(); $errorTask=$p.StandardError.ReadToEndAsync()
         if (!$p.WaitForExit(10000)) { $p.Kill(); throw 'WireGuard не ответил.' }
-        if ($p.ExitCode -ne 0) { throw 'Не удалось выполнить команду WireGuard.' }; $null=$errorTask.Result; return $outputTask.Result.Trim()
+        if ($p.ExitCode -ne 0) {
+            $detail=[regex]::Replace($errorTask.Result,'[A-Za-z0-9+/_-]{32,}={0,2}','[redacted]')
+            if ($detail.Length -gt 300) { $detail=$detail.Substring(0,300) }
+            throw ('WireGuard '+$Arguments+' завершился с кодом '+$p.ExitCode+': '+$detail.Trim())
+        }; $null=$errorTask.Result; return $outputTask.Result.Trim()
     } finally { $p.Dispose() }
 }
 function Check-Key([string]$Key) {

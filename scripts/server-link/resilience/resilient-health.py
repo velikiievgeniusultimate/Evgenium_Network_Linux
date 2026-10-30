@@ -9,16 +9,18 @@ import signal
 import subprocess
 import time
 
-ORDER = ('tcp', 'hy', 'home', 'reality', 'xhttp')
-PORTS = {'tcp': 24549, 'hy': 24545, 'home': 24553, 'reality': 24555, 'xhttp': 24557}
+ORDER = ('gre', 'tcp', 'hy', 'home', 'reality', 'xhttp', 'evgt', 'xhttpcf')
+PORTS = {'gre': 24547, 'tcp': 24549, 'hy': 24545, 'home': 24553, 'reality': 24555, 'xhttp': 24557, 'xhttpcf': 24593, 'evgt': 24569}
 BASE = Path('/var/lib/evgenium-link')
 LOG = Path('/var/log/evgenium-link/health.jsonl')
 STOP = False
 
 def choose(mode, streaks, failures, since_switch, preferred='tcp'):
-    if since_switch < 6:
+    # Short-HTTPS fallback has higher jitter. Avoid bouncing to a poorer path
+    # after two delayed pings; still recover after three consecutive misses.
+    if since_switch < (15 if mode == 'evgt' else 6):
         return None
-    if failures >= 2:
+    if failures >= (3 if mode == 'evgt' else 2):
         return next((p for p in ORDER if p != mode and streaks.get(p, 0) >= 2), None)
     if mode != preferred and since_switch >= 180 and streaks.get(preferred, 0) >= 90:
         return preferred
@@ -37,10 +39,14 @@ def command(argv, timeout=3):
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(argv, 124, '', 'deadline')
 
-def ping(namespace):
+def ping(namespace, wait=1):
     start = time.monotonic()
-    r = command(['ip','netns','exec',namespace,'ping','-n','-c','1','-W','1','10.203.81.1'], 2)
-    return {'ok': r.returncode == 0, 'ms': round((time.monotonic()-start)*1000, 1)}
+    r = command(['ip','netns','exec',namespace,'ping','-n','-c','1','-W',str(wait),'10.203.81.1'], wait+1)
+    reason = 'reply' if r.returncode == 0 else 'no_reply' if r.returncode == 1 else 'process_timeout' if r.returncode == 124 else 'probe_error'
+    # This is process wall time, including namespace setup/scheduling; do not
+    # present it as the ICMP packet RTT. Never log raw subprocess output here.
+    return {'ok': r.returncode == 0, 'ms': round((time.monotonic()-start)*1000, 1),
+            'exit': r.returncode, 'reason': reason}
 
 def append(data):
     if LOG.exists() and LOG.stat().st_size > 8*1024*1024:
@@ -65,7 +71,7 @@ def main():
     last_switch = time.monotonic()-180
     last_egress = 0
     egress_ok = None
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(ORDER)+1) as pool:
         while not STOP:
             start = time.monotonic()
             if (BASE/'maintenance').exists() or (BASE/'resource-hold').exists():
@@ -73,19 +79,20 @@ def main():
                 continue
             mode = (BASE/'mode').read_text().strip()
             futures = {p:pool.submit(ping,'evg-probe-'+p) for p in ORDER}
-            real = pool.submit(ping,'evg-link')
+            real = pool.submit(ping,'evg-link',3 if mode == 'evgt' else 1)
             paths = {p:f.result() for p,f in futures.items()}
-            inner = real.result()['ok']
+            main_probe = real.result()
+            inner = main_probe['ok']
             for p in ORDER:
                 streaks[p] = streaks[p]+1 if paths[p]['ok'] else 0
                 bad[p] = 0 if paths[p]['ok'] else bad[p]+1
             endpoint = command(['ip','netns','exec','evg-link','wg','show','evg-wg','endpoints'])
             actual = endpoint.stdout.split()[-1] if endpoint.stdout.split() else None
-            matches = actual == '127.0.0.1:'+str(PORTS.get(mode, 0))
+            matches = actual == ('10.203.119.1' if mode == 'gre' else '127.0.0.1')+':'+str(PORTS.get(mode, 0))
             failures = 0 if inner and matches else failures+1
             row = {'utc':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),
                 'monotonic':round(start,2),'mode':mode,'local_ok':endpoint.returncode==0,
-                'inner_ok':inner,'actual_endpoint':actual,'endpoint_matches_mode':matches,
+                'inner_ok':inner,'main_probe':main_probe,'actual_endpoint':actual,'endpoint_matches_mode':matches,
                 'paths':paths,'failures':failures}
             preferred = (BASE/'preferred-mode').read_text().strip() if (BASE/'preferred-mode').exists() else 'tcp'
             target = choose(mode,streaks,failures,start-last_switch,preferred)
@@ -99,7 +106,7 @@ def main():
             repair = stalled_transport(target if target and row.get('action_ok') else mode,
                                        inner, bad, {p:start-restarted[p] for p in ORDER})
             if repair:
-                unit = 'evgenium-link-'+repair+'.service'
+                unit = 'evgenium-direct-gre.service' if repair == 'gre' else 'evgenium-link-'+repair+'.service'
                 r = command(['systemctl','restart',unit], 10)
                 restarted[repair] = time.monotonic()
                 row['transport_repair'] = {'path':repair,'ok':r.returncode==0,
