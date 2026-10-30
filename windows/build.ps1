@@ -7,7 +7,8 @@ $tokens=$null; $errors=$null
 $null=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'Evgenium.ps1'),[ref]$tokens,[ref]$errors)
 if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; throw 'PowerShell parse errors' }
 $compiler=Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-$automation=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\System.Management.Automation.dll'
+$automation=[Management.Automation.PowerShell].Assembly.Location
+if (!(Test-Path -LiteralPath $automation)) { throw 'Windows PowerShell reference assembly not found' }
 $package=Join-Path $Output ('Evgenium-Windows-' + $version + '-x64')
 $null=New-Item -ItemType Directory -Force -Path $package
 foreach ($gui in @($true,$false)) {
@@ -22,6 +23,8 @@ Copy-Item -LiteralPath (Join-Path $root 'README.txt') -Destination $package
 Copy-Item -LiteralPath (Join-Path $root 'VERSION') -Destination $package
 & (Join-Path $package 'EvgeniumCLI.exe') --command selftest
 if ($LASTEXITCODE -ne 0) { throw 'Packaged self-test failed' }
+& (Join-Path $package 'EvgeniumCLI.exe') --command status
+if ($LASTEXITCODE -ne 0) { throw 'Packaged disconnected-status smoke failed' }
 $zip=Join-Path $Output ('Evgenium-Windows-'+$version+'-x64.zip')
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip }
 Compress-Archive -Path (Join-Path $package '*') -DestinationPath $zip -CompressionLevel Optimal
