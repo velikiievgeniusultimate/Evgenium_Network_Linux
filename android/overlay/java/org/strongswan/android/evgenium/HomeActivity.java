@@ -332,11 +332,11 @@ public class HomeActivity extends Activity {
     tokenAction.setLayoutParams(actionParams);
     c.addView(tokenRow, new LinearLayout.LayoutParams(-1, dp(54)));
     title(c, "Маршрут", 18);
-    title(c, "Выбор применяется при следующем подключении. Автоматический режим перебирает маршруты по рейтингу.", 13).setTextColor(MUTED);
+    title(c, "Выбор применяется при следующем подключении. Автоматический режим быстро находит рабочий маршрут и сам восстанавливает соединение.", 13).setTextColor(MUTED);
     if (route.getParent() != null)
       ((android.view.ViewGroup) route.getParent()).removeView(route);
     c.addView(route, new LinearLayout.LayoutParams(-1, dp(54)));
-    button(c, "Восстановить · проверить маршруты", () -> confirmTests(false));
+    button(c, "Обновить рейтинг маршрутов", () -> confirmTests(false));
     button(c, "Результаты проверки маршрутов", () -> textDialog("Рейтинг маршрутов", results()));
     title(c, "ПОМОЧЬ УЛУЧШИТЬ VPN", 12).setTextColor(MUTED);
     runDiagnostic = button(c, "Полная диагностика", () -> {
@@ -603,6 +603,14 @@ public class HomeActivity extends Activity {
             .append(java.text.DateFormat.getDateTimeInstance().format(
                 new java.util.Date(r.getLong("created"))))
             .append("\n");
+        if (r.optBoolean("provisional", false)) {
+          out.append("Быстрое подключение: скорость ещё не измерялась.\n");
+          int last = getSharedPreferences("evgenium", 0).getInt("last-working-" + kind, -1);
+          if (last >= 0 && last < Engine.LABELS.length)
+            out.append("Последний рабочий маршрут: ").append(Engine.LABELS[last]).append("\n");
+          out.append("Подробные замеры доступны в полной диагностике.\n\n");
+          continue;
+        }
         org.json.JSONArray paths = r.getJSONArray("paths");
         for (int j = 0; j < paths.length(); j++) {
           org.json.JSONObject p = paths.getJSONObject(j);

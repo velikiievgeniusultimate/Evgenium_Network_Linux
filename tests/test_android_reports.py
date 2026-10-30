@@ -38,3 +38,7 @@ class AndroidReports(unittest.TestCase):
  def test_upload_wait_stage_and_duration_are_preserved(self):
   b=self.bundle();row=b['android']['samples'][0];row.update(phase='flow',error='timeout',values={'flow_stage':4,'flow_elapsed_ms':30000,'flow_response_wait_ms':29890,'raw_response':'secret'})
   safe=clean_android(b)['android']['samples'][0]['values'];self.assertEqual(safe,{'flow_stage':4,'flow_elapsed_ms':30000,'flow_response_wait_ms':29890})
+
+ def test_recovery_retry_is_accepted_without_raw_details(self):
+  b=self.bundle();row=b['android']['samples'][0];row.update(phase='recovery_retry',error='none');row['values']['raw_reason']='secret'
+  cleaned=clean_android(b)['android']['samples'][0];self.assertEqual(cleaned['phase'],'recovery_retry');self.assertNotIn('secret',json.dumps(cleaned))

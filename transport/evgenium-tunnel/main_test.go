@@ -76,7 +76,43 @@ func TestQueueBoundAndKernelReceiver(t *testing.T) {
 	server.Close()
 	<-done
 }
-func TestStaleQueueIsNotReplayed(t *testing.T) {
+
+// Reproduce a brief outer-stream stall without relying on a wall-clock sleep.
+// All packets are still part of the same authenticated session; the second
+// packet must follow the first even after exceeding the old 500 ms limit.
+func TestLiveSessionPreservesDelayedFIFO(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	q := make(chan packet, 3)
+	for i, payload := range []string{"delayed-first", "delayed-second", "fresh-third"} {
+		age := time.Duration(2-i) * time.Second
+		q <- packet{kind: dataFrame, seq: uint64(i + 1), data: []byte(payload), at: time.Now().Add(-age)}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	before := stats.staleDrop.Load()
+	go func() { done <- writeFrames(ctx, a, q, make(chan packet), options{batch: 1}) }()
+	_ = b.SetReadDeadline(time.Now().Add(time.Second))
+	for i, want := range []string{"delayed-first", "delayed-second", "fresh-third"} {
+		p, err := decode(b)
+		if err != nil || p.seq != uint64(i+1) || string(p.data) != want {
+			t.Fatalf("packet %d: got=%+v err=%v", i, p, err)
+		}
+	}
+	if got := stats.staleDrop.Load() - before; got != 0 {
+		t.Fatalf("dropped %d live packets", got)
+	}
+	cancel()
+	a.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("writer did not stop")
+	}
+}
+func TestExplicitAgeLimitDropsExpiredQueue(t *testing.T) {
 	a, b := net.Pipe()
 	defer a.Close()
 	defer b.Close()

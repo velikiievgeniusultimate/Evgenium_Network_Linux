@@ -4,7 +4,15 @@ import org.junit.Test;
 public class UserInputTest {
   @Test public void connectionErrorsHaveActionableMessagesWithoutEchoingPayloads() {
     assertTrue(UserMessages.connection("ike_AUTH_FAILED").contains("доступ"));
-    assertTrue(UserMessages.connection("SocketTimeoutException").contains("вовремя"));
+    assertTrue(UserMessages.connection("SocketTimeoutException").contains("не ответил"));
+    // Transient errors are retried by Engine; they must not direct a normal
+    // user to the old manual-repair workflow.
+    for (String error : new String[]{"SocketTimeoutException", "health_failed", "unknown"}) {
+      String message = UserMessages.connection(error).toLowerCase(java.util.Locale.ROOT);
+      assertFalse(message.contains("в настройках"));
+      assertFalse(message.contains("восстановление"));
+      assertFalse(message.contains("запустите"));
+    }
     assertTrue(UserMessages.connection("CertificateExpiredException").contains("дату"));
     assertTrue(UserMessages.connection("UnknownHostException").contains("имени"));
     assertFalse(UserMessages.connection("EVN1-secret").contains("EVN1"));
