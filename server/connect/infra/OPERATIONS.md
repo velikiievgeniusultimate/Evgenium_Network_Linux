@@ -125,3 +125,8 @@ is local to the VPN interface; it does not provide an IPv6 Internet exit. The
 server only authorizes the peer's IPv4 source and blocks forwarded IPv6. Native
 clients retain the original `address` field for protocol compatibility; browser
 profiles use the additional validated `addresses` list.
+
+`evgenium-connect-front-check.timer` restores only the owned NAT/input rules
+after a firewall reload while the front service is active. It never starts a
+front service that the operator stopped; inactive fronts have their own redirect
+removed so the original443 listener remains available.

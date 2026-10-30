@@ -1,0 +1,16 @@
+[Unit]
+Description=Restore only own HTTPS rules after firewall reload
+After=evgenium-connect-front.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/evgenium-connect-infra/public_front.py check
+UMask=0077
+TimeoutStartSec=30
+MemoryMax=48M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/evgenium-connect-infra
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN

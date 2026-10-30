@@ -1,0 +1,8 @@
+[Unit]
+Description=Check direct HTTPS publication without starting a stopped service
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=30
+RandomizedDelaySec=3
+[Install]
+WantedBy=timers.target

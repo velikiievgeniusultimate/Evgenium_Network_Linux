@@ -12,7 +12,7 @@ A fresh independent probe uses 10.203.90.9, a separate private key kept only on 
 
 ## Deployed verification, 2026-10-30
 
-- Raw direct GRE and experimental IP protocol 253 echoed authenticated test nonces. TCP/UDP and ICMP tests between the same IPv4 endpoints timed out. This shows protocol-selective reachability; it does not identify the filtering operator.
+- Raw direct GRE and experimental IP protocol 253 echoed matching test nonces. TCP/UDP and ICMP tests between the same IPv4 endpoints timed out. This shows protocol-selective reachability; it does not identify the filtering operator.
 - Isolated complete WG over direct GRE: SHA-256 verified 4 MiB each way at 76.906/40.203 Mbit/s, then 16 MiB each way at 186.206/138.013 Mbit/s (receive/send from HSVDS). These are short private link measurements, not client Internet throughput.
 - Production switched with a 120-second rollback timer armed. Five private pings passed, with 31.2 ms average RTT, and HTTPS exit check returned 38.180.164.67; the rollback timer was then cancelled. The old carrier remained running and independently probed.
 - Linux 0.5.5 package on StarFive: existing token, connection 1.271 s, expected Estonian exit, DNS and Google/Discord API/CDN passed. Separate 4 MiB Internet transfers measured 44.302/9.707 Mbit/s; original host routes and DNS were restored unchanged.

@@ -50,8 +50,22 @@ def down():
     remove_input()
 
 
+def check():
+    if not STATE.exists():return
+    if run(['systemctl','is-active','--quiet','evgenium-connect-front.service'],False).returncode!=0:
+        down();return
+    table=run(['nft','list','table','inet',TABLE],False)
+    chain=run(['nft','-j','list','chain','inet','firewall','input'],False)
+    comments=set()
+    if chain.returncode==0:
+        comments={r.get('rule',{}).get('comment') for r in json.loads(chain.stdout)['nftables']}
+    if table.returncode!=0 or not {PREFIX+'http',PREFIX+'https'}.issubset(comments):
+        up()
+
+
 if __name__=='__main__':
     if sys.argv[1:]==['up']:up()
     elif sys.argv[1:]==['http']:up(True)
     elif sys.argv[1:]==['down']:down()
-    else:raise SystemExit('expected up|http|down')
+    elif sys.argv[1:]==['check']:check()
+    else:raise SystemExit('expected up|http|down|check')
