@@ -15,6 +15,10 @@ jobs:
         run: |
           & .\windows\test.ps1
           & .\windows\build.ps1 -Output "$env:RUNNER_TEMP\evgenium-windows"
+      - name: Test official WireGuard installation and isolated tunnel service
+        shell: powershell
+        run: |
+          & .\windows\integration.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: evgenium-windows-x64

@@ -35,7 +35,11 @@ function Assert-NoReparse([string]$Path) {
     }
 }
 function Read-State {
-    if (Test-Path -LiteralPath $script:StatePath) { return (Get-Content -LiteralPath $script:StatePath -Raw | ConvertFrom-Json) }
+    Assert-NoReparse $script:StatePath
+    if (Test-Path -LiteralPath $script:StatePath) {
+        try { return (Get-Content -LiteralPath $script:StatePath -Raw | ConvertFrom-Json) }
+        catch { throw 'Локальные настройки повреждены. Не публикуйте этот файл: он содержит защищённые учётные данные.' }
+    }
     return [pscustomobject]@{schema=1;device=([Guid]::NewGuid().ToString('N'));name=$env:COMPUTERNAME;token='';private_key='';profile=$null}
 }
 function Save-State($State) {
@@ -56,7 +60,9 @@ function Invoke-Elevated([string]$Action) {
     if (Is-Admin) { return $false }
     $exe = Join-Path $ExecutableDirectory 'EvgeniumCLI.exe'
     if (!(Test-Path -LiteralPath $exe)) { throw 'Не найден EvgeniumCLI.exe рядом с приложением.' }
-    try { $process = Start-Process -FilePath $exe -ArgumentList @('--command', $Action, '--expected-sid', $script:Sid) -Verb RunAs -PassThru -Wait }
+    try { $process = Start-Process -FilePath $exe -ArgumentList @('--command', $Action, '--expected-sid', $script:Sid) -Verb RunAs -PassThru
+        while (!$process.HasExited) { if ($Command -eq 'gui') { [Windows.Forms.Application]::DoEvents() }; Start-Sleep -Milliseconds 100; $process.Refresh() }
+    }
     catch { throw 'Для управления VPN нужно подтвердить запрос Windows. Действие отменено.' }
     if ($process.ExitCode -ne 0) { throw 'Подключение не подтверждено. Откройте консоль: EvgeniumCLI.exe on. Интернет остаётся заблокирован, если служба туннеля запущена; кнопка «Отключить» вернёт обычную сеть.' }
     return $true
@@ -89,14 +95,18 @@ function Invoke-Wg([string]$Arguments, [string]$InputText = '') {
     $p=New-Object Diagnostics.Process; $p.StartInfo=$info
     try {
         $null=$p.Start(); if ($InputText) { $p.StandardInput.WriteLine($InputText) }; $p.StandardInput.Close()
-        $result=$p.StandardOutput.ReadToEnd(); $null=$p.StandardError.ReadToEnd()
+        $outputTask=$p.StandardOutput.ReadToEndAsync(); $errorTask=$p.StandardError.ReadToEndAsync()
         if (!$p.WaitForExit(10000)) { $p.Kill(); throw 'WireGuard не ответил.' }
-        if ($p.ExitCode -ne 0) { throw 'Не удалось выполнить команду WireGuard.' }; return $result.Trim()
+        if ($p.ExitCode -ne 0) { throw 'Не удалось выполнить команду WireGuard.' }; $null=$errorTask.Result; return $outputTask.Result.Trim()
     } finally { $p.Dispose() }
 }
-function Check-Key([string]$Key) { return ($Key -match '^[A-Za-z0-9+/]{43}=$' -and ([Convert]::FromBase64String($Key)).Length -eq 32) }
+function Check-Key([string]$Key) {
+    if ($Key -notmatch '^[A-Za-z0-9+/]{43}=$') { return $false }
+    $bytes=[Convert]::FromBase64String($Key)
+    return ($bytes.Length -eq 32 -and [Convert]::ToBase64String($bytes) -ceq $Key -and @($bytes | Where-Object { $_ -ne 0 }).Count -gt 0)
+}
 function Validate-Profile($Profile) {
-    if (!$Profile -or $Profile.schema -ne 1 -or !(Check-Key $Profile.public_key) -or $Profile.endpoint -ne '195.209.211.163:51820' -or $Profile.address -notmatch '^10\.78\.0\.([1-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-4])/32$' -or $Profile.mtu -ne 1280) { throw 'Сервер вернул неподдерживаемый профиль. VPN не включён.' }
+    if (!$Profile -or $Profile.schema -ne 1 -or !(Check-Key $Profile.public_key) -or $Profile.endpoint -ne '195.209.211.163:51820' -or $Profile.address -notmatch '^10\.78\.0\.([2-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-4])/32$' -or $Profile.mtu -ne 1280) { throw 'Сервер вернул неподдерживаемый профиль. VPN не включён.' }
     if ((@($Profile.dns) -join ',') -ne '1.1.1.1,1.0.0.1' -or (@($Profile.allowed_ips).Count -ne 2 -or @($Profile.allowed_ips) -cnotcontains '0.0.0.0/0' -or @($Profile.allowed_ips) -cnotcontains '::/0')) { throw 'Профиль не содержит ожидаемую защиту трафика и DNS.' }
 }
 function Enroll($State) {
@@ -123,10 +133,21 @@ function Enroll($State) {
     } finally { $body=$null; $private=$null }
     return $State
 }
-function Tunnel-Running { $s=Get-Service -Name $script:Service -ErrorAction SilentlyContinue; return ($s -and $s.Status -eq 'Running') }
+function Assert-ServiceOwnership {
+    $service=Get-CimInstance -ClassName Win32_Service -Filter ("Name='"+$script:Service+"'") -ErrorAction Stop
+    if (!$service) { return }
+    $exe=[regex]::Escape((Get-WireGuardPath))
+    $conf=[regex]::Escape((Join-Path $script:Data 'Evgenium.conf'))
+    if ($service.PathName -notmatch ('^"?'+$exe+'"?\s+/tunnelservice\s+"?'+$conf+'"?$')) { throw 'Имя Evgenium занято другим VPN-туннелем. Его настройки не изменены.' }
+}
+function Tunnel-Running {
+    $s=Get-Service -Name $script:Service -ErrorAction SilentlyContinue
+    if ($s) { Assert-ServiceOwnership }
+    return ($s -and $s.Status -eq 'Running')
+}
 function Validate-Connection {
     # curl is told explicitly which adapter/IP to use, and not to use an HTTP proxy.
-    $state=Read-State; if (!$state.profile) { return $false }
+    $state=Read-State; if (!$state.profile) { return $false }; Validate-Profile $state.profile
     $address=($state.profile.address -split '/')[0]
     $curl=Join-Path $env:SystemRoot 'System32\curl.exe'
     if (!(Test-Path -LiteralPath $curl)) { throw 'Нужна актуальная Windows 10/11 с системным curl.exe для проверки VPN.' }
@@ -161,9 +182,11 @@ function Connect-Vpn {
 }
 function Disconnect-Vpn {
     if (Invoke-Elevated 'off') { return }
+    Assert-NoReparse $script:Data
     $wg=Get-WireGuardPath
     $service=Get-Service -Name $script:Service -ErrorAction SilentlyContinue
     if ($service) {
+        Assert-ServiceOwnership
         Assert-WireGuardSignature $wg
         $process=Start-Process -FilePath $wg -ArgumentList '/uninstalltunnelservice', $script:Tunnel -Wait -PassThru
         if ($process.ExitCode -ne 0) { throw 'Не удалось отключить туннель. Повторите попытку.' }
@@ -174,6 +197,7 @@ function Disconnect-Vpn {
     Write-Output 'VPN отключён. Обычное подключение восстановлено.'
 }
 function Set-Token([string]$Token, [string]$Name) {
+    Assert-NoReparse $script:Data
     $Token=$Token.Trim()
     $Name=$Name.Normalize([Text.NormalizationForm]::FormC).Trim()
     if ($Token -notmatch '^EVN1-[A-Za-z0-9_-]{43}$') { throw 'Ожидается полный токен EVN1-…' }
@@ -189,6 +213,7 @@ function Validate-Manifest($Manifest) {
     if ($Manifest.url -cne $expected) { throw 'Адрес обновления не принадлежит ожидаемому релизу Evgenium.' }
 }
 function Expand-VerifiedArchive([string]$Archive, [string]$Destination) {
+    Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $allowed=@('Evgenium.exe','EvgeniumCLI.exe','README.txt','VERSION')
     $zip=[IO.Compression.ZipFile]::OpenRead($Archive)
@@ -215,7 +240,7 @@ function Update-App {
     $manifest=Invoke-RestMethod -UseBasicParsing -Uri $script:Manifest -TimeoutSec 20
     Validate-Manifest $manifest
     if ([version]$manifest.version -le [version]$script:Version) { Write-Output ('Установлена актуальная версия ' + $script:Version + '.'); return }
-    $versions=Join-Path $script:AppRoot 'versions'; $null=New-Item -ItemType Directory -Path $versions -Force
+    $versions=Join-Path $script:AppRoot 'versions'; Assert-NoReparse $versions; $null=New-Item -ItemType Directory -Path $versions -Force
     $stage=Join-Path $versions ([Guid]::NewGuid().ToString('N'))
     $archive=Join-Path $script:AppRoot ([Guid]::NewGuid().ToString('N')+'.zip')
     try {
@@ -239,7 +264,7 @@ function Install-App {
     $pointer=Join-Path $script:AppRoot 'current.txt'
     if (Test-Path -LiteralPath $pointer) { $current=(Get-Content -LiteralPath $pointer -Raw).Trim(); if ($current -match '^\d{1,3}\.\d{1,3}\.\d{1,3}$' -and [version]$current -gt [version]$script:Version) { Write-Output 'Уже установлена более новая версия. Откройте Evgenium из меню «Пуск».'; return } }
     Assert-NoReparse $script:AppRoot; Protect-Directory $script:AppRoot
-    $versions=Join-Path $script:AppRoot 'versions'; $null=New-Item -ItemType Directory -Path $versions -Force
+    $versions=Join-Path $script:AppRoot 'versions'; Assert-NoReparse $versions; $null=New-Item -ItemType Directory -Path $versions -Force
     $target=Join-Path $versions $script:Version
     if ([IO.Path]::GetFullPath($target).TrimEnd('\') -ine [IO.Path]::GetFullPath($ExecutableDirectory).TrimEnd('\')) {
         if (!(Test-Path -LiteralPath $target)) {
@@ -254,8 +279,8 @@ function Install-App {
 function Self-Test {
     Validate-Manifest ([pscustomobject]@{schema=1;version='0.1.1';sha256=('a'*64);url='https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-v0.1.1/Evgenium-Windows-0.1.1-x64.zip'})
     $rejected=$false; try { Validate-Manifest ([pscustomobject]@{schema=1;version='0.1.1';sha256=('a'*64);url='https://example.com/payload.zip'}) } catch { $rejected=$true }; if (!$rejected) { throw 'Unsafe URL accepted' }
-    Validate-Profile ([pscustomobject]@{schema=1;public_key=('A'*43+'=');endpoint='195.209.211.163:51820';address='10.78.0.2/32';dns=@('1.1.1.1','1.0.0.1');mtu=1280;allowed_ips=@('0.0.0.0/0','::/0')})
-    if (!(Check-Key ('A'*43+'='))) { throw 'Key check failed' }
+    Validate-Profile ([pscustomobject]@{schema=1;public_key='AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';endpoint='195.209.211.163:51820';address='10.78.0.2/32';dns=@('1.1.1.1','1.0.0.1');mtu=1280;allowed_ips=@('0.0.0.0/0','::/0')})
+    if (!(Check-Key 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=')) { throw 'Key check failed' }
     Write-Output ('Evgenium Windows ' + $script:Version + ': selftest OK')
 }
 function Show-Gui {
