@@ -151,9 +151,9 @@ function Validate-Connection {
     $address=($state.profile.address -split '/')[0]
     $curl=Join-Path $env:SystemRoot 'System32\curl.exe'
     if (!(Test-Path -LiteralPath $curl)) { throw 'Нужна актуальная Windows 10/11 с системным curl.exe для проверки VPN.' }
-    $answer=& $curl --silent --fail --noproxy '*' --interface $address --connect-timeout 4 --max-time 8 'https://api.ipify.org' 2>$null
+    $answer=& $curl --ipv4 --silent --fail --noproxy '*' --interface $address --connect-timeout 4 --max-time 8 'https://api.ipify.org' 2>$null
     if ($LASTEXITCODE -ne 0 -or ($answer -join '').Trim() -ne '38.180.164.67') { return $false }
-    $answer=& $curl --silent --fail --noproxy '*' --interface $address --connect-timeout 4 --max-time 8 'https://discord.com/api/v10/gateway' 2>$null
+    $answer=& $curl --ipv4 --silent --fail --noproxy '*' --interface $address --connect-timeout 4 --max-time 8 'https://discord.com/api/v10/gateway' 2>$null
     return ($LASTEXITCODE -eq 0 -and ($answer -join '') -match 'gateway.discord.gg')
 }
 function Connect-Vpn {
@@ -161,6 +161,12 @@ function Connect-Vpn {
     if (Invoke-Elevated 'on') { return }
     Protect-Directory $script:Data
     $wg=Ensure-WireGuard
+    $existing=Get-Service -Name $script:Service -ErrorAction SilentlyContinue
+    if ($existing -and $existing.Status -ne 'Running') {
+        Assert-ServiceOwnership
+        Start-Service -Name $script:Service
+        $existing.WaitForStatus('Running',[TimeSpan]::FromSeconds(15))
+    }
     if (Tunnel-Running) {
         if (Validate-Connection) { Write-Output 'Подключено через HSVDS → Эстония. IP: 38.180.164.67.'; return }
         # Keep the existing WireGuard firewall protection active on failure.

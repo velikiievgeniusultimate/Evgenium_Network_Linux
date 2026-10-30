@@ -8,6 +8,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Compile and test Windows x64 package
@@ -19,6 +20,16 @@ jobs:
         shell: powershell
         run: |
           & .\windows\integration.ps1
+      - name: Optional real Windows full-tunnel E2E
+        shell: powershell
+        env:
+          EVG_WINDOWS_E2E_TOKEN: ${{ secrets.EVG_WINDOWS_E2E_TOKEN }}
+        run: |
+          if ($env:EVG_WINDOWS_E2E_TOKEN) {
+            & .\windows\e2e.ps1
+          } else {
+            Write-Output "Real full-tunnel E2E skipped: no temporary test token configured."
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: evgenium-windows-x64

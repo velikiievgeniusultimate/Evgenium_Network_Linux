@@ -27,6 +27,18 @@ Add-Type -AssemblyName System.IO.Compression
 $temporary=Join-Path ([IO.Path]::GetTempPath()) ('evgenium-test-'+[Guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path $temporary
 try {
+    if ($env:OS -eq 'Windows_NT') {
+        $aclTest=Join-Path $temporary 'private'
+        Protect-Directory $aclTest
+        $permissions=Get-Acl -LiteralPath $aclTest
+        if (!$permissions.AreAccessRulesProtected) { throw 'Private ACL inherits access' }
+        $allowed=@($script:Sid,'S-1-5-18','S-1-5-32-544')
+        foreach ($rule in $permissions.Access) {
+            $sid=$rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+            if ($sid -notin $allowed -or $rule.AccessControlType -ne 'Allow') { throw 'Unexpected private ACL principal' }
+        }
+        Write-Output 'Private directory ACL: PASS'
+    }
     foreach ($unsafe in @('../Evgenium.exe','sub/Evgenium.exe','Evgenium.exe:ads','EVGENIUM.exe')) {
         $zipPath=Join-Path $temporary ([Guid]::NewGuid().ToString('N')+'.zip')
         $zip=[IO.Compression.ZipFile]::Open($zipPath,[IO.Compression.ZipArchiveMode]::Create)
