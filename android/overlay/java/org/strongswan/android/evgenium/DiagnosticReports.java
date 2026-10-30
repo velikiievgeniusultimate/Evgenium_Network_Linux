@@ -17,7 +17,7 @@ public final class DiagnosticReports {
       "write_ms", "flushes", "reconnects", "udp_receive_buffer", "batch_packets", "max_age_ms",
       "dial_attempts", "connect_ms", "tcp_send_buffer", "tcp_receive_buffer", "started_at"};
   private static final Set<String> PHASES = new HashSet<>(Arrays.asList("start", "connected",
-      "health_ok", "health_failed", "failed", "failover", "network_changed", "candidate_failed",
+      "health_ok", "health_failed", "failed", "failover", "network_changed", "candidate_failed", "recovery_retry",
       "flow", "flow_health", "rank", "measurement", "packet", "packet_server", "dns", "baseline", "load", "transfer"));
   private static File file(Context c) {
     return new File(c.getFilesDir(), "support-preview.json");

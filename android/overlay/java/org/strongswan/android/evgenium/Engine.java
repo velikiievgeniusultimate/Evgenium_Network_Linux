@@ -38,6 +38,7 @@ public class Engine extends Service {
   private final ExecutorService worker = Executors.newSingleThreadExecutor();
   private final Handler handler = new Handler(Looper.getMainLooper());
   private Network connectedNetwork;
+  private Network attemptedNetwork;
   private Network operationNetwork;
   private String operationKind = "unknown";
   private volatile long generation;
@@ -45,7 +46,10 @@ public class Engine extends Service {
   private long nextHealthAt;
   private android.os.PowerManager.WakeLock labWake;
   private volatile boolean busy;
-  private volatile boolean exhausted;
+  private final RecoveryPolicy recovery = new RecoveryPolicy();
+  private final ConnectionGuard connectionGuard = new ConnectionGuard();
+  private volatile Network retryNetwork;
+  private int wantedRoute = -1;
   private final ServiceConnection connection = new ServiceConnection() {
     public void onServiceConnected(ComponentName n, IBinder b) {
       vpn = ((VpnStateService.LocalBinder) b).getService();
@@ -101,11 +105,13 @@ public class Engine extends Service {
     String cmd = i.getStringExtra("command");
     int route = i.getIntExtra("route", -1);
     if ("stop".equals(cmd)) {
+      connectionGuard.cancel();
       getSharedPreferences("evgenium", 0).edit().putBoolean("connection-wanted", false).commit();
       running = false;
       verified = false;
       diagnosing = false;
       cancel = true;
+      recovery.stop();
       generation++;
       handler.removeCallbacksAndMessages(null);
       startService(
@@ -128,9 +134,11 @@ public class Engine extends Service {
     diagnosing = DiagnosticFlow.isDiagnostic(cmd);
     busy = true;
     cancel = false;
-    exhausted = false;
+    recovery.start();
+    wantedRoute = route >= 0 && route < IDS.length ? route : -1;
     consecutive = 0;
     long mine = ++generation;
+    connectionGuard.activate(mine);
     worker.execute(() -> {
       final String reportRun = DiagnosticFlow.isDiagnostic(cmd) ? UUID.randomUUID().toString() : "";
       diagnosticRun = reportRun;
@@ -147,23 +155,20 @@ public class Engine extends Service {
           record
           ("measurement", current, m, "");
           set("Замер завершён: " + label(current));
-        } else if ("rank".equals(cmd) || DiagnosticFlow.isDiagnostic(cmd)
-            || (route < 0 && !hasRanking()))
+        } else if ("rank".equals(cmd) || DiagnosticFlow.isDiagnostic(cmd))
           rank();
-        else if (route >= 0)
-          connectRoute(route);
         else
-          connectRanked(best());
+          connectWanted(true);
       } catch (NetworkChanged e) {
         if (!cancel && instance == this && mine == generation) {
           verified = false;
           connectedNetwork = null;
-          set("Сеть изменилась. Ожидаю подключение…");
+          scheduleRecovery("Ожидаю доступную сеть");
         }
       } catch (Exception e) {
         if (!cancel && instance == this && mine == generation) {
           verified = false;
-          set(UserMessages.connection(safe(e)));
+          scheduleRecovery(UserMessages.connection(safe(e)));
         }
         record
         ("failed", current, new JSONObject(), safe(e));
@@ -193,17 +198,28 @@ public class Engine extends Service {
     return START_STICKY;
   }
   private void monitorTick(long mine) {
-    if (cancel || exhausted || mine != generation)
+    if (cancel || instance != this || mine != generation)
       return;
+    long now = SystemClock.elapsedRealtime();
+    if (recovery.pending()) {
+      Network available = NetworkAccess.select(this);
+      if (!Objects.equals(retryNetwork, available)) {
+        retryNetwork = available;
+        recovery.networkChanged(now);
+      }
+      if (!busy && recovery.ready(now)) monitor(mine);
+      else handler.postDelayed(() -> monitorTick(mine), 1000);
+      return;
+    }
     if (!busy
-        && (SystemClock.elapsedRealtime() >= nextHealthAt
+        && (now >= nextHealthAt
             || TunnelCarrier.offlineMillis() >= 3000)) {
       monitor(mine);
     } else
       handler.postDelayed(() -> monitorTick(mine), 1000);
   }
   private void monitor(long mine) {
-    if (cancel || exhausted || mine != generation)
+    if (cancel || instance != this || mine != generation)
       return;
     if (busy) {
       handler.postDelayed(() -> monitorTick(mine), 1000);
@@ -213,14 +229,12 @@ public class Engine extends Service {
     worker.execute(() -> {
       try {
         beginNetwork();
-        if (!operationNetwork.equals(connectedNetwork)) {
+        if (recovery.pending() || !operationNetwork.equals(connectedNetwork)) {
           consecutive = 0;
+          boolean changed = !operationNetwork.equals(attemptedNetwork);
           record
-          ("network_changed", current, new JSONObject(), "");
-          if (hasRanking())
-            connectRanked(best());
-          else
-            rank();
+          (changed ? "network_changed" : "recovery_retry", current, new JSONObject(), "");
+          connectWanted(changed);
           return;
         }
         if (TunnelCarrier.offlineMillis() >= 3000)
@@ -238,10 +252,11 @@ public class Engine extends Service {
           consecutive = 0;
           record
           ("health_ok", current, new JSONObject(), "");
-          if (cancel || instance != this)
-            throw new InterruptedException();
-          verified = true;
-          set("Подключено: " + label(current));
+          if (!connectionGuard.run(mine, () -> {
+            if (cancel || instance != this) return;
+            verified = true;
+            set("Подключено: " + label(current));
+          })) throw new InterruptedException();
           return;
         }
         throw new IOException("health_failed");
@@ -251,7 +266,7 @@ public class Engine extends Service {
           verified = false;
           connectedNetwork = null;
           consecutive = 0;
-          set("Ожидаю доступную сеть");
+          scheduleRecovery("Ожидаю доступную сеть");
           return;
         }
         verified = false;
@@ -260,6 +275,10 @@ public class Engine extends Service {
         if (++consecutive >= 2 || TunnelCarrier.offlineMillis() >= 3000) {
           consecutive = 0;
           try {
+            if (wantedRoute >= 0) {
+              noRoutes();
+              return;
+            }
             lose(current);
             int next = next(current);
             record
@@ -269,7 +288,7 @@ public class Engine extends Service {
             else
               noRoutes();
           } catch (Exception fail) {
-            set("Восстановление: " + safe(fail));
+            scheduleRecovery("Восстанавливаю подключение");
           }
         }
       } finally {
@@ -282,9 +301,11 @@ public class Engine extends Service {
     });
   }
   private void set(String s) {
-    if (cancel || instance != this) return;
-    status = s;
-    Log.i("Evgenium", s);
+    connectionGuard.run(generation, () -> {
+      if (cancel || instance != this) return;
+      status = s;
+      Log.i("Evgenium", s);
+    });
   }
   private static String label(String id) {
     for (int i = 0; i < IDS.length; i++)
@@ -293,6 +314,7 @@ public class Engine extends Service {
     return id;
   }
   private void connectRoute(int route) throws Exception {
+    final long mine = generation;
     if (cancel || instance != this)
       throw new InterruptedException();
     verified = false;
@@ -337,33 +359,44 @@ public class Engine extends Service {
     } finally {
       src.close();
     }
-    current = IDS[route];
-    getSharedPreferences("evgenium", 0).edit().putString("route", current).commit();
-    set("Подключаю: " + LABELS[route]);
     long start = SystemClock.elapsedRealtime();
-    record
-    ("start", current, new JSONObject(), "");
-    startService(new Intent(this, CharonVpnService.class)
-            .putExtra(VpnProfileDataSource.KEY_UUID, uuid.toString()));
+    VpnStateService previousState = vpn;
+    long previousConnection = previousState == null ? -1 : previousState.getConnectionID();
+    // Stop can arrive while credentials/profile storage is blocked. Checking a
+    // flag before that work is insufficient: serialize the actual start with it.
+    if (!connectionGuard.run(mine, () -> {
+      if (cancel || instance != this) return;
+      current = IDS[route];
+      getSharedPreferences("evgenium", 0).edit().putString("route", current).apply();
+      set("Подключаю: " + LABELS[route]);
+      startService(new Intent(this, CharonVpnService.class)
+          .putExtra(VpnProfileDataSource.KEY_UUID, uuid.toString()));
+    })) throw new InterruptedException();
+    record("start", current, new JSONObject(), "");
     while (SystemClock.elapsedRealtime() - start < 45000) {
-      if (cancel)
+      if (cancel || instance != this || mine != generation)
         throw new InterruptedException();
       Thread.sleep(250);
       checkNetwork();
       VpnStateService v = vpn;
       if (v == null || v.getProfile() == null || !uuid.equals(v.getProfile().getUUID()))
         continue;
+      // Restarting the same profile must not consume its old CONNECTED/error
+      // state before Charon has processed this new connection request.
+      if (v == previousState && v.getConnectionID() <= previousConnection) continue;
       if (v.getState() == VpnStateService.State.CONNECTED) {
         String ip = ExitProbe.get(this);
         if (!Credentials.EE.equals(ip))
           throw new IOException("unexpected_exit");
         checkNetwork();
-        connectedNetwork = operationNetwork;
-        nextTransferAt = 0;
-        if (cancel || instance != this)
-          throw new InterruptedException();
-        verified = true;
-        set("Подключено: " + LABELS[route]);
+        if (!connectionGuard.run(mine, () -> {
+          if (cancel || instance != this) return;
+          connectedNetwork = operationNetwork;
+          recovery.connected();
+          nextTransferAt = 0;
+          verified = true;
+          set("Подключено: " + LABELS[route]);
+        })) throw new InterruptedException();
         record
         ("connected", current,
             new JSONObject()
@@ -377,16 +410,48 @@ public class Engine extends Service {
     }
     throw new IOException("ike_timeout");
   }
-  private void noRoutes() {
+  private void scheduleRecovery(String reason) {
+    if (cancel || instance != this) return;
     verified = false;
-    exhausted = true;
-    TunnelCarrier.stopCurrent();
-    set("Нет рабочего маршрута. Откройте настройки → «Восстановить · проверить маршруты». Проверьте доступность интернета.");
+    retryNetwork = NetworkAccess.select(this);
+    long delay = recovery.failed(SystemClock.elapsedRealtime());
+    if (delay >= 0) set(reason.replaceAll("[.\\s]+$", "") + ". Повторю автоматически через " + (delay / 1000) + " с.");
+  }
+  private void noRoutes() {
+    connectionGuard.run(generation, () -> {
+      if (cancel || instance != this) return;
+      TunnelCarrier.stopCurrent();
+      scheduleRecovery(wantedRoute >= 0 ? "Выбранный маршрут пока недоступен" : "Ищу рабочий маршрут");
+    });
+  }
+  private void rememberWorking(int route) {
+    connectionGuard.run(generation, () -> {
+      if (cancel || instance != this) return;
+      getSharedPreferences("evgenium", 0).edit().putInt("last-working-" + operationKind, route).apply();
+    });
+  }
+  private void connectWanted() throws Exception { connectWanted(false); }
+  private void connectWanted(boolean explicitOrNewNetwork) throws Exception {
+    attemptedNetwork = operationNetwork;
+    if (wantedRoute >= 0) {
+      try { connectRoute(wantedRoute); rememberWorking(wantedRoute); }
+      catch (Exception error) {
+        if (cancel) throw error;
+        checkNetwork();
+        record("candidate_failed", IDS[wantedRoute], new JSONObject(), safe(error));
+        noRoutes();
+      }
+      return;
+    }
+    ensureRanking();
+    if (explicitOrNewNetwork && best() < 0) releaseQuarantine();
+    connectRanked(best());
   }
   private void connectRanked(int route) throws Exception {
     for (int attempts = 0; route >= 0 && attempts < IDS.length && !cancel; attempts++) {
       try {
         connectRoute(route);
+        rememberWorking(route);
         return;
       } catch (Exception e) {
         if (cancel)
@@ -466,10 +531,15 @@ public class Engine extends Service {
       checkNetwork();
       ranking.put("paths", results);
       saveRanking(ranking);
-      if (best() < 0)
-        noRoutes();
-      else
-        connectRanked(best());
+      // Explicit measurement should select its new winner, not the old hint;
+      // individual measurement connections never update last-working.
+      getSharedPreferences("evgenium", 0).edit().remove("last-working-" + operationKind).apply();
+      boolean successful = false;
+      for (int i = 0; i < results.length(); i++)
+        successful |= results.getJSONObject(i).optDouble("score", 0) > 0;
+      if (wantedRoute >= 0) connectWanted();
+      else if (!successful || best() < 0) noRoutes();
+      else connectRanked(best());
     }
   }
   private JSONObject measure() throws Exception {
@@ -699,42 +769,78 @@ public class Engine extends Service {
       return false;
     }
   }
-  private RankingPolicy policy() throws Exception {
+  private void ensureRanking() throws Exception {
+    if (hasRanking()) {
+      JSONObject r = ranking();
+      JSONArray paths = r.getJSONArray("paths");
+      boolean changed = false;
+      long now = System.currentTimeMillis();
+      for (int i = 0; i < paths.length(); i++) {
+        JSONObject p = paths.getJSONObject(i);
+        int stored = p.optInt("losses", 0);
+        int effective = ConnectionCandidates.effectiveLosses(stored, p.optLong("quarantine_at", 0), now);
+        if (stored != effective) {
+          p.put("losses", effective); p.remove("quarantine_at"); changed = true;
+        }
+      }
+      if (changed) saveRanking(r);
+      return;
+    }
+    JSONArray paths = new JSONArray();
+    for (String id : IDS) paths.put(new JSONObject().put("id", id).put("score", 0).put("losses", 0));
+    saveRanking(new JSONObject().put("created", System.currentTimeMillis()).put("network", operationKind)
+        .put("provisional", true).put("paths", paths));
+  }
+  private void releaseQuarantine() throws Exception {
+    JSONObject r = ranking();
+    JSONArray paths = r.getJSONArray("paths");
+    for (int i = 0; i < paths.length(); i++) {
+      JSONObject p = paths.getJSONObject(i);
+      p.put("losses", 0); p.remove("quarantine_at");
+    }
+    saveRanking(r);
+  }
+  private int[] candidates() throws Exception { return candidates(-1); }
+  private int[] candidates(int include) throws Exception {
     JSONArray paths = ranking().getJSONArray("paths");
     double[] scores = new double[IDS.length];
     int[] losses = new int[IDS.length];
-    Arrays.fill(losses, 3);
+    long now = System.currentTimeMillis();
     for (int i = 0; i < paths.length(); i++) {
       JSONObject p = paths.getJSONObject(i);
-      for (int j = 0; j < IDS.length; j++)
-        if (IDS[j].equals(p.optString("id"))) {
-          scores[j] = p.optDouble("score", 0);
-          losses[j] = Math.max(0, p.optInt("losses", 3));
-        }
+      for (int j = 0; j < IDS.length; j++) if (IDS[j].equals(p.optString("id"))) {
+        scores[j] = p.optDouble("score", 0);
+        losses[j] = j == include ? 0 : ConnectionCandidates.effectiveLosses(p.optInt("losses", 0), p.optLong("quarantine_at", 0), now);
+      }
     }
-    return new RankingPolicy(scores, losses);
+    return ConnectionCandidates.order(scores, losses,
+        getSharedPreferences("evgenium", 0).getInt("last-working-" + operationKind, -1));
   }
   private int best() {
-    try {
-      return policy().first();
-    } catch (Exception e) {
-      return -1;
-    }
+    try { int[] order = candidates(); return order.length == 0 ? -1 : order[0]; }
+    catch (Exception error) { return -1; }
   }
   private void lose(String id) throws Exception {
+    ensureRanking();
     JSONObject r = ranking();
-    JSONArray a = r.getJSONArray("paths");
-    for (int i = 0; i < a.length(); i++) {
-      JSONObject p = a.getJSONObject(i);
-      if (id.equals(p.getString("id")))
-        p.put("losses", Math.min(3, p.optInt("losses") + 1));
+    JSONArray paths = r.getJSONArray("paths");
+    long now = System.currentTimeMillis();
+    for (int i = 0; i < paths.length(); i++) {
+      JSONObject p = paths.getJSONObject(i);
+      if (id.equals(p.getString("id"))) {
+        int previous = ConnectionCandidates.effectiveLosses(p.optInt("losses", 0), p.optLong("quarantine_at", 0), now);
+        int losses = Math.min(3, previous + 1);
+        p.put("losses", losses);
+        if (losses >= 3) p.put("quarantine_at", now);
+        else p.remove("quarantine_at");
+      }
     }
     saveRanking(r);
   }
   private int next(String id) throws Exception {
-    for (int i = 0; i < IDS.length; i++)
-      if (IDS[i].equals(id))
-        return policy().after(i);
+    // Keep the just-quarantined route in this order to find its successor.
+    for (int i = 0; i < IDS.length; i++) if (IDS[i].equals(id))
+      return ConnectionCandidates.after(candidates(i), i);
     return -1;
   }
   private static final ScheduledExecutorService httpDeadlines =
@@ -821,6 +927,7 @@ public class Engine extends Service {
   }
   @Override
   public void onDestroy() {
+    connectionGuard.cancel();
     if (instance == this) {
       instance = null;
       running = false;
@@ -828,6 +935,7 @@ public class Engine extends Service {
       diagnosing = false;
     }
     cancel = true;
+    recovery.stop();
     handler.removeCallbacksAndMessages(null);
     worker.shutdownNow();
     try {

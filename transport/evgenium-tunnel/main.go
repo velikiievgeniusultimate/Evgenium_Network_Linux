@@ -205,7 +205,9 @@ func writeFrames(ctx context.Context, c net.Conn, q <-chan packet, control <-cha
 		if p.kind == dataFrame {
 			age := time.Since(p.at)
 			maximum(&stats.maxQueueUS, uint64(age.Microseconds()))
-			if age > o.maxAge {
+			// The carrier cannot know whether an opaque IPsec/WireGuard datagram
+			// is obsolete. Keep live-session FIFO by default; age expiry is opt-in.
+			if o.maxAge > 0 && age > o.maxAge {
 				stats.staleDrop.Add(1)
 				return nil
 			}
@@ -451,10 +453,10 @@ func main() {
 	flag.IntVar(&o.queue, "queue", 1024, "bounded UDP queue, packets")
 	flag.IntVar(&o.buffer, "udp-buffer", 4*1024*1024, "socket buffer bytes")
 	flag.IntVar(&o.maxSessions, "max-sessions", 8, "maximum concurrent server sessions including handshakes")
-	flag.DurationVar(&o.maxAge, "max-age", 500*time.Millisecond, "discard obsolete queued datagrams")
+	flag.DurationVar(&o.maxAge, "max-age", 0, "optional queued datagram expiry; 0 preserves live-session FIFO")
 	flag.Float64Var(&o.pace, "pace-mbps", 0, "optional local UDP delivery pacing (0 disables)")
 	flag.Parse()
-	if (o.tcpSendBuffer != 0 && (o.tcpSendBuffer < 4096 || o.tcpSendBuffer > 4*1024*1024)) || (o.mode != "server" && o.mode != "client") || o.batch < 1 || o.batch > 32 || o.queue < 1 || o.queue > 4096 || o.buffer < 4096 || o.buffer > 8*1024*1024 || o.maxSessions < 1 || o.maxSessions > 32 || o.maxAge < time.Millisecond || o.maxAge > 5*time.Second || math.IsNaN(o.pace) || math.IsInf(o.pace, 0) || o.pace < 0 || o.pace > 10000 {
+	if (o.tcpSendBuffer != 0 && (o.tcpSendBuffer < 4096 || o.tcpSendBuffer > 4*1024*1024)) || (o.mode != "server" && o.mode != "client") || o.batch < 1 || o.batch > 32 || o.queue < 1 || o.queue > 4096 || o.buffer < 4096 || o.buffer > 8*1024*1024 || o.maxSessions < 1 || o.maxSessions > 32 || o.maxAge < 0 || o.maxAge > 5*time.Second || math.IsNaN(o.pace) || math.IsInf(o.pace, 0) || o.pace < 0 || o.pace > 10000 {
 		log.Fatal("invalid_options")
 	}
 	cfg, e := tlsConfig(o)
