@@ -9,7 +9,11 @@ if (!(Is-Admin)) { throw 'Hosted E2E requires its administrator account' }
 if (Get-Service -Name $script:Service -ErrorAction SilentlyContinue) { throw 'Existing Evgenium tunnel: test refused' }
 $taskName='Evgenium-CI-Emergency-Disconnect'
 $working=Join-Path ([IO.Path]::GetTempPath()) ('evgenium-e2e-'+[Guid]::NewGuid().ToString('N'))
-$script:AppRoot=$working; $script:Data=Join-Path $working 'private'; $script:StatePath=Join-Path $script:Data 'state.json'
+$originalLocalAppData=$env:LOCALAPPDATA
+$env:LOCALAPPDATA=$working
+$script:AppRoot=Join-Path $working 'EvgeniumNetwork'; $script:Data=Join-Path $script:AppRoot 'private'; $script:StatePath=Join-Path $script:Data 'state.json'
+$client=Join-Path (Join-Path (Join-Path $env:RUNNER_TEMP 'evgenium-windows') ('Evgenium-Windows-'+$script:Version+'-x64')) 'EvgeniumCLI.exe'
+if (!(Test-Path -LiteralPath $client)) { throw 'Packaged Windows CLI was not found' }
 $beforeDns=@(Get-DnsClientServerAddress | Where-Object { $_.ServerAddresses.Count } | ForEach-Object { ($_.InterfaceIndex.ToString()+':'+$_.AddressFamily+':'+($_.ServerAddresses -join ',')) } | Sort-Object)
 $beforeRoutes=@(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | ForEach-Object { $_.InterfaceIndex.ToString()+':'+$_.NextHop+':'+$_.RouteMetric } | Sort-Object)
 $armed=$false; $confirmedOff=$false
@@ -24,9 +28,12 @@ try {
     $null=Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -User 'SYSTEM' -RunLevel Highest -Force
     $armed=$true
     Write-Output 'Independent SYSTEM rollback armed for 180 seconds (own Evgenium tunnel only).'
-    $result=Connect-Vpn
+    $connected=Start-Process -FilePath $client -ArgumentList '--command','on' -PassThru -Wait -NoNewWindow
+    if ($connected.ExitCode -ne 0) { throw 'Packaged Windows CLI on failed' }
     if (!(Tunnel-Running) -or !(Validate-Connection)) { throw 'Real Windows full tunnel did not confirm Estonia' }
-    Write-Output 'Real Windows data plane: Estonia exit 38.180.164.67, HTTPS and Discord/DNS PASS.'
+    Write-Output 'Packaged Windows EXE data plane: Estonia exit 38.180.164.67, HTTPS and Discord/DNS PASS.'
+    $disconnected=Start-Process -FilePath $client -ArgumentList '--command','off' -PassThru -Wait -NoNewWindow
+    if ($disconnected.ExitCode -ne 0) { throw 'Packaged Windows CLI off failed' }
 } finally {
     Remove-Item Env:EVG_WINDOWS_E2E_TOKEN -ErrorAction SilentlyContinue
     try {
@@ -37,6 +44,7 @@ try {
         # Never disarm the independent safety net while the tunnel may still exist.
         if ($armed -and $confirmedOff) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false }
         if ($confirmedOff -and (Test-Path -LiteralPath $working)) { Remove-Item -LiteralPath $working -Recurse -Force }
+        $env:LOCALAPPDATA=$originalLocalAppData
     }
 }
 Start-Sleep -Seconds 2

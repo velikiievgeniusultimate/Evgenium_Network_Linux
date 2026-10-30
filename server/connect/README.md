@@ -122,3 +122,10 @@ Upstream source (pinned locally, no runtime download):
 ```text
 https://github.com/WireGuard/wireguard-tools/tree/a998407747005ea7e4e0258d96f105c97241e1d3/contrib/keygen-html
 ```
+
+Downloaded browser profiles assign a deterministic private IPv6 address as well
+as IPv4 to the client adapter, and capture the IPv6 default route. This address
+is local to the VPN interface; it does not provide an IPv6 Internet exit. The
+server only authorizes the peer's IPv4 source and blocks forwarded IPv6. Native
+clients retain the original `address` field for protocol compatibility; browser
+profiles use the additional validated `addresses` list.

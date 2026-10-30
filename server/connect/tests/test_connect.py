@@ -50,6 +50,7 @@ class EnrollmentPortalTests(unittest.TestCase):
         response = self.post()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json['profile']['device_name'], 'Устройство-1')
+        self.assertEqual(response.json['profile']['addresses'], ['10.78.0.2/32', 'fd78:6576:6765::2/128'])
         self.assertNotIn('private_key', response.json['profile'])
         self.assertNotIn(TOKEN, response.text)
         self.assertEqual(self.calls, [dict(operation='wireguard-enroll', **self.body)])
@@ -193,7 +194,7 @@ const context={Uint8Array,Blob,console,
   if(attempt===1)throw Error('temporary network interruption');
   if(rejectNext){rejectNext=false;return {ok:false,json:async()=>({error:'token_invalid'})};}
   return {ok:true,json:async()=>({ok:true,profile:{device:request.device,device_name:'Мой iPhone',
-   address:'10.78.0.2/32',dns:['1.1.1.1'],mtu:1280,public_key:Buffer.alloc(32,3).toString('base64'),
+   address:'10.78.0.2/32',addresses:['10.78.0.2/32','fd78:6576:6765::2/128'],dns:['1.1.1.1'],mtu:1280,public_key:Buffer.alloc(32,3).toString('base64'),
    allowed_ips:['0.0.0.0/0','::/0'],endpoint:'195.209.211.163:51820'}})};
  }};
 vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
@@ -213,6 +214,7 @@ vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
  const text=await blob.text();
  assert(text.includes('PrivateKey = '+keypair.privateKey));
  assert(text.includes('AllowedIPs = 0.0.0.0/0, ::/0'));
+ assert(text.includes('Address = 10.78.0.2/32, fd78:6576:6765::2/128'));
  assert(text.includes('PersistentKeepalive = 25'));
  assert(/^EVG-[a-f0-9]{8}\.conf$/.test(download.download));
  elements['change-token'].handlers.click();

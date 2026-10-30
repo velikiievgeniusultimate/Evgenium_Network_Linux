@@ -64,7 +64,9 @@ def safe_profile(result, device, endpoint):
         raise ValueError('invalid_profile')
     return dict(schema=1, device=device, account=str(p.get('account', ''))[:64],
                 device_name=name, device_number=p.get('device_number'), public_key=p['public_key'],
-                endpoint=endpoint, address=str(address), dns=dns, mtu=p['mtu'],
+                endpoint=endpoint, address=str(address),
+                addresses=[str(address), 'fd78:6576:6765::' + format(int(address.ip) & 255, 'x') + '/128'],
+                dns=dns, mtu=p['mtu'],
                 allowed_ips=['0.0.0.0/0', '::/0'])
 
 

@@ -118,3 +118,10 @@ and HTTP reachable; this is not a successful CDN download test). Revoking only
 the disposable device blocked its subsequent Internet request. IPv6 was blocked,
 and StarFive default routes, rules and DNS matched the original values after
 cleanup. Real iPhone import/activation is still untested.
+
+Downloaded browser profiles assign a deterministic private IPv6 address as well
+as IPv4 to the client adapter, and capture the IPv6 default route. This address
+is local to the VPN interface; it does not provide an IPv6 Internet exit. The
+server only authorizes the peer's IPv4 source and blocks forwarded IPv6. Native
+clients retain the original `address` field for protocol compatibility; browser
+profiles use the additional validated `addresses` list.

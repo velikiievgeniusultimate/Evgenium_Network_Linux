@@ -23,7 +23,7 @@
     result.hidden = true;
   }
   function configuration(p, secret) {
-    return '[Interface]\nPrivateKey = ' + secret + '\nAddress = ' + p.address +
+    return '[Interface]\nPrivateKey = ' + secret + '\nAddress = ' + p.addresses.join(', ') +
       '\nDNS = ' + p.dns.join(', ') + '\nMTU = ' + p.mtu +
       '\n\n[Peer]\nPublicKey = ' + p.public_key + '\nAllowedIPs = ' + p.allowed_ips.join(', ') +
       '\nEndpoint = ' + p.endpoint + '\nPersistentKeepalive = 25\n';

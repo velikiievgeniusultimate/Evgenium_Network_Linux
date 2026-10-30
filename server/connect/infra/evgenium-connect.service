@@ -1,12 +1,12 @@
 [Unit]
 Description=Evgenium public device enrollment on HSVDS
 After=evgenium-wireguard-issuer.service
-Requires=evgenium-wireguard-issuer.service
+Wants=evgenium-wireguard-issuer.service
 [Service]
 User=evg-connect
 Group=evg-portal
 WorkingDirectory=/opt/evgenium-connect
-ExecStart=/usr/bin/python3 -m gunicorn --bind 127.0.0.1:9082 --workers 2 --threads 2 --timeout 30 --limit-request-line 2048 --limit-request-field_size 4096 wsgi:app
+ExecStart=/opt/evgenium-connect/venv/bin/python -m gunicorn --bind 127.0.0.1:9082 --workers 2 --threads 2 --timeout 30 --limit-request-line 2048 --limit-request-field_size 4096 wsgi:app
 Environment=EVG_CONNECT_CONFIG=/etc/evgenium-connect/config.json
 StateDirectory=evgenium-connect
 StateDirectoryMode=0700
