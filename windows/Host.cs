@@ -23,7 +23,7 @@ internal static class Host {
             using (var ps = PowerShell.Create()) {
                 ps.AddScript(reader.ReadToEnd()).AddParameter("Command", command).AddParameter("ExpectedSid", expectedSid).AddParameter("ExecutableDirectory", AppDomain.CurrentDomain.BaseDirectory);
                 foreach (var item in ps.Invoke()) if (item != null) Console.WriteLine(item.ToString());
-                if (ps.HadErrors) throw new Exception("Evgenium could not complete the operation.");
+                if (ps.InvocationStateInfo.State == PSInvocationState.Failed) throw new Exception("Evgenium could not complete the operation.");
                 var result = ps.Runspace.SessionStateProxy.GetVariable("EvgeniumExitCode");
                 return result == null ? 0 : Convert.ToInt32(result);
             }
