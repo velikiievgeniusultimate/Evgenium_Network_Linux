@@ -979,7 +979,7 @@ WantedBy=multi-user.target
 """)
     command(['systemctl', 'daemon-reload'])
     command(['systemctl', 'enable', recovery])
-    if repair:command(['systemctl','reset-failed',UNIT],check=False)
+    command(['systemctl','reset-failed',UNIT],check=False)
     stage('starting' , 'Готовлю подключение в Эстонию.', 2, active=False, retry=0, error_code='')
     command(['systemctl', 'restart' if repair else 'start', UNIT])
     print('VPN запускается.',flush=True)
@@ -1131,7 +1131,10 @@ def worker():
         identity,_=enroll()
         sync_device_name()
         cleanup()
-        rebuild=(ROOT/'recalibrate').exists() or not rank.load()
+        loaded=rank.load()
+        rebuild=(ROOT/'recalibrate').exists()
+        if not rebuild and (not loaded or not rank.candidates()):
+            rank.bootstrap()
         if rebuild:
             measurements={}
             for i,candidate in enumerate(CANDIDATES):

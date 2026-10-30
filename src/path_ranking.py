@@ -33,6 +33,11 @@ class Ranking:
              'order':sorted(self.ids,key=lambda x:entries[x]['score'],reverse=True)}
   self.save()
  def candidates(self):return [x for x in self.data['order'] if self.data['entries'][x]['losses']<3]
+ def bootstrap(self):
+  # No synthetic speed/health result: try the RU ingress first, then fallbacks.
+  order=sorted(self.ids,key=lambda identity:identity!='ru-udp')
+  self.data={'schema':1,'created':int(time.time()),'entries':{identity:{'score':0,'losses':0} for identity in self.ids},'order':order}
+  self.save()
  def lose(self,identity,reason):
   e=self.data['entries'][identity];e['losses']=min(3,e['losses']+1);e['last_failure']=int(time.time());e['reason']=reason
   self.save()

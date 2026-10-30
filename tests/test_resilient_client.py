@@ -12,6 +12,17 @@ class Ranking(unittest.TestCase):
   self.m={'ru-udp':{'ok':True,'download_mbps':100,'upload_mbps':10},'ee-udp':{'ok':True,'download_mbps':70,'upload_mbps':70},'ee-tls':{'ok':False}}
   self.r.build(self.m)
  def test_bidirectional_score(self):self.assertEqual(self.r.candidates()[0],'ee-udp')
+ def test_bootstrap_tries_ru_without_inventing_measurements(self):
+  self.r.bootstrap()
+  self.assertEqual(self.r.candidates(),['ru-udp','ee-udp','ee-tls'])
+  for entry in self.r.data['entries'].values():
+   self.assertEqual(entry,{'score':0,'losses':0})
+  self.assertTrue(r.Ranking(self.r.path,self.r.ids).load())
+ def test_bootstrap_recovers_exhausted_routes_without_changing_ids(self):
+  for identity in self.r.ids:
+   for _ in range(3):self.r.lose(identity,'connection_failed')
+  self.assertEqual(self.r.candidates(),[])
+  self.r.bootstrap();self.assertEqual(self.r.candidates()[0],'ru-udp')
  def test_losses_persist_and_only_repair_resets(self):
   for _ in range(3):self.r.lose('ee-udp','path_health_failed')
   fresh=r.Ranking(self.r.path,self.r.ids);self.assertTrue(fresh.load())
