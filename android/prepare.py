@@ -11,7 +11,7 @@ for path in (root/'overlay').rglob('*'):
  if path.is_file():target=main/path.relative_to(root/'overlay');target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(path,target)
 for path in (root/'tests').rglob('*.java'):
  target=app/'src/test/java'/path.relative_to(root/'tests');target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(path,target)
-f=app/'build.gradle';s=original(f).replace('applicationId "org.strongswan.android"','applicationId "'+package+'"').replace('minSdkVersion 21','minSdkVersion 26').replace('versionCode 96','versionCode 17').replace('versionName "2.6.2"','versionName "0.2.6-beta"');abis=os.environ.get('EVG_ANDROID_ABIS','arm64-v8a armeabi-v7a x86_64').split();assert set(abis)<= {'arm64-v8a','armeabi-v7a','x86_64'};s=s.replace("arguments '-j' + Runtime.runtime.availableProcessors()","arguments '-j4'\n                abiFilters "+', '.join(repr(x) for x in abis));s=s.replace("dependencies {", "dependencies {\n    implementation 'org.conscrypt:conscrypt-android:2.7.0'")
+f=app/'build.gradle';s=original(f).replace('applicationId "org.strongswan.android"','applicationId "'+package+'"').replace('minSdkVersion 21','minSdkVersion 26').replace('versionCode 96','versionCode 18').replace('versionName "2.6.2"','versionName "0.2.7-beta"');abis=os.environ.get('EVG_ANDROID_ABIS','arm64-v8a armeabi-v7a x86_64').split();assert set(abis)<= {'arm64-v8a','armeabi-v7a','x86_64'};s=s.replace("arguments '-j' + Runtime.runtime.availableProcessors()","arguments '-j4'\n                abiFilters "+', '.join(repr(x) for x in abis));s=s.replace("dependencies {", "dependencies {\n    implementation 'org.conscrypt:conscrypt-android:2.7.0'")
 s=s.replace('defaultConfig {', 'defaultConfig {\n        ndk { abiFilters '+', '.join(repr(x) for x in abis)+' }', 1)
 f.write_text(s)
 f=main/'jni/Android.mk';f.write_text(original(f).replace('-DHAVE_STDBOOL_H', '-DHAVE_STDBOOL_H -DHAVE_SIGWAITINFO'))
@@ -117,4 +117,4 @@ generated=src.parent/'strongswan-6.0.3'
 for name in ('Android.common.mk','src/libstrongswan/crypto/proposal/proposal_keywords_static.c','src/libstrongswan/crypto/proposal/proposal_keywords_static.h','src/libstrongswan/asn1/oid.c','src/libstrongswan/asn1/oid.h','src/libstrongswan/settings/settings_parser.c','src/libstrongswan/settings/settings_parser.h','src/libstrongswan/settings/settings_lexer.c','src/libstrongswan/settings/settings_lexer.h'):
  source=generated/name
  if source.exists():shutil.copyfile(source,src/name)
-print('Prepared Evgenium Android 0.2.6 beta')
+print('Prepared Evgenium Android 0.2.7 beta')

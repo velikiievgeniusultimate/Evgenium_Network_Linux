@@ -15,7 +15,19 @@ final class ConnectionCandidates {
     for (int i = 0; i + 1 < order.length; i++) if (order[i] == current) return order[i + 1];
     return -1;
   }
-  static int[] order(double[] scores, int[] losses, int lastWorking) {
+  /** Without confirmed stability, an old speed score must not delay the safe bootstrap. */
+  static int initial(int[] order, int lastStable) {
+    for (int route : order) if (route == lastStable) return route;
+    for (int route : order) if (route == 0) return route;
+    return order.length == 0 ? -1 : order[0];
+  }
+  static int[] attemptOrder(int[] order, int first, int exclude) {
+    List<Integer> result = new ArrayList<>();
+    for (int route : order) if (route == first && route != exclude) result.add(route);
+    for (int route : order) if (route != exclude && !result.contains(route)) result.add(route);
+    return result.stream().mapToInt(Integer::intValue).toArray();
+  }
+  static int[] order(double[] scores, int[] losses, int lastStable) {
     if (scores.length != 5 || losses.length != 5) throw new IllegalArgumentException("routes");
     List<Integer> measured = new ArrayList<>(), fallback = new ArrayList<>();
     for (int route : DEFAULT_ORDER) if (losses[route] < 3) {
@@ -24,9 +36,9 @@ final class ConnectionCandidates {
     }
     measured.sort((a, b) -> Double.compare(scores[b], scores[a]));
     measured.addAll(fallback);
-    // A recent actual connection is more useful at startup than an old speed
+    // A confirmed stable connection is more useful at startup than an old speed
     // result. Explicit remeasurement drops this hint before picking its winner.
-    if (measured.remove(Integer.valueOf(lastWorking))) measured.add(0, lastWorking);
+    if (measured.remove(Integer.valueOf(lastStable))) measured.add(0, lastStable);
     return measured.stream().mapToInt(Integer::intValue).toArray();
   }
 }

@@ -48,13 +48,21 @@ public class Engine extends Service {
   private volatile boolean busy;
   private final RecoveryPolicy recovery = new RecoveryPolicy();
   private final ConnectionGuard connectionGuard = new ConnectionGuard();
+  private final StableRoutePolicy stableRoute = new StableRoutePolicy();
   private volatile Network retryNetwork;
   private int wantedRoute = -1;
+  private final VpnStateService.VpnStateListener nativeStateListener = () -> {
+    VpnStateService v = vpn;
+    if (v == null || v.getState() != VpnStateService.State.CONNECTED)
+      stableRoute.reset();
+  };
   private final ServiceConnection connection = new ServiceConnection() {
     public void onServiceConnected(ComponentName n, IBinder b) {
       vpn = ((VpnStateService.LocalBinder) b).getService();
+      vpn.registerListener(nativeStateListener);
     }
     public void onServiceDisconnected(ComponentName n) {
+      stableRoute.reset();
       vpn = null;
     }
   };
@@ -62,6 +70,11 @@ public class Engine extends Service {
   public void onCreate() {
     super.onCreate();
     instance = this;
+    // Old hints were written after a single exit probe; never promote them by migration.
+    android.content.SharedPreferences.Editor migration = getSharedPreferences("evgenium", 0).edit();
+    for (String key : getSharedPreferences("evgenium", 0).getAll().keySet())
+      if (key.startsWith("last-working-")) migration.remove(key);
+    migration.apply();
     bindService(new Intent(this, VpnStateService.class), connection, BIND_AUTO_CREATE);
     NotificationManager nm = getSystemService(NotificationManager.class);
     nm.createNotificationChannel(new NotificationChannel(
@@ -106,6 +119,7 @@ public class Engine extends Service {
     int route = i.getIntExtra("route", -1);
     if ("stop".equals(cmd)) {
       connectionGuard.cancel();
+      stableRoute.reset();
       getSharedPreferences("evgenium", 0).edit().putBoolean("connection-wanted", false).commit();
       running = false;
       verified = false;
@@ -139,6 +153,7 @@ public class Engine extends Service {
     consecutive = 0;
     long mine = ++generation;
     connectionGuard.activate(mine);
+    stableRoute.reset();
     worker.execute(() -> {
       final String reportRun = DiagnosticFlow.isDiagnostic(cmd) ? UUID.randomUUID().toString() : "";
       diagnosticRun = reportRun;
@@ -201,6 +216,7 @@ public class Engine extends Service {
     if (cancel || instance != this || mine != generation)
       return;
     long now = SystemClock.elapsedRealtime();
+    connectionGuard.run(mine, () -> stableRoute.observe(stabilitySession(mine), now));
     if (recovery.pending()) {
       Network available = NetworkAccess.select(this);
       if (!Objects.equals(retryNetwork, available)) {
@@ -239,6 +255,7 @@ public class Engine extends Service {
         }
         if (TunnelCarrier.offlineMillis() >= 3000)
           throw new IOException("carrier_unavailable");
+        final StableRoutePolicy.Session healthSession = stabilitySession(mine);
         if (vpn != null && vpn.getState() == VpnStateService.State.CONNECTED
             && Credentials.EE.equals(ExitProbe.get(this))) {
           checkNetwork();
@@ -255,6 +272,9 @@ public class Engine extends Service {
           if (!connectionGuard.run(mine, () -> {
             if (cancel || instance != this) return;
             verified = true;
+            if (stableRoute.healthy(healthSession, stabilitySession(mine), SystemClock.elapsedRealtime()))
+              getSharedPreferences("evgenium", 0).edit()
+                  .putInt("last-stable-" + operationKind, healthSession.route).apply();
             set("Подключено: " + label(current));
           })) throw new InterruptedException();
           return;
@@ -269,6 +289,7 @@ public class Engine extends Service {
           scheduleRecovery("Ожидаю доступную сеть");
           return;
         }
+        forgetStable(current);
         verified = false;
         record
         ("health_failed", current, new JSONObject(), safe(e));
@@ -284,7 +305,7 @@ public class Engine extends Service {
             record
             ("failover", current, new JSONObject(), safe(e));
             if (next >= 0)
-              connectRanked(next);
+              connectRanked(next, routeIndex(current));
             else
               noRoutes();
           } catch (Exception fail) {
@@ -318,6 +339,7 @@ public class Engine extends Service {
     if (cancel || instance != this)
       throw new InterruptedException();
     verified = false;
+    stableRoute.reset();
     checkNetwork();
     if (route < 0 || route >= IDS.length)
       throw new IOException("no_available_route");
@@ -394,6 +416,7 @@ public class Engine extends Service {
           connectedNetwork = operationNetwork;
           recovery.connected();
           nextTransferAt = 0;
+          stableRoute.observe(stabilitySession(mine), SystemClock.elapsedRealtime());
           verified = true;
           set("Подключено: " + LABELS[route]);
         })) throw new InterruptedException();
@@ -413,6 +436,7 @@ public class Engine extends Service {
   private void scheduleRecovery(String reason) {
     if (cancel || instance != this) return;
     verified = false;
+    stableRoute.reset();
     retryNetwork = NetworkAccess.select(this);
     long delay = recovery.failed(SystemClock.elapsedRealtime());
     if (delay >= 0) set(reason.replaceAll("[.\\s]+$", "") + ". Повторю автоматически через " + (delay / 1000) + " с.");
@@ -424,20 +448,44 @@ public class Engine extends Service {
       scheduleRecovery(wantedRoute >= 0 ? "Выбранный маршрут пока недоступен" : "Ищу рабочий маршрут");
     });
   }
-  private void rememberWorking(int route) {
+  private StableRoutePolicy.Session stabilitySession(long mine) {
+    VpnStateService v = vpn;
+    VpnProfile activeProfile = v == null ? null : v.getProfile();
+    if (cancel || diagnosing || instance != this || mine != generation || recovery.pending()
+        || v == null || v.getState() != VpnStateService.State.CONNECTED || activeProfile == null
+        || connectedNetwork == null || !Objects.equals(connectedNetwork, NetworkAccess.select(this))) return null;
+    int route = routeIndex(current);
+    if (route < 0) return null;
+    UUID expected = UUID.nameUUIDFromBytes(("evgenium-android-" + current).getBytes(StandardCharsets.UTF_8));
+    UUID profile = activeProfile.getUUID();
+    if (!expected.equals(profile)) return null;
+    String carrier = TunnelCarrier.stabilityToken();
+    if (carrier == null || (route >= 2 && carrier.isEmpty())) return null;
+    return new StableRoutePolicy.Session(mine, v.getConnectionID(), route,
+        profile.toString(), connectedNetwork, carrier);
+  }
+  private static int routeIndex(String id) {
+    for (int i=0; i<IDS.length; i++) if (IDS[i].equals(id)) return i;
+    return -1;
+  }
+  private void forgetStable(String id) {
+    stableRoute.reset();
     connectionGuard.run(generation, () -> {
       if (cancel || instance != this) return;
-      getSharedPreferences("evgenium", 0).edit().putInt("last-working-" + operationKind, route).apply();
+      int saved = getSharedPreferences("evgenium", 0).getInt("last-stable-" + operationKind, -1);
+      if (saved >= 0 && saved < IDS.length && IDS[saved].equals(id))
+        getSharedPreferences("evgenium", 0).edit().remove("last-stable-" + operationKind).apply();
     });
   }
   private void connectWanted() throws Exception { connectWanted(false); }
   private void connectWanted(boolean explicitOrNewNetwork) throws Exception {
     attemptedNetwork = operationNetwork;
     if (wantedRoute >= 0) {
-      try { connectRoute(wantedRoute); rememberWorking(wantedRoute); }
+      try { connectRoute(wantedRoute); }
       catch (Exception error) {
         if (cancel) throw error;
         checkNetwork();
+        forgetStable(IDS[wantedRoute]);
         record("candidate_failed", IDS[wantedRoute], new JSONObject(), safe(error));
         noRoutes();
       }
@@ -445,13 +493,17 @@ public class Engine extends Service {
     }
     ensureRanking();
     if (explicitOrNewNetwork && best() < 0) releaseQuarantine();
-    connectRanked(best());
+    int stable = getSharedPreferences("evgenium", 0).getInt("last-stable-" + operationKind, -1);
+    connectRanked(ConnectionCandidates.initial(candidates(), stable));
   }
-  private void connectRanked(int route) throws Exception {
-    for (int attempts = 0; route >= 0 && attempts < IDS.length && !cancel; attempts++) {
+  private void connectRanked(int route) throws Exception { connectRanked(route, -1); }
+  private void connectRanked(int first, int exclude) throws Exception {
+    // Freeze this attempt order. Recording a loss/removing the stable hint must
+    // not reorder the iterator and skip an untried fallback, or retry a failure.
+    for (int route : ConnectionCandidates.attemptOrder(candidates(), first, exclude)) {
+      if (cancel) throw new InterruptedException();
       try {
         connectRoute(route);
-        rememberWorking(route);
         return;
       } catch (Exception e) {
         if (cancel)
@@ -460,7 +512,6 @@ public class Engine extends Service {
         lose(IDS[route]);
         record
         ("candidate_failed", IDS[route], new JSONObject(), safe(e));
-        route = next(IDS[route]);
       }
     }
     if (!cancel)
@@ -532,8 +583,8 @@ public class Engine extends Service {
       ranking.put("paths", results);
       saveRanking(ranking);
       // Explicit measurement should select its new winner, not the old hint;
-      // individual measurement connections never update last-working.
-      getSharedPreferences("evgenium", 0).edit().remove("last-working-" + operationKind).apply();
+      // individual measurement connections never update last-stable.
+      getSharedPreferences("evgenium", 0).edit().remove("last-stable-" + operationKind).apply();
       boolean successful = false;
       for (int i = 0; i < results.length(); i++)
         successful |= results.getJSONObject(i).optDouble("score", 0) > 0;
@@ -814,13 +865,14 @@ public class Engine extends Service {
       }
     }
     return ConnectionCandidates.order(scores, losses,
-        getSharedPreferences("evgenium", 0).getInt("last-working-" + operationKind, -1));
+        getSharedPreferences("evgenium", 0).getInt("last-stable-" + operationKind, -1));
   }
   private int best() {
     try { int[] order = candidates(); return order.length == 0 ? -1 : order[0]; }
     catch (Exception error) { return -1; }
   }
   private void lose(String id) throws Exception {
+    forgetStable(id);
     ensureRanking();
     JSONObject r = ranking();
     JSONArray paths = r.getJSONArray("paths");
@@ -838,9 +890,7 @@ public class Engine extends Service {
     saveRanking(r);
   }
   private int next(String id) throws Exception {
-    // Keep the just-quarantined route in this order to find its successor.
-    for (int i = 0; i < IDS.length; i++) if (IDS[i].equals(id))
-      return ConnectionCandidates.after(candidates(i), i);
+    for (int route : candidates()) if (!IDS[route].equals(id)) return route;
     return -1;
   }
   private static final ScheduledExecutorService httpDeadlines =
@@ -928,6 +978,7 @@ public class Engine extends Service {
   @Override
   public void onDestroy() {
     connectionGuard.cancel();
+    stableRoute.reset();
     if (instance == this) {
       instance = null;
       running = false;
@@ -939,6 +990,7 @@ public class Engine extends Service {
     handler.removeCallbacksAndMessages(null);
     worker.shutdownNow();
     try {
+      if (vpn != null) vpn.unregisterListener(nativeStateListener);
       unbindService(connection);
     } catch (Exception ignored) {
     }

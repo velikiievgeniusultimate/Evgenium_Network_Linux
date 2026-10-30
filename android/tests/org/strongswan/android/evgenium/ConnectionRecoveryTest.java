@@ -6,7 +6,7 @@ public class ConnectionRecoveryTest {
   @Test public void firstInstallCanTryRoutesWithoutAnySpeedScores() {
     assertArrayEquals(new int[]{0,4,3,1,2}, ConnectionCandidates.order(new double[5], new int[5], -1));
   }
-  @Test public void lastWorkingPrecedesStaleSpeedScores() {
+  @Test public void lastStablePrecedesStaleSpeedScores() {
     assertEquals(1, ConnectionCandidates.order(new double[5], new int[5], 1)[0]);
     assertEquals(1, ConnectionCandidates.order(new double[]{0,0,0,20,5}, new int[5], 1)[0]);
     assertEquals(3, ConnectionCandidates.order(new double[]{0,0,0,20,5}, new int[5], -1)[0]);
@@ -58,5 +58,28 @@ public class ConnectionRecoveryTest {
   @Test public void successResetsTheOutageBackoff() {
     RecoveryPolicy p = new RecoveryPolicy(); p.start(); p.failed(0); p.failed(5000);
     p.connected(); assertFalse(p.pending()); assertEquals(5000, p.failed(20000));
+  }
+  @Test public void newNetworkWithoutStableCacheTriesRuBeforeStaleDirectScores() {
+    int[] order=ConnectionCandidates.order(new double[]{1,100,90,80,10},new int[5],-1);
+    assertEquals(0,ConnectionCandidates.initial(order,-1));
+    assertEquals(4,ConnectionCandidates.initial(order,4));
+    // Explicit ranking still picks its measured winner; bootstrap applies only to connect.
+    assertEquals(1,order[0]);
+  }
+  @Test public void failedStableRouteDoesNotSkipCandidatesWhenHintIsRemoved() {
+    int[] order=ConnectionCandidates.order(new double[]{1,100,90,80,10},new int[5],4);
+    int[] attempts=ConnectionCandidates.attemptOrder(order,4,-1);
+    assertArrayEquals(new int[]{4,1,2,3,0},attempts);
+    // Removing preference/recording losses during the attempt cannot change this snapshot.
+    assertArrayEquals(new int[]{0,1,2,3,4},ConnectionCandidates.attemptOrder(
+        ConnectionCandidates.order(new double[]{1,100,90,80,10},new int[5],-1),0,-1));
+    assertArrayEquals(new int[]{0,1,2,3},ConnectionCandidates.attemptOrder(order,0,4));
+  }
+  @Test public void temporarilyQuarantinedRuIsNotForcedIntoBootstrap() {
+    int[] order=ConnectionCandidates.order(new double[5],new int[]{3,0,0,0,0},-1);
+    assertEquals(4,ConnectionCandidates.initial(order,-1));
+    assertArrayEquals(new int[]{4,3,1,2},ConnectionCandidates.attemptOrder(order,0,-1));
+    assertEquals(-1,ConnectionCandidates.initial(new int[0],-1));
+    assertEquals(0,ConnectionCandidates.attemptOrder(new int[0],-1,-1).length);
   }
 }

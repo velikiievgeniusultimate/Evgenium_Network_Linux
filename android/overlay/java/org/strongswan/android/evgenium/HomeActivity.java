@@ -605,9 +605,9 @@ public class HomeActivity extends Activity {
             .append("\n");
         if (r.optBoolean("provisional", false)) {
           out.append("Быстрое подключение: скорость ещё не измерялась.\n");
-          int last = getSharedPreferences("evgenium", 0).getInt("last-working-" + kind, -1);
+          int last = getSharedPreferences("evgenium", 0).getInt("last-stable-" + kind, -1);
           if (last >= 0 && last < Engine.LABELS.length)
-            out.append("Последний рабочий маршрут: ").append(Engine.LABELS[last]).append("\n");
+            out.append("Последний стабильный маршрут: ").append(Engine.LABELS[last]).append("\n");
           out.append("Подробные замеры доступны в полной диагностике.\n\n");
           continue;
         }

@@ -18,6 +18,15 @@ import javax.net.ssl.*;
  */
 public final class TunnelCarrier implements AutoCloseable {
   private static volatile TunnelCarrier active;
+  private static final AtomicLong instances = new AtomicLong();
+  private final long instanceNumber = instances.incrementAndGet();
+  /** Empty means direct UDP; null means an interrupted carrier session. */
+  static String stabilityToken() {
+    TunnelCarrier a = active;
+    if (a == null) return "";
+    if (a.closed || a.offlineSince != 0) return null;
+    return a.instanceNumber + ":" + a.reconnects;
+  }
   private static volatile long faultUntil;
   private static volatile long heartbeatFaultUntil;
   public static void debugHeartbeatFault(android.content.Context c) {
