@@ -1,0 +1,24 @@
+name: Windows client
+on:
+  push:
+    paths: ['windows/**', '.github/workflows/windows.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and test Windows x64 package
+        shell: powershell
+        run: |
+          & .\windows\test.ps1
+          & .\windows\build.ps1 -Output "$env:RUNNER_TEMP\evgenium-windows"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evgenium-windows-x64
+          path: |
+            ${{ runner.temp }}/evgenium-windows/*.zip
+            ${{ runner.temp }}/evgenium-windows/SHA256SUMS
+          if-no-files-found: error
