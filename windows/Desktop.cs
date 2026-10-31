@@ -135,7 +135,7 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
   if(page!=0||connectionTitle==null)return;
   connectionTitle.Text=connected?"Подключено через Эстонию":active?"Подключение и восстановление…":"VPN отключён";connectionTitle.Foreground=connected?BrushOf("#a6d8c2"):Main;toggle.Content=active||BoolOf(engine,"protected")?"Отключить":"Подключить";
   bool saved=BoolOf(snapshot,"has_token");ShowElement((UIElement)VisualTreeHelper.GetParent(deviceCard),saved);deviceName.Text=TextOf(snapshot,"device_name","Имя появится после ввода токена");ShowElement(deviceName,!editingName);ShowElement(nameInput,editingName);deviceSave.Content=editingName?"Сохранить":"Изменить имя";
-  if(!saved)TokenEditing=true;ShowElement(tokenInput,TokenEditing||!saved);ShowElement(tokenHint,saved&&!TokenEditing);tokenSave.Content=saved&&!TokenEditing?"Изменить":"Подтвердить";
+  if(!saved&&snapshot.ContainsKey("has_token"))TokenEditing=true;ShowElement(tokenInput,TokenEditing||!saved);ShowElement(tokenHint,saved&&!TokenEditing);tokenSave.Content=saved&&!TokenEditing?"Изменить":"Подтвердить";
   if(snapshot.ContainsKey("routes")){
    string selected=TextOf(policy,"route","auto");string key=selected+json.Serialize(snapshot["routes"]);
    if((string)route.Tag!=key){route.Items.Clear();route.Items.Add(new RouteItem{ID="auto",Label="Автоматически · рейтинг и восстановление"});foreach(var v in AsArray(snapshot["routes"])){var r=Map(v);route.Items.Add(new RouteItem{ID=TextOf(r,"id"),Label=TextOf(r,"label")});}for(int i=0;i<route.Items.Count;i++)if(((RouteItem)route.Items[i]).ID==selected)route.SelectedIndex=i;route.Tag=key;}

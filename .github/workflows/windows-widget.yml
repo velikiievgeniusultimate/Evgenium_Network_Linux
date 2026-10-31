@@ -17,12 +17,10 @@ jobs:
       - name: Compile provider and validate card state
         shell: powershell
         run: |
-          dotnet publish windows/widgets/EvgeniumWidget.csproj -c Release -r win-x64 --self-contained true -o "$env:RUNNER_TEMP\widget-prototype"
-          if($LASTEXITCODE -ne 0){throw 'Widget compilation failed'}
-          $p=Start-Process "$env:RUNNER_TEMP\widget-prototype\EvgeniumWidget.exe" -ArgumentList '--selftest' -Wait -PassThru
-          if($p.ExitCode -ne 0){throw 'Widget card self-test failed'}
-          Copy-Item windows/widgets/README.txt "$env:RUNNER_TEMP\widget-prototype"
+          & .\windows\widgets\package.ps1 -Output "$env:RUNNER_TEMP\widget-prototype"
       - uses: actions/upload-artifact@v4
         with:
           name: windows-widget-PROTOTYPE-not-for-installation
-          path: ${{ runner.temp }}/widget-prototype
+          path: |
+            ${{ runner.temp }}/widget-prototype/*.msix
+            ${{ runner.temp }}/widget-prototype/README.txt

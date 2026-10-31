@@ -17,6 +17,10 @@ $compiler=Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.ex
 $automation=[Management.Automation.PowerShell].Assembly.Location
 & $compiler '/nologo' '/codepage:65001' '/optimize+' '/platform:x64' '/target:winexe' ('/win32manifest:'+(Join-Path $root 'app.manifest')) ('/out:'+(Join-Path $package 'Evgenium.exe')) ('/reference:'+$automation) '/reference:System.Windows.Forms.dll' '/reference:System.Drawing.dll' '/reference:System.Web.Extensions.dll' '/reference:System.Xaml.dll' ('/reference:'+(Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\WPF\WindowsBase.dll')) ('/reference:'+(Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\WPF\PresentationCore.dll')) ('/reference:'+(Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\WPF\PresentationFramework.dll')) ('/win32icon:'+(Join-Path $root 'Assets\Evgenium.ico')) ('/resource:'+(Join-Path $root 'Assets\Evgenium.ico')+',Evgenium.Evgenium.ico') ('/resource:'+(Join-Path $root 'Assets\app-256.png')+',Evgenium.app-256.png') ('/resource:'+(Join-Path $root 'Desktop.xaml')+',Evgenium.Desktop.xaml') ('/resource:'+$bundle+',Evgenium.ps1') (Join-Path $root 'Host.cs') (Join-Path $root 'ProcessRunner.cs') (Join-Path $root 'Desktop.cs') $assembly
 if($LASTEXITCODE -ne 0){throw 'GUI compilation failed'}
+Add-Type -AssemblyName System.Drawing
+$icon=[Drawing.Icon]::ExtractAssociatedIcon((Join-Path $package 'Evgenium.exe'));$bitmap=$icon.ToBitmap()
+try{$accent=0;for($x=0;$x -lt $bitmap.Width;$x++){for($y=0;$y -lt $bitmap.Height;$y++){$c=$bitmap.GetPixel($x,$y);if($c.R -gt 200 -and $c.G -lt 160 -and $c.B -lt 180){$accent++}}};if($accent -lt 10){throw 'Executable lacks the drill icon'}}finally{$bitmap.Dispose();$icon.Dispose()}
+
 Push-Location (Join-Path $root 'engine')
 try {& go build -trimpath -ldflags ('-s -w -H=windowsgui -X main.version='+$version) -o (Join-Path $package 'EvgeniumEngine.exe') .;if($LASTEXITCODE -ne 0){throw 'Engine compilation failed'}} finally {Pop-Location}
 $cache=Join-Path $env:RUNNER_TEMP 'evgenium-xray-26.10.29.zip'
