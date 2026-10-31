@@ -85,6 +85,25 @@ try{
  $null=Resolve-DnsName github.com -Server 1.1.1.1 -DnsOnly -ErrorAction Stop
  Change-And-Wait 'remove' ([pscustomobject]@{category='dns';value='1.1.1.1'});Assert-Estonia
  Note 'Explicit direct DNS exception + protected resolver restore PASS.'
+ # Local DNS toggle must change its actual WFP behavior, without blocking
+ # unrelated loopback IPC or sending local queries to a public resolver.
+ $dnsSocket=New-Object Net.Sockets.UdpClient((New-Object Net.IPEndPoint([Net.IPAddress]::Loopback,53)))
+ $dnsSocket.Client.ReceiveTimeout=700
+ function Local-DNS-Probe {
+  $sender=New-Object Net.Sockets.UdpClient
+  try{try{$null=$sender.Send([byte[]](1,2,3,4),4,'127.0.0.1',53)}catch{}
+   $peer=New-Object Net.IPEndPoint([Net.IPAddress]::Any,0)
+   try{$packet=$dnsSocket.Receive([ref]$peer);return $packet.Length -eq 4}catch{return $false}
+  }finally{$sender.Close()}
+ }
+ try{
+  if(!(Local-DNS-Probe)){throw 'Default local DNS exception unavailable'}
+  Change-And-Wait 'base' ([pscustomobject]@{value='dns:stub';enabled=$false})
+  if(Local-DNS-Probe){throw 'Disabled local DNS base rule still bypassed VPN'}
+  Change-And-Wait 'base' ([pscustomobject]@{value='dns:stub';enabled=$true})
+  if(!(Local-DNS-Probe)){throw 'Re-enabled local DNS base rule unavailable'}
+  Assert-Estonia;Note 'Local DNS base toggle + restore PASS.'
+ }finally{$dnsSocket.Close()}
  # Test real alternate carriers and health-triggered fallback, not just scores.
  foreach($id in @('ru-tcp','ru-xhttp')){Change-And-Wait 'route' ([pscustomobject]@{value=$id});Assert-Estonia;Note ('Fixed route '+$id+' PASS.')}
  Change-And-Wait 'route' ([pscustomobject]@{value='auto'});Assert-Estonia
