@@ -190,7 +190,7 @@ func coreConfig(c Config, selected string, probeOnly bool) (map[string]any, erro
 	}
 	outbounds = append(outbounds, obj{"tag": "vpn", "protocol": "wireguard", "settings": obj{"secretKey": c.PrivateKey, "address": []string{c.Profile.Address}, "mtu": 1280, "noKernelTun": true, "peers": []any{obj{"endpoint": c.Profile.Endpoint, "publicKey": c.Profile.PublicKey, "allowedIPs": []string{"0.0.0.0/0", "::/0"}, "keepAlive": 25}}}, "streamSettings": obj{"sockopt": obj{"dialerProxy": "wg-bridge"}}}, obj{"tag": "wg-bridge", "protocol": "socks", "settings": obj{"servers": []any{obj{"address": "127.0.0.1", "port": 18560}}}, "streamSettings": obj{"sockopt": obj{"interface": loopbackName()}}})
 	selected = "vpn"
-	outbounds = append(outbounds, obj{"tag": "direct", "protocol": "freedom", "settings": obj{"domainStrategy": "UseIPv4"}}, obj{"tag": "dns-out", "protocol": "dns"}, obj{"tag": "block", "protocol": "blackhole"})
+	outbounds = append(outbounds, obj{"tag": "direct", "protocol": "freedom", "settings": obj{"finalRules": []any{obj{"action": "allow", "ip": []string{"0.0.0.0/0", "::/0"}}}}, "streamSettings": obj{"sockopt": obj{"domainStrategy": "UseIPv4"}}}, obj{"tag": "dns-out", "protocol": "dns"}, obj{"tag": "block", "protocol": "blackhole"})
 	if !probeOnly {
 		inbounds = append(inbounds, obj{"tag": "tun", "protocol": "tun", "settings": obj{"name": "EvgeniumTunnel", "mtu": 1280, "gateway": []string{"198.18.254.1/30", "fd78:6576:ff::1/126"}, "dns": []string{"198.18.254.2"}, "autoSystemRoutingTable": []string{"0.0.0.0/0", "::/0"}, "autoOutboundsInterface": "auto"}, "sniffing": obj{"enabled": true, "destOverride": []string{"http", "tls", "quic"}, "routeOnly": true}})
 	}
@@ -201,7 +201,7 @@ func coreConfig(c Config, selected string, probeOnly bool) (map[string]any, erro
 	}
 	rules = append(rules, obj{"type": "field", "port": "53", "outboundTag": "dns-out"})
 	if len(c.Policy.Applications) > 0 {
-		rules = append(rules, obj{"type": "field", "process": c.Policy.Applications, "inboundTag": []string{"tun"}, "outboundTag": "direct"})
+		rules = append(rules, obj{"type": "field", "process": routingApplications(c.Policy.Applications), "inboundTag": []string{"tun"}, "outboundTag": "direct"})
 	}
 	networks := []string{}
 	domains := []string{}
