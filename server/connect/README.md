@@ -51,6 +51,15 @@ This first WireGuard transport does not provide the Linux/Android tunnel ranking
 An operator that blocks WireGuard UDP can still prevent a VPN connection even
 when the public HTTPS enrollment page is reachable.
 
+The public page guides iPhone users through three steps: the official App Store
+app, a token-authorized local file download, then import and activation in
+WireGuard. It displays the actual download filename in the import instructions.
+Re-downloading uses the existing profile/key without another enrollment. A
+download click never claims the file was saved or the VPN is connected. Optional
+device naming and troubleshooting are collapsed; iCloud Drive and On My iPhone
+download locations are both explained. Browser layout checks do not substitute
+for testing Safari downloads and WireGuard import on a real iPhone.
+
 ## Native client API
 
 1. `GET /api/session` over HTTPS. Save the `__Host-evg_connect` cookie and JSON

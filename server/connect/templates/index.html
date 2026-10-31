@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Подключить устройство · Evgenium Network</title>
+  <title>VPN на iPhone · Evgenium Network</title>
   <link rel="stylesheet" href="/static/connect.css">
   <script defer src="/static/vendor/wireguard.js"></script>
   <script defer src="/static/connect.js"></script>
@@ -12,41 +12,72 @@
 <body>
 <main>
   <header><span class="mark" aria-hidden="true">E</span><span>EVGENIUM<span class="subbrand">NETWORK</span></span></header>
-  <section class="card">
+  <div class="intro">
     <p class="eyebrow">ВАША СЕТЬ. ВАШИ УСТРОЙСТВА.</p>
-    <h1>Подключить устройство</h1>
-    <p class="lead">Один токен для всех ваших устройств. Для каждого создаётся отдельный профиль.</p>
+    <h1>VPN на iPhone</h1>
+    <p class="lead">Всего три шага. Настроить нужно один раз — потом достаточно включить переключатель в WireGuard.</p>
+    <p class="notice">Откройте эту страницу <strong>в Safari на том iPhone, который подключаете</strong>. Из Telegram: меню браузера → «Открыть в Safari».</p>
+  </div>
+  <section class="card" aria-labelledby="install-title">
+    <p class="step">ШАГ 1 ИЗ 3</p>
+    <h2 id="install-title">Установите WireGuard</h2>
+    <p>Установите бесплатное приложение и вернитесь на эту страницу.</p>
+    <a class="primary app-link" href="https://apps.apple.com/app/wireguard/id1441195209" target="_blank" rel="noopener noreferrer">Установить из App Store <span aria-hidden="true">↗</span></a>
+    <p class="download-link"><a href="https://apps.apple.com/app/wireguard/id1441195209" target="_blank" rel="noopener noreferrer">https://apps.apple.com/app/wireguard/id1441195209</a></p>
+    <p class="hint">Разработчик: WireGuard Development Team. Если приложение уже есть, переходите к шагу 2.</p>
+  </section>
+  <section class="card" aria-labelledby="enroll-title">
+    <p class="step">ШАГ 2 ИЗ 3</p>
+    <h2 id="enroll-title">Получите файл подключения</h2>
     <form id="enroll-form">
-      <label for="token">Токен клиента</label>
+      <p>Вставьте токен, который вам выдал владелец сети. Это длинная строка, начинающаяся с <strong>EVN1-</strong>.</p>
+      <label for="token">Ваш токен</label>
       <div class="token-row">
         <input id="token" type="password" placeholder="Введите токен EVN1-…" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="128" required>
         <button class="secondary" id="token-toggle" type="button" aria-label="Показать токен" aria-pressed="false">Показать</button>
       </div>
-      <p class="hint">Токен выдаёт владелец сети. Не передавайте его другим людям.</p>
-      <label for="device-name">Имя устройства <span class="optional">необязательно</span></label>
-      <input id="device-name" type="text" placeholder="Например, мой iPhone" autocomplete="off" maxlength="64">
-      <p class="hint">Без имени сервер назначит «Устройство-1», «Устройство-2» и далее.</p>
-      <button class="primary" id="create-profile" type="submit">Создать профиль</button>
+      <p class="hint">Нет токена? Попросите его у владельца сети. Не передавайте свой токен другим людям.</p>
+      <details class="device-options"><summary>Назвать устройство <span class="optional">необязательно</span></summary>
+        <label for="device-name">Имя устройства</label>
+        <input id="device-name" type="text" placeholder="Например, мой iPhone" autocomplete="off" maxlength="64">
+        <p class="hint">Если оставить пустым, имя назначится автоматически.</p>
+      </details>
+      <button class="primary" id="create-profile" type="submit">Получить файл</button>
     </form>
     <p id="status" role="status" aria-live="polite"></p>
     <section id="result" hidden>
-      <div class="success-dot" aria-hidden="true"></div><h2>Профиль готов</h2>
+      <div class="success-dot" aria-hidden="true"></div><h3 id="result-title" tabindex="-1">Файл подключения готов</h3>
       <p id="profile-name"></p>
-      <button class="primary" id="download-profile" type="button">Скачать профиль .conf</button>
-      <button class="secondary" id="change-token" type="button">Изменить токен</button>
-      <p class="hint">Скачанный файл содержит секретный ключ. Не отправляйте его другим людям. После закрытия страницы повторно скачать этот же профиль здесь нельзя.</p>
+      <p class="filename">Ваш файл: <strong id="profile-filename"></strong></p>
+      <button class="primary" id="download-profile" type="button">Скачать файл для WireGuard</button>
+      <p class="hint">Если Safari спросит подтверждение, нажмите «Скачать». Не закрывайте страницу до сохранения файла. Повторное нажатие скачает тот же файл.</p>
+      <p id="download-next" class="notice" hidden>После сохранения переходите к шагу 3 ниже. <a href="#iphone-import">Как открыть файл в WireGuard ↓</a></p>
+      <p class="hint">Этот файл даёт доступ к VPN. Не пересылайте его другим людям.</p>
+      <details><summary>Ввести другой токен</summary>
+        <p>Это создаст ещё один файл для нового устройства. Если нужен уже готовый файл, используйте кнопку скачивания выше.</p>
+        <button class="secondary" id="change-token" type="button">Ввести другой токен</button>
+      </details>
     </section>
   </section>
-  <section class="instructions card">
-    <h2>Как включить на iPhone</h2>
+  <section class="instructions card" id="iphone-import" aria-labelledby="import-title">
+    <p class="step">ШАГ 3 ИЗ 3</p>
+    <h2 id="import-title">Откройте файл в WireGuard</h2>
     <ol>
-      <li>Установите бесплатное приложение <strong>WireGuard</strong> из App Store. Разработчик — <strong>WireGuard Development Team</strong>.</li>
-      <li>Введите токен выше и скачайте профиль. Safari сохранит его в «Файлы» → «Загрузки».</li>
-      <li>Откройте WireGuard, нажмите <strong>«+» → «Создать из файла или архива»</strong> и выберите скачанный файл.</li>
-      <li>Разрешите добавление VPN-конфигурации и включите переключатель профиля.</li>
+      <li>Откройте <strong>WireGuard</strong>. Нажмите <strong>«Добавить туннель»</strong> или <strong>«+»</strong>, затем <strong>«Создать из файла или архива»</strong>.</li>
+      <li>Выберите скачанный файл <strong id="import-filename">EVG-….conf</strong>. Его можно найти через <strong>«Обзор» → «iCloud Drive» или «На iPhone» → «Загрузки»</strong>.</li>
+      <li>Когда iPhone предложит добавить VPN-конфигурацию, нажмите <strong>«Разрешить»</strong>. Если попросит, подтвердите кодом разблокировки iPhone.</li>
+      <li>Включите <strong>переключатель справа от нового подключения</strong>. Откройте нужный сайт и проверьте интернет.</li>
     </ol>
-    <p class="hint">Если названия пунктов отличаются, выберите импорт туннеля из файла. Удалив файл из «Загрузок» после импорта, вы сохраните ключ только в приложении.</p>
-    <details><summary>Другие устройства и ограничения</summary><p>Профиль можно импортировать в официальный WireGuard для macOS, Windows, Android и Linux. Для нового устройства создайте свой профиль: одновременное использование одного файла на нескольких устройствах нарушает соединение.</p><p>Сайт выдаёт профиль; для VPN нужен работающий UDP-канал. При блокировке WireGuard оператором профиль не сможет подключиться. Это первая версия подключения для iPhone, без автоматического выбора туннелей.</p><p>Внешний трафик идёт через российский сервер в Эстонию. Маршрут IPv6 включён в профиль, но выход IPv6 пока недоступен: такой трафик блокируется вместо прямого выхода к оператору. Доступ к локальной сети зависит от системных маршрутов WireGuard.</p></details>
+    <p class="notice"><strong>Готово.</strong> В следующий раз просто включайте и выключайте VPN в WireGuard. Заново вводить токен и скачивать файл не нужно.</p>
+    <p class="hint">Само скачивание VPN не включает. После успешного импорта файл можно удалить из «Загрузок» — подключение останется в WireGuard.</p>
+  </section>
+  <section class="card help" aria-labelledby="help-title">
+    <h2 id="help-title">Если что-то не получилось</h2>
+    <details><summary>Не могу найти скачанный файл</summary><p>В Safari нажмите значок загрузок у адресной строки и откройте список загрузок. Или откройте приложение «Файлы» → «Обзор» → «iCloud Drive» → «Загрузки». Если там пусто, проверьте «На iPhone» → «Загрузки»: место сохранения зависит от настроек Safari.</p><p>Затем вернитесь в WireGuard и выберите этот файл через «Создать из файла или архива». Нужен именно файл с окончанием <strong>.conf</strong>, его не нужно открывать как текст или устанавливать через настройки iPhone.</p></details>
+    <details><summary>Страница открыта внутри Telegram</summary><p>Откройте меню встроенного браузера и выберите «Открыть в Safari». Если такого пункта нет, скопируйте адрес этой страницы и вставьте в Safari:</p><p class="download-link"><a href="https://connect.velikiievgenius.com/">https://connect.velikiievgenius.com/</a></p></details>
+    <details><summary>Токен не принимается</summary><p>Скопируйте всю строку, начиная с EVN1-, без кавычек. Если ошибка остаётся, попросите владельца сети проверить ваш доступ. Токен нельзя заменить паролем от телефона.</p></details>
+    <details><summary>Переключатель включён, а интернета нет</summary><p>Отключите другие VPN-приложения и попробуйте наш VPN сначала по Wi-Fi, затем через мобильную сеть. Если работает только в одной сети, возможно, другая блокирует WireGuard. Напишите владельцу сети, где именно не работает. Повторное скачивание файла такую блокировку не исправит.</p></details>
+    <details><summary>Хочу подключить ещё одно устройство</summary><p>Откройте этот сайт на новом устройстве и введите <strong>тот же токен</strong>. Для него будет создан отдельный файл. Один файл нельзя использовать одновременно на нескольких устройствах: соединение будет прерываться.</p><p>Файл подходит для официального WireGuard на iPhone, iPad, Mac, Windows, Android и Linux. В этом варианте нет автоматического выбора резервных туннелей, который есть в приложении Evgenium. Доступ к локальной сети зависит от маршрутов устройства.</p></details>
   </section>
   <section class="card">
     <h2>Windows</h2>
@@ -55,5 +86,6 @@
   </section>
   <footer>Ключ устройства создаётся в вашем браузере. На сервер отправляются только его открытая часть, токен и имя устройства.</footer>
 </main>
+<noscript><p class="noscript">Для получения файла включите JavaScript в браузере или откройте эту страницу в Safari.</p></noscript>
 </body>
 </html>

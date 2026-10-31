@@ -175,7 +175,7 @@ process.stdout.write(JSON.stringify(context.window.wireguard.generateKeypair()))
         script = r'''
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const elements={};
-for(const id of ['enroll-form','token','device-name','status','create-profile','token-toggle','result','profile-name','download-profile','change-token']){
+for(const id of ['enroll-form','token','device-name','status','create-profile','token-toggle','result','profile-name','download-profile','change-token','profile-filename','import-filename','result-title','download-next']){
  elements[id]={value:'',hidden:false,readOnly:false,disabled:false,textContent:'',type:'password',handlers:{},
   classList:{toggle:()=>{}},setAttribute:()=>{},focus:()=>{},addEventListener:function(e,h){this.handlers[e]=h}};
 }
@@ -217,10 +217,24 @@ vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
  assert(text.includes('Address = 10.78.0.2/32, fd78:6576:6765::2/128'));
  assert(text.includes('PersistentKeepalive = 25'));
  assert(/^EVG-[a-f0-9]{8}\.conf$/.test(download.download));
+ assert.strictEqual(elements['profile-filename'].textContent,download.download);
+ assert.strictEqual(elements['import-filename'].textContent,download.download);
+ assert.strictEqual(elements['download-next'].hidden,false);
+ const savedName=download.download;
+ elements['download-profile'].handlers.click();
+ assert.strictEqual(await blob.text(),text);
+ assert.strictEqual(download.download,savedName);
+ assert.strictEqual(requests.length,2); // Re-download never creates another device/key.
+ assert.strictEqual(generated,1);
+ await submit({preventDefault:()=>{}}); // A hidden successful form cannot enroll again.
+ assert.strictEqual(requests.length,2);
  elements['change-token'].handlers.click();
  assert.strictEqual(elements['enroll-form'].hidden,false);
  assert.strictEqual(elements.result.hidden,true);
  assert.strictEqual(elements.token.value,'');
+ assert.strictEqual(elements['download-next'].hidden,true);
+ assert.strictEqual(elements['profile-filename'].textContent,'');
+ assert.strictEqual(elements['import-filename'].textContent,'EVG-….conf');
  elements.token.value='EVN1-'+ 't'.repeat(43);
  rejectNext=true;
  await submit({preventDefault:()=>{}});
