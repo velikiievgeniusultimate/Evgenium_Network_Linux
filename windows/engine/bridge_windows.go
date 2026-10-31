@@ -137,8 +137,8 @@ func (b *packetBridge) associate(conn net.Conn) {
 	if _, e := io.ReadFull(conn, address); e != nil {
 		return
 	}
-	conn.Write([]byte{5, 0, 0, 1, 127, 0, 0, 1, 0x48, 0x80})
-	conn.SetDeadline(time.Time{})
+	// Publish the association before acknowledging it. The client can send its
+	// first WG handshake on another CPU as soon as it receives the reply.
 	b.mu.Lock()
 	old := b.association
 	b.association = conn
@@ -147,6 +147,8 @@ func (b *packetBridge) associate(conn net.Conn) {
 	if old != nil {
 		old.Close()
 	}
+	conn.Write([]byte{5, 0, 0, 1, 127, 0, 0, 1, 0x48, 0x80})
+	conn.SetDeadline(time.Time{})
 	io.Copy(io.Discard, conn)
 	b.mu.Lock()
 	if b.association == conn {
