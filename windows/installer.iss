@@ -57,8 +57,11 @@ Filename: "{app}\Evgenium.exe"; Flags: nowait skipifnotsilent; Check: ShouldLaun
 var MigrationExit: Integer;
 
 function ShouldLaunch: Boolean;
+var I: Integer;
 begin
-  Result := not CmdLineParamExists('/NOLAUNCH');
+  Result := True;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/NOLAUNCH') = 0 then Result := False;
 end;
 
 function NextPart(var Value: String): Integer;
