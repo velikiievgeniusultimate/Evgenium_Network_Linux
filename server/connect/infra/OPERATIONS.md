@@ -137,3 +137,35 @@ the server's own public IPv4. An early input exception permits only its already
 public control endpoints80/8443 and the redirected original443 connection. SSH,
 metadata, private services and unsolicited9444 remain blocked. This is encrypted
 client-to-entry control traffic; it does not create an Internet WAN fallback.
+
+
+## Windows GUI 0.2.0 — 31 октября 2026
+
+Существующий клиентский WireGuard и GRE до Эстонии сохранены. Добавлен отдельный
+`evgenium-windows-ingress.service`: Reality TCP 24580 и Reality XHTTP 24581,
+собственный закреплённый Xray 26.10.29 в `/opt/evgenium-windows-ingress`.
+UUID/публичные Reality-реквизиты входят в клиент. Это только оболочка: сервер
+разрешает строго UDP к 127.0.0.1:51820, а WireGuard проверяет отдельный ключ устройства.
+Свободного прокси через эти общие реквизиты нет. В `freedom.finalRules` явно разрешён
+этот единственный адрес/порт; остальное блокируется. Приватный Reality-ключ —
+только в root-конфигурации 0600, служба получает её через systemd LoadCredential.
+
+Диагностический `evgenium-windows-udp-probe.service` слушает 10.78.0.1:24588/UDP.
+Доступ разрешён только через evg-clients из 10.78.0.0/24, до запрещающего правила
+и в основной input-цепочке. Случайные тестовые пакеты 64–1400 байт возвращаются
+один к одному, без усиления, максимум 100 пакетов/с на клиента. Содержимое не пишется.
+Правила добавлены в `ingress.py` для сохранения после перезапуска входа.
+
+POST `/api/report` в существующем сервисе регистрации требует его же HTTPS/Host,
+сессию, CSRF, токен и привязанный публичный ключ устройства. Windows-отчёт очищается
+по белому списку числовых метрик; сырые логи, история и содержимое трафика не принимаются.
+Хранилище `/var/lib/evgenium-connect/reports`: 0700/0600, 7 дней, общий предел 64 МиБ.
+Нельзя включать в коммиты реальные отчёты или приватные конфигурации.
+
+Откат приложения: `/root/evg-windows-20261031/connect-app.before.py`.
+Первоначальный ingress.py и снимок nft находятся рядом. Отдельная закрытая копия
+новых конфигураций сохранена в `Russia-HSVDS/windows-2026-10-31-secrets.tar.gz`
+на компьютере владельца. Это секретный архив, не Git-артефакт.
+Для отключения новых резервов остановите только evgenium-windows-ingress.service;
+нативный WireGuard и остальные клиенты продолжат работать. Основные маршруты/DNS,
+3X-UI и strongSwan при этой работе не изменялись.

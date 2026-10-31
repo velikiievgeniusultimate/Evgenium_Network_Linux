@@ -236,7 +236,7 @@ func startCore(c Config, route string, probeOnly bool) (*coreProcess, error) {
 	cmd.Dir = filepath.Dir(exe)
 	cmd.Stdout = f
 	cmd.Stderr = f
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_SUSPENDED}
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_SUSPENDED | 0x08000000}
 	if e = cmd.Start(); e != nil {
 		f.Close()
 		return nil, e

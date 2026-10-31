@@ -1,0 +1,123 @@
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "none"
+  },
+  "inbounds": [
+    {
+      "tag": "raw",
+      "listen": "0.0.0.0",
+      "port": 24580,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "df22abb5-c348-48d6-9b74-5991919367c2"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "target": "www.yandex.ru:443",
+          "serverNames": [
+            "www.yandex.ru"
+          ],
+          "privateKey": "REPLACE_WITH_PRIVATE_REALITY_KEY",
+          "shortIds": [
+            "ca7df665eb918089"
+          ]
+        }
+      }
+    },
+    {
+      "tag": "xhttp",
+      "listen": "0.0.0.0",
+      "port": 24581,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "df22abb5-c348-48d6-9b74-5991919367c2"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "reality",
+        "realitySettings": {
+          "target": "www.yandex.ru:443",
+          "serverNames": [
+            "www.yandex.ru"
+          ],
+          "privateKey": "REPLACE_WITH_PRIVATE_REALITY_KEY",
+          "shortIds": [
+            "ca7df665eb918089"
+          ]
+        },
+        "xhttpSettings": {
+          "path": "/evgenium-wg",
+          "mode": "auto"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "deny",
+      "protocol": "blackhole"
+    },
+    {
+      "tag": "wg-local",
+      "protocol": "freedom",
+      "settings": {
+        "finalRules": [
+          {
+            "action": "allow",
+            "network": "udp",
+            "port": "51820",
+            "ip": [
+              "127.0.0.1/32"
+            ]
+          },
+          {
+            "action": "block",
+            "ip": [
+              "0.0.0.0/0",
+              "::/0"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": [
+          "raw",
+          "xhttp"
+        ],
+        "network": "udp",
+        "ip": [
+          "127.0.0.1/32"
+        ],
+        "port": "51820",
+        "outboundTag": "wg-local"
+      },
+      {
+        "type": "field",
+        "inboundTag": [
+          "raw",
+          "xhttp"
+        ],
+        "outboundTag": "deny"
+      }
+    ]
+  }
+}
