@@ -20,6 +20,9 @@ Add-Type -AssemblyName System.Security
 function Protect-Directory([string]$Path) {
     Assert-NoReparse $Path
     if (!(Test-Path -LiteralPath $Path)) { $null = New-Item -ItemType Directory -Path $Path -Force }
+    # Set-Acl in Windows PowerShell can copy SACL/owner sections and demand
+    # SeSecurityPrivilege even for a user-owned directory. Persist only the
+    # access rules modified below; never grant audit privileges to the user.
     $acl = New-Object Security.AccessControl.DirectorySecurity
     $acl.SetAccessRuleProtection($true, $false)
     foreach ($sid in @($script:Sid, 'S-1-5-18', 'S-1-5-32-544')) {
@@ -27,7 +30,7 @@ function Protect-Directory([string]$Path) {
         $rule = New-Object Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
         $acl.AddAccessRule($rule)
     }
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    [IO.Directory]::SetAccessControl($Path, $acl)
 }
 function Assert-NoReparse([string]$Path) {
     $current = [IO.Path]::GetFullPath($Path)
@@ -54,7 +57,7 @@ function Protect-EngineDirectory {
         $reader=if($path -eq $root){'S-1-5-32-545'}else{$script:Sid}
         $identity=New-Object Security.Principal.SecurityIdentifier($reader)
         $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity,'ReadAndExecute','ContainerInherit,ObjectInherit','None','Allow')))
-        Set-Acl -LiteralPath $path -AclObject $acl
+        [IO.Directory]::SetAccessControl($path, $acl)
     }
 }
 function Read-State {
@@ -88,7 +91,7 @@ function Invoke-Elevated([string]$Action) {
     try {
         try {
             $process = Start-Process -FilePath $exe -ArgumentList @('--command', $Action, '--expected-sid', $script:Sid, '--result-id', $id) -Verb RunAs -PassThru
-            while (!$process.HasExited) { if ($Command -eq 'gui') { [Windows.Forms.Application]::DoEvents() }; Start-Sleep -Milliseconds 100; $process.Refresh() }
+            while (!$process.HasExited) { if ($Command -eq 'gui') { [EvgeniumDesktop]::PumpEvents() }; Start-Sleep -Milliseconds 100; $process.Refresh() }
         } catch { throw 'Для управления VPN нужно подтвердить запрос Windows. Действие отменено.' }
         if (Test-Path -LiteralPath $reply) {
             Assert-NoReparse $reply
@@ -168,7 +171,7 @@ function Write-EngineConfig([switch]$Repair) {
     $text=$config | ConvertTo-Json -Depth 10
     $null=Invoke-Engine 'validate' $text
     $path=Join-Path $script:EngineData 'engine.json'; $tmp=Join-Path $script:EngineData ([Guid]::NewGuid().ToString('N')+'.tmp')
-    try { [IO.File]::WriteAllText($tmp,$text,(New-Object Text.UTF8Encoding($false))); $acl=Get-Acl -LiteralPath $tmp;$acl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')));Set-Acl -LiteralPath $tmp -AclObject $acl;Move-Item -LiteralPath $tmp -Destination $path -Force }
+    try { [IO.File]::WriteAllText($tmp,$text,(New-Object Text.UTF8Encoding($false))); $acl=Get-Acl -LiteralPath $tmp;$acl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')));[IO.File]::SetAccessControl($tmp, $acl);Move-Item -LiteralPath $tmp -Destination $path -Force }
     finally { $config.private_key=$null; $text=$null; if (Test-Path -LiteralPath $tmp) {Remove-Item -LiteralPath $tmp -Force} }
 }
 function Connect-Vpn([switch]$Repair) {
@@ -186,7 +189,7 @@ function Connect-Vpn([switch]$Repair) {
         $status=Read-EngineStatus
         if ($status.state -eq 'connected' -and $status.updated -ge [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-15) { return $status.message }
         if ($status.state -eq 'error') { throw $status.message }
-        if ($Command -eq 'gui' -or $Command -eq 'widget') { [Windows.Forms.Application]::DoEvents() }
+        if ($Command -eq 'gui' -or $Command -eq 'widget') { [EvgeniumDesktop]::PumpEvents() }
         Start-Sleep -Milliseconds 250
     }
     return 'VPN продолжает подключение и автоматическое восстановление. Защищённый трафик блокируется до связи с Эстонией.'

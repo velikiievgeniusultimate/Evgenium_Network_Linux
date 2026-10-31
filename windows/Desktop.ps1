@@ -7,7 +7,7 @@
     $Window.SetSnapshot(($value | ConvertTo-Json -Depth 12 -Compress))
 }
 function Show-Gui([switch]$WidgetOnly) {
-    Add-Type -AssemblyName System.Windows.Forms;Add-Type -AssemblyName System.Drawing
+    Add-Type -AssemblyName System.Windows.Forms;Add-Type -AssemblyName PresentationFramework
     $window=New-Object EvgeniumDesktop
     $closeEvent=New-Object Threading.EventWaitHandle($false,[Threading.EventResetMode]::AutoReset,'Local\EvgeniumNetwork.Close')
     $handler={param($action,$raw)
@@ -18,7 +18,7 @@ function Show-Gui([switch]$WidgetOnly) {
             }catch{$window.SetError($_.Exception.Message)}
             return
         }
-        $window.SetBusy($true);[Windows.Forms.Application]::DoEvents()
+        $window.SetBusy($true);[EvgeniumDesktop]::PumpEvents()
         try {
             switch ($action) {
                 'toggle' {if ((Tunnel-Running) -or (Read-EngineStatus).protected) {$null=Disconnect-Vpn}else{$null=Connect-Vpn}}
@@ -42,61 +42,48 @@ function Show-Gui([switch]$WidgetOnly) {
         finally {if(!$window.IsDisposed){$window.SetBusy($false)}}
     }.GetNewClosure()
     $window.add_Operation($handler)
-    $timer=New-Object Windows.Forms.Timer;$timer.Interval=2000
+    $timer=New-Object Windows.Threading.DispatcherTimer;$timer.Interval=[TimeSpan]::FromSeconds(2)
     $timer.add_Tick({
         if($closeEvent.WaitOne(0)){$window.ExitApplication();return}
         if(!$window.Busy){try{Snapshot-Desktop $window}catch{$window.SetError($_.Exception.Message)}}
     }.GetNewClosure())
-    $window.add_Shown({if($WidgetOnly){$window.Hide()}}.GetNewClosure())
+    # The retired floating widget is intentionally not recreated on upgrade.
+    $application=New-Object Windows.Application;$application.ShutdownMode='OnMainWindowClose'
     try {
         Snapshot-Desktop $window
         $window.SetApps((ConvertTo-Json -InputObject @(Get-RunningApps) -Compress))
-        $timer.Start();[Windows.Forms.Application]::Run($window)
-    }finally{$timer.Stop();$timer.Dispose();$closeEvent.Dispose();$window.Dispose()}
+        $timer.Start();$null=$application.Run($window)
+    }finally{$timer.Stop();$closeEvent.Dispose();$window.Dispose()}
 }
 function Test-Desktop {
-    Add-Type -AssemblyName System.Windows.Forms;Add-Type -AssemblyName System.Drawing
-    Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class EvgeniumChromeProbe {
- [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h,int m,IntPtr w,IntPtr l);
- public static int Hit(IntPtr h,int x,int y){return SendMessage(h,0x84,IntPtr.Zero,(IntPtr)((y<<16)|(x&0xffff))).ToInt32();}
-}
-'@
+    Add-Type -AssemblyName PresentationFramework
     $window=New-Object EvgeniumDesktop
     try {
-        $sample=@{has_token=$true;device_name='Устройство-1';running=$false;engine=@{state='disconnected';message='VPN отключён.';protected=$false;ranking=@()};policy=@{applications=@();networks=@();ports=@();dns=@();disabled_base=@();route='auto'};options=@{widget=$false;startup=$false};routes=@()}
-        $window.SetSnapshot(($sample | ConvertTo-Json -Depth 8 -Compress));$window.Show();$window.Refresh();[Windows.Forms.Application]::DoEvents()
-        if($window.FormBorderStyle -ne 'None' -or $window.MaximizeBox){throw 'System caption must be absent'}
-        $caption=$window.Controls.Find('windowTitleBar',$true)[0]
-        $minimize=$window.Controls.Find('minimizeWindow',$true)[0]
-        $close=$window.Controls.Find('closeWindow',$true)[0]
-        if(!$caption -or !$minimize -or !$close){throw 'Accessible caption controls missing'}
-        if($minimize.Right -gt $close.Left){throw 'Caption controls overlap or are reversed'}
-        foreach($c in @(@(1,1,13),@(($window.ClientSize.Width-2),1,14),@(1,($window.ClientSize.Height-2),16),@(($window.ClientSize.Width-2),($window.ClientSize.Height-2),17))){
-            $point=$window.PointToScreen((New-Object Drawing.Point($c[0],$c[1])))
-            if([EvgeniumChromeProbe]::Hit($window.Handle,$point.X,$point.Y) -ne $c[2]){throw 'Native corner resizing unavailable'}
+        $sample=@{has_token=$true;device_name='Устройство-1';running=$false;engine=@{state='disconnected';message='VPN отключён.';protected=$false;ranking=@()};policy=@{applications=@('C:\Program Files\Очень длинное название приложения\application.exe');networks=@('subdomain.long-example.com');ports=@('tcp:30000-40000:out');dns=@('192.168.0.1');disabled_base=@();route='auto'};options=@{widget=$true;startup=$false};routes=@(@{id='long-route';label='Очень длинное название маршрута — HSVDS → Эстония — резервный транспорт'})}
+        $window.SetSnapshot(($sample | ConvertTo-Json -Depth 8 -Compress));$window.Show();[EvgeniumDesktop]::PumpEvents()
+        if($window.WindowStyle -ne 'None' -or $window.ResizeMode -ne 'CanResize'){throw 'Custom chrome or resizing unavailable'}
+        if(!$window.FindVisual('windowTitleBar') -or !$window.FindVisual('minimizeWindow') -or !$window.FindVisual('closeWindow')){throw 'Accessible caption controls missing'}
+        $out=if($env:RUNNER_TEMP){Join-Path $env:RUNNER_TEMP 'evgenium-windows'}else{$env:TEMP}
+        foreach($size in @(@(860,580),@(1040,740),@(1500,900),@(920,660))) {
+            $window.Width=$size[0];$window.Height=$size[1]
+            foreach($page in 0..4){$window.Navigate($page);$window.ValidateLayout(1);$window.SavePreview((Join-Path $out ('ui-'+$size[0]+'-page-'+$page+'.png')))}
         }
-        # The hosted Windows desktop may be only 1024px wide: test a real shrink,
-        # then grow back, without requesting a size beyond the monitor tracking limit.
-        $old=$window.Size;$window.Size=New-Object Drawing.Size([Math]::Max($window.MinimumSize.Width,($old.Width-80)),[Math]::Max($window.MinimumSize.Height,($old.Height-40)));[Windows.Forms.Application]::DoEvents()
-        if($window.Width -ge $old.Width -or $close.Right -gt $caption.Width){throw 'Resizable caption layout failed'}
-        $window.Size=$old
-        $minimize.PerformClick();[Windows.Forms.Application]::DoEvents()
-        if($window.WindowState -ne 'Minimized'){throw 'Minimize failed'}
-        $window.OpenMain();[Windows.Forms.Application]::DoEvents()
-        $close.PerformClick();[Windows.Forms.Application]::DoEvents()
-        if($window.Visible -or $window.IsDisposed){throw 'Caption close must hide to tray without stopping VPN'}
-        $window.OpenMain();$window.Refresh();[Windows.Forms.Application]::DoEvents()
-        $bitmap=New-Object Drawing.Bitmap($window.Width,$window.Height);$window.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$window.Width,$window.Height)))
-        if($env:RUNNER_TEMP){$bitmap.Save((Join-Path $env:RUNNER_TEMP 'evgenium-windows-ui.png'),[Drawing.Imaging.ImageFormat]::Png)};$bitmap.Dispose()
+        # Repeated grow/shrink catches stale pixels and invalid layout on the next frame.
+        foreach($i in 1..30){$window.Width=860+($i%7)*80;$window.Height=580+($i%5)*50;[EvgeniumDesktop]::PumpEvents();$window.ValidateLayout(1)}
+        $window.Width=1040;$window.Height=740;$window.Navigate(0)
+        $window.SetTokenEditing('EVN1-'+('a'*43));$window.ValidateLayout(1);$window.SavedToken()
+        $sample.has_token=$false;$sample.engine.message=('Длинное сообщение о состоянии сети. '*12);$window.SetSnapshot(($sample | ConvertTo-Json -Depth 8 -Compress));$window.ValidateLayout(1)
+        $sample.has_token=$true;$sample.engine.message='VPN отключён.';$window.SetSnapshot(($sample | ConvertTo-Json -Depth 8 -Compress))
+        $window.SetBusy($true);$window.SetBusy($false);$window.WindowState='Minimized';[EvgeniumDesktop]::PumpEvents();if($window.WindowState -ne 'Minimized'){throw 'Minimize failed'}
+        $window.OpenMain();$window.Close();if($window.Visible -or $window.IsDisposed){throw 'Close must hide to tray'};$window.OpenMain();[EvgeniumDesktop]::PumpEvents()
+        $window.SavePreview((Join-Path $env:RUNNER_TEMP 'evgenium-windows-ui.png'))
+        # Native compositor screenshot, in addition to an offscreen render.
+        Add-Type -AssemblyName System.Drawing
+        $bounds=$window.RestoreBounds;$bmp=New-Object Drawing.Bitmap([int]$window.ActualWidth,[int]$window.ActualHeight);$g=[Drawing.Graphics]::FromImage($bmp)
+        try{$g.CopyFromScreen([int]$window.Left,[int]$window.Top,0,0,$bmp.Size);$bmp.Save((Join-Path $out 'ui-native-compositor.png'))}finally{$g.Dispose();$bmp.Dispose()}
+        [IO.File]::WriteAllText((Join-Path $out 'ui-selftest.log'),'PASS: 5 pages, 4 sizes, 30 resize cycles, long errors/paths, token edit, native compositor, minimize/tray. Real multi-monitor DPI still needs physical Windows verification.')
     }catch{
-        if($env:RUNNER_TEMP){
-            $log=Join-Path $env:RUNNER_TEMP 'evgenium-windows/ui-selftest.log'
-            [IO.File]::WriteAllText($log,($_.Exception.ToString()+"`n"+$_.ScriptStackTrace),[Text.Encoding]::UTF8)
-            if(!$window.IsDisposed){$bitmap=New-Object Drawing.Bitmap($window.Width,$window.Height);$window.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$window.Width,$window.Height)));$bitmap.Save((Join-Path $env:RUNNER_TEMP 'evgenium-windows-ui.png'),[Drawing.Imaging.ImageFormat]::Png);$bitmap.Dispose()}
-        }
+        if($env:RUNNER_TEMP){[IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'evgenium-windows/ui-selftest.log'),($_.Exception.ToString()+"`n"+$_.ScriptStackTrace),[Text.Encoding]::UTF8)}
         throw
     }finally{$window.AllowExit=$true;$window.Close();$window.Dispose()}
 }

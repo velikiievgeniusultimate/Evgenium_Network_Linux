@@ -1,0 +1,57 @@
+<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+ Background="#141217" BorderBrush="#48303c" BorderThickness="1" CornerRadius="8" SnapsToDevicePixels="True" UseLayoutRounding="True">
+ <Border.Resources>
+  <SolidColorBrush x:Key="TextBrush" Color="#fff1e9"/>
+  <SolidColorBrush x:Key="MutedBrush" Color="#baa8af"/>
+  <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource TextBrush}"/><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="VerticalAlignment" Value="Center"/></Style>
+  <Style TargetType="Button">
+   <Setter Property="Foreground" Value="{StaticResource TextBrush}"/><Setter Property="Background" Value="#29202b"/><Setter Property="BorderBrush" Value="#48303c"/><Setter Property="BorderThickness" Value="1"/>
+   <Setter Property="Padding" Value="16,10"/><Setter Property="MinHeight" Value="42"/><Setter Property="Cursor" Value="Hand"/><Setter Property="HorizontalContentAlignment" Value="Center"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="frame" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="5" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" RecognizesAccessKey="True"/></Border><ControlTemplate.Triggers>
+    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="frame" Property="Opacity" Value="0.8"/></Trigger>
+    <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="frame" Property="BorderBrush" Value="#ffacb8"/></Trigger>
+    <Trigger Property="IsEnabled" Value="False"><Setter TargetName="frame" Property="Opacity" Value="0.45"/></Trigger>
+   </ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style TargetType="TextBox">
+   <Setter Property="Foreground" Value="{StaticResource TextBrush}"/><Setter Property="Background" Value="#18131b"/><Setter Property="BorderBrush" Value="#48303c"/><Setter Property="CaretBrush" Value="#ff586d"/><Setter Property="SelectionBrush" Value="#702a40"/><Setter Property="Padding" Value="12,10"/><Setter Property="MinHeight" Value="42"/><Setter Property="VerticalContentAlignment" Value="Center"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox"><Border x:Name="frame" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="5"><ScrollViewer x:Name="PART_ContentHost" Padding="{TemplateBinding Padding}"/></Border><ControlTemplate.Triggers><Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="frame" Property="BorderBrush" Value="#ff586d"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter TargetName="frame" Property="Opacity" Value="0.45"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style TargetType="CheckBox">
+   <Setter Property="Foreground" Value="{StaticResource TextBrush}"/><Setter Property="Cursor" Value="Hand"/><Setter Property="MinHeight" Value="36"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="CheckBox"><DockPanel LastChildFill="True"><Border Width="36" Height="20" CornerRadius="10" Background="#48303c" x:Name="track" Margin="0,0,10,0" DockPanel.Dock="Left"><Ellipse x:Name="knob" Width="14" Height="14" Fill="#fff1e9" HorizontalAlignment="Left" Margin="3"/></Border><ContentPresenter VerticalAlignment="Center" RecognizesAccessKey="True"/></DockPanel><ControlTemplate.Triggers><Trigger Property="IsChecked" Value="True"><Setter TargetName="track" Property="Background" Value="#ff586d"/><Setter TargetName="knob" Property="HorizontalAlignment" Value="Right"/><Setter TargetName="knob" Property="Fill" Value="#180d13"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="track" Property="BorderBrush" Value="#ffacb8"/><Setter TargetName="track" Property="BorderThickness" Value="1"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style TargetType="ScrollBar">
+   <Setter Property="Width" Value="10"/><Setter Property="Background" Value="Transparent"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ScrollBar"><Grid Background="Transparent"><Track x:Name="PART_Track" IsDirectionReversed="True"><Track.DecreaseRepeatButton><RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" Focusable="False"/></Track.DecreaseRepeatButton><Track.Thumb><Thumb MinHeight="28"><Thumb.Template><ControlTemplate TargetType="Thumb"><Border Background="#644352" CornerRadius="3" Margin="3,0"/></ControlTemplate></Thumb.Template></Thumb></Track.Thumb><Track.IncreaseRepeatButton><RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" Focusable="False"/></Track.IncreaseRepeatButton></Track></Grid></ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style TargetType="ComboBoxItem"><Setter Property="Foreground" Value="{StaticResource TextBrush}"/><Setter Property="Padding" Value="12,10"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBoxItem"><Border x:Name="item" Background="Transparent" Padding="{TemplateBinding Padding}"><ContentPresenter/></Border><ControlTemplate.Triggers><Trigger Property="IsHighlighted" Value="True"><Setter TargetName="item" Property="Background" Value="#3a202d"/></Trigger><Trigger Property="IsSelected" Value="True"><Setter TargetName="item" Property="Background" Value="#48303c"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
+  <Style TargetType="ComboBox">
+   <Setter Property="Foreground" Value="{StaticResource TextBrush}"/><Setter Property="Background" Value="#18131b"/><Setter Property="MinHeight" Value="42"/><Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBox"><Grid><ToggleButton x:Name="DropDownToggle" Focusable="False" IsChecked="{Binding IsDropDownOpen,RelativeSource={RelativeSource TemplatedParent},Mode=TwoWay}"><ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border Background="#18131b" BorderBrush="#48303c" BorderThickness="1" CornerRadius="5"><Path Data="M 0 0 L 5 5 L 10 0" Stroke="#baa8af" StrokeThickness="1.4" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,14,0"/></Border></ControlTemplate></ToggleButton.Template></ToggleButton><ContentPresenter Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" IsHitTestVisible="False" Margin="12,9,36,9" VerticalAlignment="Center"/><Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade"><Border Background="#211c24" BorderBrush="#48303c" BorderThickness="1" CornerRadius="5" MinWidth="{Binding ActualWidth,RelativeSource={RelativeSource TemplatedParent}}" MaxHeight="300"><ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"><ItemsPresenter/></ScrollViewer></Border></Popup></Grid><ControlTemplate.Triggers><Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="#ff586d"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+  </Style>
+ </Border.Resources>
+ <Grid>
+  <Grid.RowDefinitions><RowDefinition Height="38"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+  <Grid x:Name="windowTitleBar" Background="#19151c">
+   <TextBlock Text="E V G E N I U M   N E T W O R K" FontSize="10" Foreground="#baa8af" Margin="18,0,100,0"/>
+   <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+    <Button x:Name="minimizeWindow" AutomationProperties.Name="Свернуть" ToolTip="Свернуть" Width="44" MinHeight="0" Padding="0" Background="Transparent" BorderThickness="0"><Path Data="M 0 0 L 12 0" Stroke="#fff1e9" StrokeThickness="1"/></Button>
+    <Button x:Name="closeWindow" AutomationProperties.Name="Закрыть" ToolTip="Закрыть" Width="44" MinHeight="0" Padding="0" Background="Transparent" BorderThickness="0"><Path Data="M 0 0 L 10 10 M 10 0 L 0 10" Stroke="#fff1e9" StrokeThickness="1"/></Button>
+   </StackPanel>
+  </Grid>
+  <Grid Grid.Row="1">
+   <Grid.ColumnDefinitions><ColumnDefinition Width="222"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+   <Border Background="#19151c"><Grid Margin="16,16,16,12"><Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel><Image x:Name="brandMark" Width="54" Height="64" HorizontalAlignment="Left" Margin="0,0,0,10"/><TextBlock Text="EVGENIUM" FontSize="25" FontWeight="Bold"/><TextBlock Text="N E T W O R K" FontSize="10" Foreground="#baa8af"/></StackPanel>
+    <StackPanel x:Name="navigation" Grid.Row="1"/>
+    <StackPanel Grid.Row="2"><CheckBox x:Name="startupOption" Content="Запускать с Windows" FontSize="12"/><TextBlock x:Name="sideStatus" Foreground="#baa8af" Margin="0,18,0,10" FontSize="12"/><TextBlock x:Name="versionLabel" Foreground="#baa8af" FontSize="11"/></StackPanel>
+   </Grid></Border>
+   <Grid Grid.Column="1" Margin="28,26,22,20">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+    <StackPanel Margin="0,0,0,18"><TextBlock x:Name="breadcrumb" Text="EVGENIUM  /  ПОДКЛЮЧЕНИЕ" FontSize="10" Foreground="#ff586d" Margin="0,0,0,12"/><TextBlock x:Name="pageTitle" Text="Ваш VPN" FontSize="28" FontWeight="Bold"/></StackPanel>
+    <ScrollViewer x:Name="pageScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" CanContentScroll="False" PanningMode="VerticalOnly"><StackPanel x:Name="cards" Margin="0,0,8,0"/></ScrollViewer>
+   </Grid>
+  </Grid>
+ </Grid>
+</Border>

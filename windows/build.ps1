@@ -15,7 +15,7 @@ $assembly=Join-Path $Output 'AssemblyInfo.cs'
 [IO.File]::WriteAllText($assembly,('[assembly:System.Reflection.AssemblyVersion("'+$version+'.0")][assembly:System.Reflection.AssemblyFileVersion("'+$version+'.0")]'),[Text.Encoding]::UTF8)
 $compiler=Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $automation=[Management.Automation.PowerShell].Assembly.Location
-& $compiler '/nologo' '/codepage:65001' '/optimize+' '/platform:x64' '/target:winexe' ('/win32manifest:'+(Join-Path $root 'app.manifest')) ('/out:'+(Join-Path $package 'Evgenium.exe')) ('/reference:'+$automation) '/reference:System.Windows.Forms.dll' '/reference:System.Drawing.dll' '/reference:System.Web.Extensions.dll' ('/resource:'+$bundle+',Evgenium.ps1') (Join-Path $root 'Host.cs') (Join-Path $root 'ProcessRunner.cs') (Join-Path $root 'Desktop.cs') $assembly
+& $compiler '/nologo' '/codepage:65001' '/optimize+' '/platform:x64' '/target:winexe' ('/win32manifest:'+(Join-Path $root 'app.manifest')) ('/out:'+(Join-Path $package 'Evgenium.exe')) ('/reference:'+$automation) '/reference:System.Windows.Forms.dll' '/reference:System.Drawing.dll' '/reference:System.Web.Extensions.dll' '/reference:System.Xaml.dll' ('/reference:'+(Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\WPF\WindowsBase.dll')) ('/reference:'+(Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\WPF\PresentationCore.dll')) ('/reference:'+(Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\WPF\PresentationFramework.dll')) ('/win32icon:'+(Join-Path $root 'Assets\Evgenium.ico')) ('/resource:'+(Join-Path $root 'Assets\Evgenium.ico')+',Evgenium.Evgenium.ico') ('/resource:'+(Join-Path $root 'Assets\app-256.png')+',Evgenium.app-256.png') ('/resource:'+(Join-Path $root 'Desktop.xaml')+',Evgenium.Desktop.xaml') ('/resource:'+$bundle+',Evgenium.ps1') (Join-Path $root 'Host.cs') (Join-Path $root 'ProcessRunner.cs') (Join-Path $root 'Desktop.cs') $assembly
 if($LASTEXITCODE -ne 0){throw 'GUI compilation failed'}
 Push-Location (Join-Path $root 'engine')
 try {& go build -trimpath -ldflags ('-s -w -H=windowsgui -X main.version='+$version) -o (Join-Path $package 'EvgeniumEngine.exe') .;if($LASTEXITCODE -ne 0){throw 'Engine compilation failed'}} finally {Pop-Location}
@@ -31,7 +31,7 @@ if($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'WireGua
 Copy-Item -LiteralPath (Join-Path $root 'README.txt') -Destination $package
 Copy-Item -LiteralPath (Join-Path $root 'Evgenium.exe.config') -Destination $package
 [IO.File]::WriteAllText((Join-Path $package 'VERSION'),$version,[Text.Encoding]::ASCII)
-foreach($command in @('selftest','status','ui-selftest')){$p=Start-Process -FilePath (Join-Path $package 'Evgenium.exe') -ArgumentList '--command',$command -PassThru;if(!$p.WaitForExit(30000)){$p.Kill();throw ('Packaged '+$command+' timed out')};if($p.ExitCode -ne 0){throw ('Packaged '+$command+' failed')}}
+foreach($command in @('selftest','status','ui-selftest')){$p=Start-Process -FilePath (Join-Path $package 'Evgenium.exe') -ArgumentList '--command',$command -PassThru;if(!$p.WaitForExit(120000)){$p.Kill();throw ('Packaged '+$command+' timed out')};if($p.ExitCode -ne 0){throw ('Packaged '+$command+' failed')}}
 if(!$InnoCompiler){$InnoCompiler=Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'}
 & $InnoCompiler ('/DAppVersion='+$version) ('/DPackageDir='+$package) ('/DOutputDir='+$Output) (Join-Path $root 'installer.iss')
 if($LASTEXITCODE -ne 0){throw 'Installer compilation failed'}

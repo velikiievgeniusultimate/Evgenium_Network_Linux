@@ -54,7 +54,7 @@ function Change-Policy([string]$Action,$Request) {
     }
 }
 function Read-Options {
-    $o=[pscustomobject]@{widget=$true;startup=$false}
+    $o=[pscustomobject]@{widget=$false;startup=$false}
     if (Test-Path -LiteralPath $script:OptionsPath) {
         Assert-NoReparse $script:OptionsPath
         try {$v=Get-Content -LiteralPath $script:OptionsPath -Raw -Encoding UTF8 | ConvertFrom-Json;foreach($k in @('widget','startup')){if($v.PSObject.Properties[$k]){$o.$k=[bool]$v.$k}}} catch {}

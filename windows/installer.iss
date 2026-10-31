@@ -21,6 +21,7 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
+SetupIconFile=Assets\Evgenium.ico
 UninstallDisplayIcon={app}\Evgenium.exe
 UninstallDisplayName=Evgenium Network
 OutputDir={#OutputDir}
@@ -44,8 +45,8 @@ Source: "{#PackageDir}\VERSION"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\README.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\LICENSE-*"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
-Name: "{commonprograms}\Evgenium Network"; Filename: "{app}\Evgenium.exe"
-Name: "{commondesktop}\Evgenium Network"; Filename: "{app}\Evgenium.exe"
+Name: "{commonprograms}\Evgenium Network"; Filename: "{app}\Evgenium.exe"; IconFilename: "{app}\Evgenium.exe"; IconIndex: 0
+Name: "{commondesktop}\Evgenium Network"; Filename: "{app}\Evgenium.exe"; IconFilename: "{app}\Evgenium.exe"; IconIndex: 0
 [Run]
 Filename: "{app}\EvgeniumEngine.exe"; Parameters: "upgrade-start"; Flags: runhidden waituntilterminated
 Filename: "{app}\Evgenium.exe"; Description: "Запустить Evgenium Network"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: ShouldLaunch

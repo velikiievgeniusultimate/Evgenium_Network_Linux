@@ -32,6 +32,10 @@ jobs:
           Pop-Location
           & .\windows\build.ps1 -Output "$env:RUNNER_TEMP\evgenium-windows"
           & .\windows\test.ps1 -Package "$env:RUNNER_TEMP\evgenium-windows\Evgenium-Windows-0.2.0-x64"
+      - name: Test real non-administrator ACL and settings
+        shell: powershell
+        run: |
+          & .\windows\permission-test.ps1 -Output "$env:RUNNER_TEMP\evgenium-windows"
       - name: Test bundled core and signed driver
         shell: powershell
         run: |
@@ -57,6 +61,7 @@ jobs:
           path: |
             ${{ runner.temp }}/evgenium-windows/*-Setup.exe
             ${{ runner.temp }}/evgenium-windows/*.log
+            ${{ runner.temp }}/evgenium-windows/ui-*.png
             ${{ runner.temp }}/evgenium-windows/SHA256SUMS
             ${{ runner.temp }}/evgenium-windows-ui.png
           if-no-files-found: error
