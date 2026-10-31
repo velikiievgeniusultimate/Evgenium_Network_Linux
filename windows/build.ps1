@@ -25,7 +25,7 @@ if((Get-FileHash $cache).Hash.ToLowerInvariant() -ne 'fce33e81cccf50e7aab572b175
 $unpack=Join-Path $Output 'xray';Expand-Archive $cache $unpack -Force
 foreach($file in @('xray.exe','wintun.dll','LICENSE-Wintun')){Copy-Item -LiteralPath (Join-Path $unpack $file) -Destination $package}
 Copy-Item -LiteralPath (Join-Path $unpack 'LICENSE') -Destination (Join-Path $package 'LICENSE-Xray')
-Copy-Item -LiteralPath (Join-Path $root 'LICENSE-WFP.txt') -Destination $package
+foreach($license in Get-ChildItem -LiteralPath $root -Filter 'LICENSE-*.txt'){Copy-Item -LiteralPath $license.FullName -Destination $package}
 $sig=Get-AuthenticodeSignature -LiteralPath (Join-Path $package 'wintun.dll')
 if($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'WireGuard'){throw 'Wintun signature not verified'}
 Copy-Item -LiteralPath (Join-Path $root 'README.txt') -Destination $package

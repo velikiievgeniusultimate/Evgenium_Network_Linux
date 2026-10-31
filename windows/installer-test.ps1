@@ -14,7 +14,7 @@ function Install-Version([string]$Path,[string]$Version){
  if((Get-ItemProperty $key).DisplayVersion -ne $Version){throw 'Windows Apps registration'}
  if((Get-FileHash $script:StatePath).Hash -cne $before){throw 'Update lost token/device identity'}
  if(Test-Path (Join-Path $app 'EvgeniumCLI.exe')){throw 'Public CLI installed'}
- foreach($file in @('Evgenium.exe','EvgeniumEngine.exe','xray.exe','wintun.dll','unins000.exe')){if(!(Test-Path (Join-Path $app $file))){throw ('Missing '+$file)}}
+ foreach($file in @('Evgenium.exe','Evgenium.exe.config','EvgeniumEngine.exe','xray.exe','wintun.dll','unins000.exe')){if(!(Test-Path (Join-Path $app $file))){throw ('Missing '+$file)}}
 }
 $setup=Join-Path $Output ('Evgenium-Windows-'+$version+'-x64-Setup.exe');Install-Version $setup $version;Install-Version $setup $version
 $fixture=Join-Path $Output 'upgrade-fixture';& (Join-Path $PSScriptRoot 'build.ps1') -Output $fixture -TestVersion '0.2.1'
