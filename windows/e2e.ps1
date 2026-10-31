@@ -12,8 +12,8 @@ $working=Join-Path ([IO.Path]::GetTempPath()) ('evgenium-e2e-'+[Guid]::NewGuid()
 $originalLocalAppData=$env:LOCALAPPDATA
 $env:LOCALAPPDATA=$working
 $script:AppRoot=Join-Path $working 'EvgeniumNetwork'; $script:Data=Join-Path $script:AppRoot 'private'; $script:StatePath=Join-Path $script:Data 'state.json'
-$client=Join-Path (Join-Path (Join-Path $env:RUNNER_TEMP 'evgenium-windows') ('Evgenium-Windows-'+$script:Version+'-x64')) 'EvgeniumCLI.exe'
-if (!(Test-Path -LiteralPath $client)) { throw 'Packaged Windows CLI was not found' }
+$client=Join-Path (Join-Path (Join-Path $env:RUNNER_TEMP 'evgenium-windows') ('Evgenium-Windows-'+$script:Version+'-x64')) 'Evgenium.exe'
+if (!(Test-Path -LiteralPath $client)) { throw 'Packaged Windows engine was not found' }
 $beforeDns=@(Get-DnsClientServerAddress | Where-Object { $_.ServerAddresses.Count } | ForEach-Object { ($_.InterfaceIndex.ToString()+':'+$_.AddressFamily+':'+($_.ServerAddresses -join ',')) } | Sort-Object)
 $beforeRoutes=@(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | ForEach-Object { $_.InterfaceIndex.ToString()+':'+$_.NextHop+':'+$_.RouteMetric } | Sort-Object)
 $armed=$false; $confirmedOff=$false
@@ -29,11 +29,11 @@ try {
     $armed=$true
     Write-Output 'Independent SYSTEM rollback armed for 180 seconds (own Evgenium tunnel only).'
     $connected=Start-Process -FilePath $client -ArgumentList '--command','on' -PassThru -Wait -NoNewWindow
-    if ($connected.ExitCode -ne 0) { throw 'Packaged Windows CLI on failed' }
+    if ($connected.ExitCode -ne 0) { throw 'Packaged Windows engine on failed' }
     if (!(Tunnel-Running) -or !(Validate-Connection)) { throw 'Real Windows full tunnel did not confirm Estonia' }
     Write-Output 'Packaged Windows EXE data plane: Estonia exit 38.180.164.67, HTTPS and Discord/DNS PASS.'
     $disconnected=Start-Process -FilePath $client -ArgumentList '--command','off' -PassThru -Wait -NoNewWindow
-    if ($disconnected.ExitCode -ne 0) { throw 'Packaged Windows CLI off failed' }
+    if ($disconnected.ExitCode -ne 0) { throw 'Packaged Windows engine off failed' }
 } finally {
     Remove-Item Env:EVG_WINDOWS_E2E_TOKEN -ErrorAction SilentlyContinue
     try {

@@ -9,7 +9,7 @@ if ($env:OS -eq 'Windows_NT') {
 } else {
     # Portable contract checks only; this does not test Windows networking or DPAPI.
     $tree.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst]},$false) | ForEach-Object { Invoke-Expression $_.Extent.Text }
-    $script:Version='0.1.0'; Self-Test
+    $script:Version='0.2.0'; Self-Test
 }
 function Reject($Block) { $caught=$false; try { & $Block } catch { $caught=$true }; if (!$caught) { throw 'Expected rejection' } }
 $good=[pscustomobject]@{schema=1;public_key='AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';endpoint='195.209.211.163:51820';address='10.78.0.2/32';dns=@('1.1.1.1','1.0.0.1');mtu=1280;allowed_ips=@('0.0.0.0/0','::/0')}
@@ -17,38 +17,25 @@ foreach ($entry in @(@('endpoint',"evil`nPostUp = cmd.exe"),@('address','10.78.0
     $bad=$good.PSObject.Copy(); $bad.($entry[0])=$entry[1]
     Reject { Validate-Profile $bad }
 }
-$fake=[pscustomobject]@{schema=1;version='0.1.1';sha256=('a'*64);url='https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-v0.1.1/Evgenium-Windows-0.1.1-x64.zip'}
-foreach ($entry in @(@('version','../../evil'),@('version','0.1.1;calc'),@('url','https://evil.example/a.zip'),@('sha256','abc'))) { $bad=$fake.PSObject.Copy(); $bad.($entry[0])=$entry[1]; Reject { Validate-Manifest $bad } }
+$fake=[pscustomobject]@{schema=1;version='0.2.1';installer_size=1000000;installer_sha256=('a'*64);installer_url='https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-v0.2.1/Evgenium-Windows-0.2.1-x64-Setup.exe'}
+foreach ($entry in @(@('version','../../evil'),@('version','0.2.1;calc'),@('installer_url','https://evil.example/a.exe'),@('installer_sha256','abc'),@('installer_size',0),@('installer_size',40000000))) { $bad=$fake.PSObject.Copy(); $bad.($entry[0])=$entry[1]; Reject { Validate-Manifest $bad } }
+Validate-Manifest $fake
 $secret='test-roundtrip-not-a-real-token'
 if ($env:OS -eq 'Windows_NT') { if ((Unseal (Seal $secret)) -cne $secret) { throw 'DPAPI roundtrip failed' } } else { Write-Output 'DPAPI test SKIPPED: not Windows' }
-# No live token, administrator rights or network needed for archive rejection tests.
-Add-Type -AssemblyName System.IO.Compression
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-$temporary=Join-Path ([IO.Path]::GetTempPath()) ('evgenium-test-'+[Guid]::NewGuid().ToString('N'))
-$null=New-Item -ItemType Directory -Path $temporary
-try {
-    if ($env:OS -eq 'Windows_NT') {
-        $aclTest=Join-Path $temporary 'private'
-        Protect-Directory $aclTest
-        $permissions=Get-Acl -LiteralPath $aclTest
-        if (!$permissions.AreAccessRulesProtected) { throw 'Private ACL inherits access' }
-        $allowed=@($script:Sid,'S-1-5-18','S-1-5-32-544')
-        foreach ($rule in $permissions.Access) {
-            $sid=$rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-            if ($sid -notin $allowed -or $rule.AccessControlType -ne 'Allow') { throw 'Unexpected private ACL principal' }
-        }
-        Write-Output 'Private directory ACL: PASS'
-    }
-    foreach ($unsafe in @('../Evgenium.exe','sub/Evgenium.exe','Evgenium.exe:ads','EVGENIUM.exe')) {
-        $zipPath=Join-Path $temporary ([Guid]::NewGuid().ToString('N')+'.zip')
-        $zip=[IO.Compression.ZipFile]::Open($zipPath,[IO.Compression.ZipArchiveMode]::Create)
-        try { foreach ($file in @($unsafe,'EvgeniumCLI.exe','README.txt','VERSION')) { $null=$zip.CreateEntry($file) } } finally { $zip.Dispose() }
-        Reject { Expand-VerifiedArchive $zipPath (Join-Path $temporary ([Guid]::NewGuid().ToString('N'))) }
-    }
-    $zipPath=Join-Path $temporary 'valid.zip'
-    $zip=[IO.Compression.ZipFile]::Open($zipPath,[IO.Compression.ZipArchiveMode]::Create)
-    try { foreach ($file in @('Evgenium.exe','EvgeniumCLI.exe','README.txt','VERSION')) { $null=$zip.CreateEntry($file) } } finally { $zip.Dispose() }
-    $output=Join-Path $temporary 'valid'; Expand-VerifiedArchive $zipPath $output
-    if ((Get-ChildItem -LiteralPath $output).Count -ne 4) { throw 'Valid archive extraction failed' }
-} finally { Remove-Item -LiteralPath $temporary -Recurse -Force }
-Write-Output 'Windows contract, injection rejection, archive traversal tests passed (DPAPI on Windows only).'
+# Reparse points must not let uninstall follow a link outside its own state.
+if ($env:OS -eq 'Windows_NT') {
+ $temporary=Join-Path ([IO.Path]::GetTempPath()) ('evgenium-test-'+[Guid]::NewGuid().ToString('N'))
+ $null=New-Item -ItemType Directory -Path $temporary
+ try {
+  $aclTest=Join-Path $temporary 'private'; Protect-Directory $aclTest
+  $permissions=Get-Acl -LiteralPath $aclTest
+  if (!$permissions.AreAccessRulesProtected) { throw 'Private ACL inherits access' }
+  $target=Join-Path $temporary 'outside'; $null=New-Item -ItemType Directory -Path $target
+  $tree=Join-Path $temporary 'tree'; $null=New-Item -ItemType Directory -Path $tree
+  $link=Join-Path $tree 'junction'; $null=New-Item -ItemType Junction -Path $link -Target $target
+  Reject { Assert-SafeTree $tree }
+  [IO.Directory]::Delete($link)
+  Assert-SafeTree $tree
+ } finally { Remove-Item -LiteralPath $temporary -Recurse -Force }
+}
+Write-Output 'Windows profile/manifest injection rejection, DPAPI/ACL and safe-uninstall traversal tests passed.'

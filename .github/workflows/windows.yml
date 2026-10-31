@@ -8,9 +8,17 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Install verified Inno Setup compiler
+        shell: powershell
+        run: |
+          $path=Join-Path $env:RUNNER_TEMP 'innosetup.exe'
+          Invoke-WebRequest -UseBasicParsing 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $path
+          if ((Get-FileHash $path).Hash.ToLowerInvariant() -ne '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732') { throw 'Compiler checksum mismatch' }
+          $p=Start-Process $path -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw 'Compiler installation failed' }
       - name: Compile and test Windows x64 package
         shell: powershell
         run: |
@@ -20,6 +28,10 @@ jobs:
         shell: powershell
         run: |
           & .\windows\integration.ps1
+      - name: Test setup, upgrade and complete removal
+        shell: powershell
+        run: |
+          & .\windows\installer-test.ps1 -Output "$env:RUNNER_TEMP\evgenium-windows"
       - name: Optional real Windows full-tunnel E2E
         shell: powershell
         env:
@@ -35,5 +47,7 @@ jobs:
           name: evgenium-windows-x64
           path: |
             ${{ runner.temp }}/evgenium-windows/*.zip
+            ${{ runner.temp }}/evgenium-windows/*-Setup.exe
+            ${{ runner.temp }}/evgenium-windows/*.log
             ${{ runner.temp }}/evgenium-windows/SHA256SUMS
           if-no-files-found: error

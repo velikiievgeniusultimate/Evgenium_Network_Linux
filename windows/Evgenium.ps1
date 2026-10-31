@@ -1,8 +1,9 @@
-﻿param([string]$Command = 'gui', [string]$ExpectedSid = '', [string]$ExecutableDirectory = $PSScriptRoot)
+﻿param([string]$Command = 'gui', [string]$ExpectedSid = '', [string]$ResultId = '', [string]$ExecutableDirectory = $PSScriptRoot)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 $global:EvgeniumExitCode = 0
-$script:Version = '0.1.0'
+$script:Version = '0.2.0'
+$global:EvgeniumInstallerStarted = $false
 $script:Api = 'https://connect.velikiievgenius.com'
 $script:Manifest = 'https://raw.githubusercontent.com/velikiievgeniusultimate/Evgenium_Network_Linux/main/releases/windows/stable.json'
 $script:AppRoot = Join-Path $env:LOCALAPPDATA 'EvgeniumNetwork'
@@ -11,6 +12,7 @@ $script:Sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $script:StatePath = Join-Path $script:Data 'state.json'
 $script:Tunnel = 'Evgenium'
 $script:Service = 'WireGuardTunnel$Evgenium'
+$script:RuntimeOwner = 'HKLM:\SOFTWARE\EvgeniumNetwork\WireGuardRuntime'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.Security
 
@@ -58,13 +60,22 @@ function Is-Admin { return (New-Object Security.Principal.WindowsPrincipal([Secu
 function Invoke-Elevated([string]$Action) {
     if ($ExpectedSid -and $ExpectedSid -ne $script:Sid) { throw 'Подтвердите UAC своей учётной записью: токен защищён для текущего пользователя.' }
     if (Is-Admin) { return $false }
-    $exe = Join-Path $ExecutableDirectory 'EvgeniumCLI.exe'
-    if (!(Test-Path -LiteralPath $exe)) { throw 'Не найден EvgeniumCLI.exe рядом с приложением.' }
-    try { $process = Start-Process -FilePath $exe -ArgumentList @('--command', $Action, '--expected-sid', $script:Sid) -Verb RunAs -PassThru
-        while (!$process.HasExited) { if ($Command -eq 'gui') { [Windows.Forms.Application]::DoEvents() }; Start-Sleep -Milliseconds 100; $process.Refresh() }
-    }
-    catch { throw 'Для управления VPN нужно подтвердить запрос Windows. Действие отменено.' }
-    if ($process.ExitCode -ne 0) { throw 'Подключение не подтверждено. Откройте консоль: EvgeniumCLI.exe on. Интернет остаётся заблокирован, если служба туннеля запущена; кнопка «Отключить» вернёт обычную сеть.' }
+    $exe = Join-Path $ExecutableDirectory 'Evgenium.exe'
+    if (!(Test-Path -LiteralPath $exe)) { throw 'Файлы приложения повреждены. Повторно запустите установщик.' }
+    Protect-Directory $script:Data
+    $id=[Guid]::NewGuid().ToString('N'); $reply=Join-Path $script:Data ('operation-'+$id+'.json')
+    try {
+        try {
+            $process = Start-Process -FilePath $exe -ArgumentList @('--command', $Action, '--expected-sid', $script:Sid, '--result-id', $id) -Verb RunAs -PassThru
+            while (!$process.HasExited) { if ($Command -eq 'gui') { [Windows.Forms.Application]::DoEvents() }; Start-Sleep -Milliseconds 100; $process.Refresh() }
+        } catch { throw 'Для управления VPN нужно подтвердить запрос Windows. Действие отменено.' }
+        if (Test-Path -LiteralPath $reply) {
+            Assert-NoReparse $reply
+            $result=Get-Content -LiteralPath $reply -Raw | ConvertFrom-Json
+            if (!$result.ok) { throw $result.message }
+        } elseif ($process.ExitCode -ne 0) { throw 'Операция не выполнена. Подтвердите UAC своей учётной записью Windows и повторите попытку.' }
+        if ($process.ExitCode -ne 0) { throw 'Операция не завершена. Повторите попытку.' }
+    } finally { if (Test-Path -LiteralPath $reply) { Remove-Item -LiteralPath $reply -Force } }
     return $true
 }
 function Get-WireGuardPath { return (Join-Path $env:ProgramFiles 'WireGuard\wireguard.exe') }
@@ -83,6 +94,15 @@ function Ensure-WireGuard {
         if ($installer.ExitCode -notin @(0,3010)) { throw 'Установщик WireGuard завершился с ошибкой.' }
         if (!(Test-Path -LiteralPath $exe)) { throw 'WireGuard не установлен. Возможно, Windows ожидает перезапуск.' }
         Assert-WireGuardSignature $exe
+        # Record ownership only when Evgenium installed this shared dependency.
+        $msi=New-Object -ComObject WindowsInstaller.Installer
+        $database=$msi.OpenDatabase($download,0)
+        $view=$database.OpenView("SELECT `Value` FROM `Property` WHERE `Property`='ProductCode'")
+        $view.Execute(); $product=$view.Fetch().StringData(1); $view.Close()
+        if ($product -notmatch '^\{[0-9A-Fa-f-]{36}\}$') { throw 'Не удалось сохранить сведения об установленном драйвере.' }
+        $null=New-Item -Path $script:RuntimeOwner -Force
+        Set-ItemProperty -LiteralPath $script:RuntimeOwner -Name OwnerSid -Value $script:Sid
+        Set-ItemProperty -LiteralPath $script:RuntimeOwner -Name ProductCode -Value $product
         return $exe
     } finally { if (Test-Path -LiteralPath $download) { Remove-Item -LiteralPath $download -Force } }
 }
@@ -213,83 +233,87 @@ function Set-Token([string]$Token, [string]$Name) {
     $state.token=Seal $Token; $state.name=$Name.Trim(); Save-State $state
 }
 function Validate-Manifest($Manifest) {
-    if ($Manifest.schema -ne 1 -or $Manifest.version -notmatch '^\d{1,3}\.\d{1,3}\.\d{1,3}$' -or $Manifest.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Некорректный манифест обновления.' }
-    $expected='https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-v' + $Manifest.version + '/Evgenium-Windows-' + $Manifest.version + '-x64.zip'
-    if ($Manifest.url -cne $expected) { throw 'Адрес обновления не принадлежит ожидаемому релизу Evgenium.' }
+    if ($Manifest.schema -ne 1 -or $Manifest.version -notmatch '^\d{1,3}\.\d{1,3}\.\d{1,3}$') { throw 'Некорректный манифест обновления.' }
+    $base='https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-v' + $Manifest.version + '/Evgenium-Windows-' + $Manifest.version + '-x64'
+    if ($Manifest.installer_url -cne ($base+'-Setup.exe') -or $Manifest.installer_sha256 -notmatch '^[a-f0-9]{64}$' -or $Manifest.installer_size -lt 100000 -or $Manifest.installer_size -gt 30MB) { throw 'Манифест не содержит проверенный установщик Evgenium.' }
 }
-function Expand-VerifiedArchive([string]$Archive, [string]$Destination) {
-    Add-Type -AssemblyName System.IO.Compression
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $allowed=@('Evgenium.exe','EvgeniumCLI.exe','README.txt','VERSION')
-    $zip=[IO.Compression.ZipFile]::OpenRead($Archive)
-    try {
-        if ($zip.Entries.Count -ne $allowed.Count) { throw 'Неподдерживаемая структура архива.' }
-        $seen=@{}
-        foreach ($entry in $zip.Entries) {
-            if ($entry.FullName -cnotin $allowed -or $seen.ContainsKey($entry.FullName) -or $entry.Length -gt 8MB -or (($entry.ExternalAttributes -shr 16) -band 0xF000) -eq 0xA000) { throw 'Небезопасная запись в архиве.' }
-            $seen[$entry.FullName]=$true
-        }
-        $null=New-Item -ItemType Directory -Path $Destination
-        foreach ($entry in $zip.Entries) { [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $Destination $entry.FullName), $false) }
-    } finally { $zip.Dispose() }
-}
-function Write-Launcher {
-    $active=(Get-Content -LiteralPath (Join-Path $script:AppRoot 'current.txt') -Raw).Trim()
-    if ($active -notmatch '^\d{1,3}\.\d{1,3}\.\d{1,3}$') { throw 'Неверная версия ярлыка.' }
-    $shell=New-Object -ComObject WScript.Shell
-    $shortcut=$shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Programs')) 'Evgenium Network.lnk'))
-    $shortcut.TargetPath=Join-Path (Join-Path (Join-Path $script:AppRoot 'versions') $active) 'Evgenium.exe'; $shortcut.WorkingDirectory=$script:AppRoot; $shortcut.Save()
-}
-function Update-App {
+function Start-VerifiedInstaller($Manifest) {
+    Validate-Manifest $Manifest
     Assert-NoReparse $script:AppRoot; Protect-Directory $script:AppRoot
+    $downloads=Join-Path $script:AppRoot 'updates'; Protect-Directory $downloads
+    # A new private directory prevents substitution of a predictable download path.
+    $stage=Join-Path $downloads ([Guid]::NewGuid().ToString('N')); Protect-Directory $stage
+    $installer=Join-Path $stage 'Setup.exe'; $started=$false
+    try {
+        $null=Invoke-WebRequest -UseBasicParsing -Uri $Manifest.installer_url -OutFile $installer -TimeoutSec 180
+        if ((Get-Item -LiteralPath $installer).Length -ne $Manifest.installer_size -or (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Manifest.installer_sha256) { throw 'Контрольная сумма обновления не совпала. Текущая версия сохранена.' }
+        $null=Start-Process -FilePath $installer -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS' -PassThru
+        $started=$true; $global:EvgeniumInstallerStarted=$true
+    } finally { if (!$started -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force } }
+}
+function Update-App([switch]$InstallCurrent) {
     $manifest=Invoke-RestMethod -UseBasicParsing -Uri $script:Manifest -TimeoutSec 20
     Validate-Manifest $manifest
-    if ([version]$manifest.version -le [version]$script:Version) { Write-Output ('Установлена актуальная версия ' + $script:Version + '.'); return }
-    $versions=Join-Path $script:AppRoot 'versions'; Assert-NoReparse $versions; $null=New-Item -ItemType Directory -Path $versions -Force
-    $stage=Join-Path $versions ([Guid]::NewGuid().ToString('N'))
-    $archive=Join-Path $script:AppRoot ([Guid]::NewGuid().ToString('N')+'.zip')
-    try {
-        $null=Invoke-WebRequest -UseBasicParsing -Uri $manifest.url -OutFile $archive -TimeoutSec 120
-        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest.sha256) { throw 'Контрольная сумма обновления не совпала. Текущая версия сохранена.' }
-        Expand-VerifiedArchive $archive $stage
-        if ((Get-Content -LiteralPath (Join-Path $stage 'VERSION') -Raw).Trim() -cne $manifest.version) { throw 'Версия архива не совпала с манифестом.' }
-        $check=Start-Process -FilePath (Join-Path $stage 'EvgeniumCLI.exe') -ArgumentList '--command','selftest' -PassThru -Wait -WindowStyle Hidden
-        if ($check.ExitCode -ne 0) { throw 'Проверка новой версии не пройдена. Текущая версия сохранена.' }
-        $target=Join-Path $versions $manifest.version
-        if (Test-Path -LiteralPath $target) { throw 'Папка новой версии уже существует. Текущая версия сохранена.' }
-        Move-Item -LiteralPath $stage -Destination $target
-        # Only the small pointer is replaced after every preceding check succeeded.
-        $pointer=Join-Path $script:AppRoot 'current.new'; [IO.File]::WriteAllText($pointer,$manifest.version,[Text.Encoding]::ASCII)
-        Move-Item -LiteralPath $pointer -Destination (Join-Path $script:AppRoot 'current.txt') -Force
-        Write-Launcher
-        Write-Output ('Обновление ' + $manifest.version + ' установлено. Закройте окно и откройте Evgenium через меню «Пуск». VPN продолжает работать.')
-    } finally { if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }; if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force } }
+    if ([version]$manifest.version -lt [version]$script:Version) { throw 'В репозитории пока нет установщика этой версии. Повторите позже.' }
+    if (!$InstallCurrent -and [version]$manifest.version -eq [version]$script:Version) { Write-Output ('Установлена актуальная версия ' + $script:Version + '.'); return }
+    Start-VerifiedInstaller $manifest
+    Write-Output 'Обновление проверено. Приложение закроется и откроется после установки. VPN продолжает работать.'
 }
-function Install-App {
-    $pointer=Join-Path $script:AppRoot 'current.txt'
-    if (Test-Path -LiteralPath $pointer) { $current=(Get-Content -LiteralPath $pointer -Raw).Trim(); if ($current -match '^\d{1,3}\.\d{1,3}\.\d{1,3}$' -and [version]$current -gt [version]$script:Version) { Write-Output 'Уже установлена более новая версия. Откройте Evgenium из меню «Пуск».'; return } }
-    Assert-NoReparse $script:AppRoot; Protect-Directory $script:AppRoot
-    $versions=Join-Path $script:AppRoot 'versions'; Assert-NoReparse $versions; $null=New-Item -ItemType Directory -Path $versions -Force
-    $target=Join-Path $versions $script:Version
-    if ([IO.Path]::GetFullPath($target).TrimEnd('\') -ine [IO.Path]::GetFullPath($ExecutableDirectory).TrimEnd('\')) {
-        if (!(Test-Path -LiteralPath $target)) {
-            $stage=Join-Path $versions ([Guid]::NewGuid().ToString('N')); $null=New-Item -ItemType Directory -Path $stage
-            try { foreach ($file in @('Evgenium.exe','EvgeniumCLI.exe','README.txt','VERSION')) { Copy-Item -LiteralPath (Join-Path $ExecutableDirectory $file) -Destination (Join-Path $stage $file) }; Move-Item -LiteralPath $stage -Destination $target }
-            finally { if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force } }
+function Remove-LegacyInstall {
+    # Runs as the original desktop user; never touches private credentials or VPN.
+    foreach ($name in @('versions','current.txt','current.new')) {
+        $path=Join-Path $script:AppRoot $name
+        if (Test-Path -LiteralPath $path) { Assert-SafeTree $path; Remove-Item -LiteralPath $path -Recurse -Force }
+    }
+}
+function Assert-SafeTree([string]$Path) {
+    Assert-NoReparse $Path
+    if (Test-Path -LiteralPath $Path -PathType Container) {
+        foreach ($child in Get-ChildItem -LiteralPath $Path -Force) {
+            if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Папка приложения содержит ссылку. Удаление остановлено, чтобы сохранить посторонние данные.' }
+            if ($child.PSIsContainer) { Assert-SafeTree $child.FullName }
         }
     }
-    [IO.File]::WriteAllText((Join-Path $script:AppRoot 'current.txt'),$script:Version,[Text.Encoding]::ASCII); Write-Launcher
-    Write-Output 'Приложение добавлено в меню «Пуск». Токен и ключи хранятся отдельно от обновлений.'
+}
+function Remove-OwnedRuntime {
+    if (!(Test-Path -LiteralPath $script:RuntimeOwner)) { return }
+    $owner=Get-ItemProperty -LiteralPath $script:RuntimeOwner
+    if ($owner.OwnerSid -ne $script:Sid) { return }
+    $other=@(Get-Service -Name 'WireGuardTunnel$*' -ErrorAction SilentlyContinue)
+    if (!$other.Count) {
+        if ($owner.ProductCode -notmatch '^\{[0-9A-Fa-f-]{36}\}$') { throw 'Не удалось определить пакет драйвера. Удаление остановлено.' }
+        $process=Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList '/x',$owner.ProductCode,'/qn','/norestart' -Wait -PassThru
+        if ($process.ExitCode -notin @(0,1605,3010)) { throw 'Не удалось удалить установленный Evgenium драйвер. Повторите удаление.' }
+    }
+    # A pre-existing WireGuard installation, or a runtime shared with other tunnels,
+    # belongs to the user and is intentionally preserved.
+    Remove-Item -LiteralPath $script:RuntimeOwner -Force
+    if (!(Get-ChildItem -LiteralPath 'HKLM:\SOFTWARE\EvgeniumNetwork')) { Remove-Item -LiteralPath 'HKLM:\SOFTWARE\EvgeniumNetwork' -Force }
+}
+function Uninstall-App {
+    Assert-SafeTree $script:AppRoot
+    $needsAdmin=(Get-Service -Name $script:Service -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $script:RuntimeOwner)
+    if ($needsAdmin) {
+        if (!(Invoke-Elevated 'uninstall-system')) { $null=Disconnect-Vpn; Remove-OwnedRuntime }
+    }
+    if (Test-Path -LiteralPath $script:AppRoot) { Remove-Item -LiteralPath $script:AppRoot -Recurse -Force }
+    # Inno removes registered shortcuts and installed files after this succeeds.
 }
 function Self-Test {
-    Validate-Manifest ([pscustomobject]@{schema=1;version='0.1.1';sha256=('a'*64);url='https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-v0.1.1/Evgenium-Windows-0.1.1-x64.zip'})
-    $rejected=$false; try { Validate-Manifest ([pscustomobject]@{schema=1;version='0.1.1';sha256=('a'*64);url='https://example.com/payload.zip'}) } catch { $rejected=$true }; if (!$rejected) { throw 'Unsafe URL accepted' }
+    Validate-Manifest ([pscustomobject]@{schema=1;version='0.2.0';installer_size=1000000;installer_sha256=('a'*64);installer_url='https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-v0.2.0/Evgenium-Windows-0.2.0-x64-Setup.exe'})
+    $rejected=$false; try { Validate-Manifest ([pscustomobject]@{schema=1;version='0.2.0';installer_size=1000000;installer_sha256=('a'*64);installer_url='https://example.com/payload.exe'}) } catch { $rejected=$true }; if (!$rejected) { throw 'Unsafe URL accepted' }
     Validate-Profile ([pscustomobject]@{schema=1;public_key='AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';endpoint='195.209.211.163:51820';address='10.78.0.2/32';dns=@('1.1.1.1','1.0.0.1');mtu=1280;allowed_ips=@('0.0.0.0/0','::/0')})
     if (!(Check-Key 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=')) { throw 'Key check failed' }
     Write-Output ('Evgenium Windows ' + $script:Version + ': selftest OK')
 }
 function Show-Gui {
-    if (!(Test-Path -LiteralPath (Join-Path $script:AppRoot 'current.txt'))) { $null=Install-App }
+    # Transition from the old ZIP updater to a registered Windows installation.
+    $installed=Join-Path $env:LOCALAPPDATA 'Programs\EvgeniumNetwork'
+    if ([IO.Path]::GetFullPath($ExecutableDirectory).TrimEnd('\') -ine [IO.Path]::GetFullPath($installed).TrimEnd('\')) {
+        Add-Type -AssemblyName System.Windows.Forms
+        try { $null=Update-App -InstallCurrent } catch { $null=[Windows.Forms.MessageBox]::Show(($_.Exception.Message+' Скачайте Setup.exe из релиза Windows.'),'Evgenium') }
+        return
+    }
     Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
     [Windows.Forms.Application]::EnableVisualStyles()
     $form=New-Object Windows.Forms.Form; $form.Text='Evgenium Network'; $form.ClientSize=New-Object Drawing.Size(460,570); $form.MinimumSize=$form.Size; $form.BackColor=[Drawing.Color]::FromArgb(24,21,29); $form.ForeColor=[Drawing.Color]::WhiteSmoke; $form.Font=New-Object Drawing.Font('Segoe UI',11); $form.StartPosition='CenterScreen'
@@ -314,9 +338,10 @@ function Show-Gui {
         $status.Text='Выполняется… Подтвердите запрос Windows, если он появится.'; [Windows.Forms.Application]::DoEvents()
         try {
             $message=switch ($which) { 'on' { Connect-Vpn } 'off' { Disconnect-Vpn } 'update' { Update-App } }
+            if ($global:EvgeniumInstallerStarted) { $form.Close(); return }
             if (!$message) { $message=if (Tunnel-Running) { 'Подключено через Эстонию. IP: 38.180.164.67.' } else { 'VPN отключён.' } }; $status.Text=($message -join "`n")
         } catch { $status.Text=$_.Exception.Message }
-        finally { $connect.Enabled=$true; $off.Enabled=$true; $update.Enabled=$true; $save.Enabled=$true; $form.UseWaitCursor=$false }
+        finally { if (!$form.IsDisposed) { $connect.Enabled=$true; $off.Enabled=$true; $update.Enabled=$true; $save.Enabled=$true; $form.UseWaitCursor=$false } }
     }.GetNewClosure()
     $connect.Add_Click({ & $action 'on' }.GetNewClosure()); $off.Add_Click({ & $action 'off' }.GetNewClosure()); $update.Add_Click({ & $action 'update' }.GetNewClosure())
     $save.Add_Click({
@@ -328,21 +353,33 @@ function Show-Gui {
     [Windows.Forms.Application]::Run($form); $form.Dispose()
 }
 try {
+    if ($ResultId -and $ResultId -notmatch '^[a-f0-9]{32}$') { throw 'Некорректный идентификатор операции.' }
     if ($ExpectedSid -and $ExpectedSid -ne $script:Sid) { throw 'UAC выполнен под другой учётной записью. Используйте ту же учётную запись Windows.' }
     if (![Environment]::Is64BitProcess) { throw 'Эта сборка предназначена для Windows x64.' }
     switch ($Command.ToLowerInvariant()) {
         'gui' { Show-Gui }
         'on' { Connect-Vpn }
         'off' { Disconnect-Vpn }
-        'status' { if (Tunnel-Running) { if (Validate-Connection) { 'Подключено через Эстонию. IP: 38.180.164.67.' } else { 'Туннель запущен, доступ через Эстонию не подтверждён. EvgeniumCLI.exe on выполнит восстановление.'; $global:EvgeniumExitCode=1 } } else { 'VPN отключён.' } }
-        'token' { [Console]::Write('Токен EVN1 (ввод скрыт): '); $value=''; while ($true) { $k=[Console]::ReadKey($true); if ($k.Key -eq 'Enter') { break }; if ($k.Key -eq 'Backspace') { if ($value.Length) { $value=$value.Substring(0,$value.Length-1) } } elseif (![char]::IsControl($k.KeyChar)) { $value+=$k.KeyChar } }; [Console]::WriteLine(); [Console]::Write('Имя устройства: '); Set-Token $value ([Console]::ReadLine()); $value=$null; 'Токен сохранён. EvgeniumCLI.exe on — подключиться.' }
+        'status' { if (Tunnel-Running) { if (Validate-Connection) { 'Подключено через Эстонию. IP: 38.180.164.67.' } else { 'Туннель запущен, доступ через Эстонию не подтверждён. Нажмите «Включить» для восстановления.'; $global:EvgeniumExitCode=1 } } else { 'VPN отключён.' } }
         'update' { Update-App }
-        'install' { Install-App }
+        'post-install' { Remove-LegacyInstall }
+        'uninstall' { Uninstall-App }
+        'uninstall-system' { if (Invoke-Elevated 'uninstall-system') { return }; $null=Disconnect-Vpn; Remove-OwnedRuntime }
         'selftest' { Self-Test }
-        default { throw 'Команды: on, off, status, token, update, install, selftest.' }
+        default { throw 'Неподдерживаемая внутренняя операция.' }
     }
 } catch {
     $global:EvgeniumExitCode=1
-    if ($Command -eq 'gui') { Add-Type -AssemblyName System.Windows.Forms; $null=[Windows.Forms.MessageBox]::Show($_.Exception.Message,'Evgenium') }
+    if ($Command -in @('gui','uninstall')) { Add-Type -AssemblyName System.Windows.Forms; $null=[Windows.Forms.MessageBox]::Show($_.Exception.Message,'Evgenium') }
     else { [Console]::Error.WriteLine($_.Exception.Message) }
+}
+
+# Only a fixed, non-secret result crosses the UAC boundary. Token/key stay in DPAPI.
+if ($ResultId -match '^[a-f0-9]{32}$' -and $ExpectedSid -eq $script:Sid) {
+    try {
+        Protect-Directory $script:Data
+        $path=Join-Path $script:Data ('operation-'+$ResultId+'.json'); Assert-NoReparse $path
+        $message=if ($global:EvgeniumExitCode) { [string]$Error[0].Exception.Message } else { '' }
+        [IO.File]::WriteAllText($path,(@{ok=($global:EvgeniumExitCode -eq 0);message=$message} | ConvertTo-Json -Compress),(New-Object Text.UTF8Encoding($false)))
+    } catch { $global:EvgeniumExitCode=1 }
 }
