@@ -714,9 +714,17 @@ func run() error {
 		}
 		fmt.Println(base64.StdEncoding.EncodeToString(key.PublicKey().Bytes()))
 		return nil
-	case "validate":
+	case "validate", "render":
 		var c Config
 		if e := json.NewDecoder(io.LimitReader(os.Stdin, 128*1024)).Decode(&c); e != nil {
+			return e
+		}
+		if args[0] == "render" {
+			b, e := marshalCore(c, "vpn", false)
+			if e != nil {
+				return e
+			}
+			_, e = os.Stdout.Write(b)
 			return e
 		}
 		return validateConfig(c)

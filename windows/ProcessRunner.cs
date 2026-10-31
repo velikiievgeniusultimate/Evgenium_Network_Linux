@@ -25,7 +25,7 @@ public static class EvgeniumProcess {
     [DllImport("kernel32.dll")] private static extern bool TerminateProcess(IntPtr process,uint exitCode);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
     public static Result Run(string executable,string arguments,string input,int timeout) {
-        if (!Regex.IsMatch(arguments,@"\A(selftest|keygen|pubkey|validate|validate-exception|routes|reload|remove|uninstall-all|upgrade-stop|upgrade-start|install S-1-5-21-[0-9-]+|diagnose S-1-5-21-[0-9-]+)\z")) throw new ArgumentException("Unsupported engine operation");
+        if (!Regex.IsMatch(arguments,@"\A(selftest|keygen|pubkey|render|validate|validate-exception|routes|reload|remove|uninstall-all|upgrade-stop|upgrade-start|install S-1-5-21-[0-9-]+|diagnose S-1-5-21-[0-9-]+)\z")) throw new ArgumentException("Unsupported engine operation");
         if(executable.IndexOf('"')>=0||input.Length>131072)throw new ArgumentException("Invalid engine input");
         using (var stdin=new AnonymousPipeServerStream(PipeDirection.Out,HandleInheritability.Inheritable))
         using (var stdout=new AnonymousPipeServerStream(PipeDirection.In,HandleInheritability.Inheritable))

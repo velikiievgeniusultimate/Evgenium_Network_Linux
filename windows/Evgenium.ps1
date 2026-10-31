@@ -37,6 +37,26 @@ function Assert-NoReparse([string]$Path) {
         if ($parent -eq $current) { break }; $current = $parent
     }
 }
+function Protect-EngineDirectory {
+    if (!(Is-Admin)) {throw 'Для подготовки службы нужны права администратора.'}
+    $root=Join-Path $env:ProgramData 'EvgeniumNetwork'
+    foreach($path in @($root,$script:EngineData)) {
+        Assert-NoReparse $path
+        if(!(Test-Path -LiteralPath $path)){$null=New-Item -ItemType Directory -Path $path -Force}
+        $acl=New-Object Security.AccessControl.DirectorySecurity
+        $acl.SetAccessRuleProtection($true,$false)
+        $admin=New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
+        $acl.SetOwner($admin)
+        foreach($sid in @('S-1-5-18','S-1-5-32-544')) {
+            $identity=New-Object Security.Principal.SecurityIdentifier($sid)
+            $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))
+        }
+        $reader=if($path -eq $root){'S-1-5-32-545'}else{$script:Sid}
+        $identity=New-Object Security.Principal.SecurityIdentifier($reader)
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity,'ReadAndExecute','ContainerInherit,ObjectInherit','None','Allow')))
+        Set-Acl -LiteralPath $path -AclObject $acl
+    }
+}
 function Read-State {
     Assert-NoReparse $script:StatePath
     if (Test-Path -LiteralPath $script:StatePath) {
@@ -140,7 +160,7 @@ function Get-LAN {
 function Write-EngineConfig([switch]$Repair) {
     $state=Read-State
     Validate-Profile $state.profile
-    Protect-Directory $script:EngineData
+    Protect-EngineDirectory
     $config=@{schema=1;owner=$script:Sid;private_key=(Unseal $state.private_key);profile=$state.profile;policy=(Read-Policy);lan=@(Get-LAN);reset_rating=[bool]$Repair}
     # Only the engine's whitelist is serialized; enrollment metadata cannot add
     # arbitrary Xray options, executables, endpoints or routing rules.
@@ -148,7 +168,7 @@ function Write-EngineConfig([switch]$Repair) {
     $text=$config | ConvertTo-Json -Depth 10
     $null=Invoke-Engine 'validate' $text
     $path=Join-Path $script:EngineData 'engine.json'; $tmp=Join-Path $script:EngineData ([Guid]::NewGuid().ToString('N')+'.tmp')
-    try { [IO.File]::WriteAllText($tmp,$text,(New-Object Text.UTF8Encoding($false))); Move-Item -LiteralPath $tmp -Destination $path -Force }
+    try { [IO.File]::WriteAllText($tmp,$text,(New-Object Text.UTF8Encoding($false))); $acl=Get-Acl -LiteralPath $tmp;$acl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')));Set-Acl -LiteralPath $tmp -AclObject $acl;Move-Item -LiteralPath $tmp -Destination $path -Force }
     finally { $config.private_key=$null; $text=$null; if (Test-Path -LiteralPath $tmp) {Remove-Item -LiteralPath $tmp -Force} }
 }
 function Connect-Vpn([switch]$Repair) {
@@ -253,5 +273,5 @@ function Update-App([switch]$InstallCurrent) {
     if ([version]$manifest.version -lt [version]$script:Version) { throw 'В репозитории пока нет установщика этой версии. Повторите позже.' }
     if (!$InstallCurrent -and [version]$manifest.version -eq [version]$script:Version) { Write-Output ('Установлена актуальная версия ' + $script:Version + '.'); return }
     Start-VerifiedInstaller $manifest
-    Write-Output 'Обновление проверено. Приложение закроется и откроется после установки. VPN продолжает работать.'
+    Write-Output 'Обновление проверено. Приложение закроется и откроется после установки. На время перезапуска VPN защищённые подключения приостановятся.'
 }

@@ -188,7 +188,7 @@ func coreConfig(c Config, selected string, probeOnly bool) (map[string]any, erro
 			outbounds = append(outbounds, obj{"tag": "carrier-" + t.ID, "protocol": "vless", "settings": obj{"vnext": []any{obj{"address": "195.209.211.163", "port": t.Port, "users": []any{obj{"id": t.UUID, "encryption": "none"}}}}}, "streamSettings": stream})
 		}
 	}
-	outbounds = append(outbounds, obj{"tag": "vpn", "protocol": "wireguard", "settings": obj{"secretKey": c.PrivateKey, "address": []string{c.Profile.Address}, "mtu": 1280, "noKernelTun": true, "peers": []any{obj{"endpoint": c.Profile.Endpoint, "publicKey": c.Profile.PublicKey, "allowedIPs": []string{"0.0.0.0/0", "::/0"}, "keepAlive": 25}}}, "proxySettings": obj{"tag": "wg-bridge"}}, obj{"tag": "wg-bridge", "protocol": "socks", "settings": obj{"servers": []any{obj{"address": "127.0.0.1", "port": 18560}}}, "streamSettings": obj{"sockopt": obj{"interface": loopbackName()}}})
+	outbounds = append(outbounds, obj{"tag": "vpn", "protocol": "wireguard", "settings": obj{"secretKey": c.PrivateKey, "address": []string{c.Profile.Address}, "mtu": 1280, "noKernelTun": true, "peers": []any{obj{"endpoint": c.Profile.Endpoint, "publicKey": c.Profile.PublicKey, "allowedIPs": []string{"0.0.0.0/0", "::/0"}, "keepAlive": 25}}}, "streamSettings": obj{"sockopt": obj{"dialerProxy": "wg-bridge"}}}, obj{"tag": "wg-bridge", "protocol": "socks", "settings": obj{"servers": []any{obj{"address": "127.0.0.1", "port": 18560}}}, "streamSettings": obj{"sockopt": obj{"interface": loopbackName()}}})
 	selected = "vpn"
 	outbounds = append(outbounds, obj{"tag": "direct", "protocol": "freedom", "settings": obj{"domainStrategy": "UseIPv4"}}, obj{"tag": "dns-out", "protocol": "dns"}, obj{"tag": "block", "protocol": "blackhole"})
 	if !probeOnly {
