@@ -509,7 +509,6 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 						st.Ranking[i].Losses++
 					}
 				}
-				currentBridge.resetCarrier(desired)
 				next := following(c, st.Ranking, desired)
 				if next != "" {
 					desired = next
@@ -521,6 +520,15 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 					needRank = true
 					lastReset = time.Now()
 				}
+				// Recreate a stale WG/SOCKS session under the persistent guard.
+				// Selecting a different carrier alone can retain a dead association.
+				core.stop()
+				core = nil
+				currentBridge.resetAllCarriers()
+				st.State = "recovering"
+				st.Message = "Пересоздаю соединение через резервный маршрут…"
+				writeStatus(e.sid, st)
+				return 100 * time.Millisecond
 			}
 		}
 		writeStatus(e.sid, st)
