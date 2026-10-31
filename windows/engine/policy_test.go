@@ -91,7 +91,14 @@ func TestRussiaExitIsOptInAndOverridesOnlySelectedProcesses(t *testing.T) {
 		t.Fatal("Russia egress enabled by default")
 	}
 	c.Policy.BlueStacksRussia = true
-	c.Policy.Applications = []string{"HD-Player.exe"}
+	c.Policy.Applications = []string{`C:\Custom\BlueStacks\HD-Player.exe`}
+	foundPath := false
+	for _, value := range russiaApplications(c.Policy) {
+		foundPath = foundPath || value == c.Policy.Applications[0]
+	}
+	if !foundPath {
+		t.Fatal("Closed emulator custom path lost its physical-egress deny")
+	}
 	c.Policy.Ports = []string{"both:443:both"}
 	c.Policy.DNS = []string{"1.1.1.1"}
 	v, err := coreConfig(c, "vpn", false)

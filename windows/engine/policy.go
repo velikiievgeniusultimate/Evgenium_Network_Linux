@@ -32,6 +32,22 @@ func russiaApplications(p Policy) []string {
 		values = append(values, blueStacksProcesses...)
 		values = append(values, installedBlueStacksApplications()...)
 	}
+	// An explicit direct exception can contain an emulator's custom install path
+	// even while it is closed. Retain that path for the higher-priority WFP deny
+	// instead of waiting for a running-process scan to discover it.
+	basename := func(s string) string {
+		s = strings.ReplaceAll(s, `\`, `/`)
+		return strings.ToLower(s[strings.LastIndex(s, `/`)+1:])
+	}
+	wanted := map[string]bool{}
+	for _, value := range values {
+		wanted[basename(value)] = true
+	}
+	for _, value := range p.Applications {
+		if wanted[basename(value)] {
+			values = append(values, value)
+		}
+	}
 	return values
 }
 
