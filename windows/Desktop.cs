@@ -150,6 +150,7 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
  private void FillApps(){if(running==null)return;running.Items.Clear();foreach(var v in apps){var a=Map(v);running.Items.Add(new AppItem{Name=TextOf(a,"name"),Path=TextOf(a,"exe")});}if(running.Items.Count>0)running.SelectedIndex=0;}
  public void SetError(string message){lastError=message;if(statusText!=null){statusText.Text=message;statusText.Foreground=BrushOf("#ffad9e");}if(!IsVisible)tray.ShowBalloonTip(5000,"Evgenium",message,Forms.ToolTipIcon.Warning);}
  public void SetBusy(bool value){Busy=value;cards.IsEnabled=!value;navigation.IsEnabled=!value;startup.IsEnabled=!value;if(value){lastError="";if(statusText!=null)statusText.Text="Выполняется… Подтвердите запрос Windows, если он появится.";}else ApplySnapshot();}
+ public void StartInTray(){EventHandler once=null;once=(s,e)=>{ContentRendered-=once;Hide();};ContentRendered+=once;}
  public void OpenMain(){Show();WindowState=WindowState.Normal;Activate();}
  public void ExitApplication(){AllowExit=true;Close();}
  public void Dispose(){if(!IsDisposed){AllowExit=true;Close();}tray.Dispose();}
@@ -167,7 +168,7 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
  }
  private static void ValidateChildren(DependencyObject node){for(int i=0;i<VisualTreeHelper.GetChildrenCount(node);i++){var c=VisualTreeHelper.GetChild(node,i);var f=c as FrameworkElement;var parent=node as FrameworkElement;if(f!=null&&parent!=null&&f.Visibility==Visibility.Visible&&f is Button&&parent is Grid&&f.ActualWidth>parent.ActualWidth+1)throw new Exception("Button exceeds its row");ValidateChildren(c);}}
  [DllImport("user32.dll")]private static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr w,IntPtr l);
- public void ValidateChrome(){var h=new WindowInteropHelper(this).Handle;if((GetWindowLong(h,-16)&0x10000)!=0)throw new Exception("Native maximize is enabled");foreach(var point in new[]{new Point(1,1),new Point(ActualWidth-2,1),new Point(1,ActualHeight-2),new Point(ActualWidth-2,ActualHeight-2)}){var p=PointToScreen(point);int expected=point.Y<3?(point.X<3?13:14):(point.X<3?16:17);long xy=((long)(ushort)(int)p.Y<<16)|(ushort)(int)p.X;if(SendMessage(h,0x84,IntPtr.Zero,(IntPtr)xy).ToInt32()!=expected)throw new Exception("Native corner sizing failed");}}
+ public void ValidateChrome(){var h=new WindowInteropHelper(this).Handle;if((GetWindowLong(h,-16)&0x10000)!=0)throw new Exception("Native maximize is enabled");foreach(var point in new[]{new Point(1,1),new Point(ActualWidth-2,1),new Point(1,ActualHeight-2),new Point(ActualWidth-2,ActualHeight-2)}){var p=PointToScreen(point);int expected=point.Y<3?(point.X<3?13:14):(point.X<3?16:17);int xy=unchecked(((int)p.Y<<16)|((int)p.X&0xffff));if(SendMessage(h,0x84,IntPtr.Zero,(IntPtr)xy).ToInt32()!=expected)throw new Exception("Native corner sizing failed");}}
  [DllImport("user32.dll")]private static extern int GetWindowLong(IntPtr h,int index);
  [DllImport("user32.dll")]private static extern int SetWindowLong(IntPtr h,int index,int value);
  [DllImport("dwmapi.dll")]private static extern int DwmSetWindowAttribute(IntPtr h,int attribute,ref int value,int size);

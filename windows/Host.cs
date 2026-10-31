@@ -28,7 +28,13 @@ internal static class Host {
             if (command == "gui" || command == "widget") {
                 bool created;
                 singleInstance = new Mutex(true, "Local\\EvgeniumNetwork.Desktop", out created);
-                if (!created) { MessageBox.Show("Evgenium уже открыт. Найдите его окно на панели задач.", "Evgenium"); return 0; }
+                if (!created) {
+                    for (int attempt=0;attempt<20;attempt++) {
+                        try {using(var open=EventWaitHandle.OpenExisting("Local\\EvgeniumNetwork.Open")){open.Set();return 0;}}
+                        catch(WaitHandleCannotBeOpenedException){Thread.Sleep(100);}
+                    }
+                    MessageBox.Show("Evgenium ещё запускается. Повторите открытие через несколько секунд.", "Evgenium");return 0;
+                }
             }
             using (var reader = new StreamReader(Assembly.GetExecutingAssembly().GetManifestResourceStream("Evgenium.ps1")))
             using (var runspace = RunspaceFactory.CreateRunspace())

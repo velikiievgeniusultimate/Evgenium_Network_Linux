@@ -1,0 +1,28 @@
+name: Windows native widget prototype
+on:
+  push:
+    paths: ['windows/widgets/**', '.github/workflows/windows-widget.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compile:
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+      - name: Compile provider and validate card state
+        shell: powershell
+        run: |
+          dotnet publish windows/widgets/EvgeniumWidget.csproj -c Release -r win-x64 --self-contained true -o "$env:RUNNER_TEMP\widget-prototype"
+          if($LASTEXITCODE -ne 0){throw 'Widget compilation failed'}
+          $p=Start-Process "$env:RUNNER_TEMP\widget-prototype\EvgeniumWidget.exe" -ArgumentList '--selftest' -Wait -PassThru
+          if($p.ExitCode -ne 0){throw 'Widget card self-test failed'}
+          Copy-Item windows/widgets/README.txt "$env:RUNNER_TEMP\widget-prototype"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-widget-PROTOTYPE-not-for-installation
+          path: ${{ runner.temp }}/widget-prototype

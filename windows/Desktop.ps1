@@ -10,6 +10,7 @@ function Show-Gui([switch]$WidgetOnly) {
     Add-Type -AssemblyName System.Windows.Forms;Add-Type -AssemblyName PresentationFramework
     $window=New-Object EvgeniumDesktop
     $closeEvent=New-Object Threading.EventWaitHandle($false,[Threading.EventResetMode]::AutoReset,'Local\EvgeniumNetwork.Close')
+    $openEvent=New-Object Threading.EventWaitHandle($false,[Threading.EventResetMode]::AutoReset,'Local\EvgeniumNetwork.Open')
     $handler={param($action,$raw)
         $request=$raw | ConvertFrom-Json
         if ($action -in @('refresh','running','token-edit')) {
@@ -45,15 +46,17 @@ function Show-Gui([switch]$WidgetOnly) {
     $timer=New-Object Windows.Threading.DispatcherTimer;$timer.Interval=[TimeSpan]::FromSeconds(2)
     $timer.add_Tick({
         if($closeEvent.WaitOne(0)){$window.ExitApplication();return}
+        if($openEvent.WaitOne(0)){$window.OpenMain()}
         if(!$window.Busy){try{Snapshot-Desktop $window}catch{$window.SetError($_.Exception.Message)}}
     }.GetNewClosure())
     # The retired floating widget is intentionally not recreated on upgrade.
+    if($WidgetOnly){$window.StartInTray()}
     $application=New-Object Windows.Application;$application.ShutdownMode='OnMainWindowClose'
     try {
         Snapshot-Desktop $window
         $window.SetApps((ConvertTo-Json -InputObject @(Get-RunningApps) -Compress))
         $timer.Start();$null=$application.Run($window)
-    }finally{$timer.Stop();$closeEvent.Dispose();$window.Dispose()}
+    }finally{$timer.Stop();$closeEvent.Dispose();$openEvent.Dispose();$window.Dispose()}
 }
 function Test-Desktop {
     Add-Type -AssemblyName PresentationFramework

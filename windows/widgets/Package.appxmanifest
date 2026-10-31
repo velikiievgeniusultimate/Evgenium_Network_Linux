@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3" xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10" xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities" IgnorableNamespaces="uap uap3 com rescap">
+ <Identity Name="Evgenium.Network.Widget" Publisher="CN=Evgenium Network" Version="0.2.1.0" ProcessorArchitecture="x64"/>
+ <Properties><DisplayName>Evgenium Network</DisplayName><PublisherDisplayName>Evgenium Network</PublisherDisplayName><Logo>Assets\app-256.png</Logo></Properties>
+ <Resources><Resource Language="ru-ru"/><Resource Language="en-us"/></Resources>
+ <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0"/></Dependencies>
+ <Applications><Application Id="Widget" Executable="EvgeniumWidget.exe" EntryPoint="Windows.FullTrustApplication">
+  <uap:VisualElements DisplayName="Evgenium Network" Description="Управление VPN" BackgroundColor="#19151c" Square150x150Logo="Assets\app-256.png" Square44x44Logo="Assets\app-256.png" AppListEntry="none"/>
+  <Extensions>
+   <com:Extension Category="windows.comServer"><com:ComServer><com:ExeServer Executable="EvgeniumWidget.exe" DisplayName="Evgenium Network"><com:Class Id="E7214EB8-485E-4C4E-AB89-1527E3EAE7C9" DisplayName="Evgenium VPN Widget"/></com:ExeServer></com:ComServer></com:Extension>
+   <uap3:Extension Category="windows.appExtension"><uap3:AppExtension Name="com.microsoft.windows.widgets" DisplayName="Evgenium Network" Id="EvgeniumWidget" PublicFolder="Public"><uap3:Properties><WidgetProvider>
+    <ProviderIcons><Icon Path="Assets\app-256.png"/></ProviderIcons>
+    <Activation><CreateInstance ClassId="E7214EB8-485E-4C4E-AB89-1527E3EAE7C9"/></Activation>
+    <Definitions><Definition Id="EvgeniumVpn" DisplayName="E-VPN" Description="Включение VPN и состояние подключения" AllowMultiple="false"><Capabilities><Capability><Size Name="small"/></Capability><Capability><Size Name="medium"/></Capability></Capabilities><ThemeResources><Icons><Icon Path="Assets\app-256.png"/></Icons><Screenshots><Screenshot Path="Assets\widget-preview.png" DisplayAltText="E-VPN: состояние и кнопка подключения"/></Screenshots><DarkMode/><LightMode/></ThemeResources></Definition></Definitions>
+   </WidgetProvider></uap3:Properties></uap3:AppExtension></uap3:Extension>
+  </Extensions>
+ </Application></Applications>
+ <Capabilities><rescap:Capability Name="runFullTrust"/></Capabilities>
+</Package>
