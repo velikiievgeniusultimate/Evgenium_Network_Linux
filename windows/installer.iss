@@ -36,6 +36,7 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "{#PackageDir}\Evgenium.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\Evgenium.exe.config"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\EvgeniumEngine.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\xray.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\wintun.dll"; DestDir: "{app}"; Flags: ignoreversion

@@ -31,7 +31,7 @@ public sealed class EvgeniumDesktop : Form {
  [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr w,IntPtr l);
  [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr h);
  public EvgeniumDesktop() {
-  Application.EnableVisualStyles(); Text="Evgenium Network";ClientSize=new Size(1040,700);MinimumSize=new Size(900,620);StartPosition=FormStartPosition.CenterScreen;BackColor=Bg;ForeColor=TextMain;Font=new Font("Segoe UI",10);AutoScaleMode=AutoScaleMode.Dpi;
+  Application.EnableVisualStyles(); Text="Evgenium Network";ClientSize=new Size(1040,700);MinimumSize=new Size(900,620);StartPosition=FormStartPosition.CenterScreen;BackColor=Bg;ForeColor=TextMain;Font=new Font("Segoe UI",10);AutoScaleDimensions=new SizeF(96,96);AutoScaleMode=AutoScaleMode.Dpi;
   FormBorderStyle=FormBorderStyle.None;MaximizeBox=false;MinimizeBox=true;Padding=new Padding(6);
   shell.Dock=DockStyle.Fill;shell.BackColor=Bg;Controls.Add(shell);
   sidebar.Dock=DockStyle.Left;sidebar.Width=222;sidebar.BackColor=Side;shell.Controls.Add(sidebar);
