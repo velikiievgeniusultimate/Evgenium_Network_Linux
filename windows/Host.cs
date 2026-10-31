@@ -20,7 +20,7 @@ internal static class Host {
         try {
             // The same windowed executable hosts privileged operations internally.
             // No console process or separately exposed CLI is required.
-            if (command == "gui") {
+            if (command == "gui" || command == "widget") {
                 bool created;
                 singleInstance = new Mutex(true, "Local\\EvgeniumNetwork.Desktop", out created);
                 if (!created) { MessageBox.Show("Evgenium уже открыт. Найдите его окно на панели задач.", "Evgenium"); return 0; }
@@ -34,7 +34,7 @@ internal static class Host {
                 return result == null ? 0 : Convert.ToInt32(result);
             }
         } catch (Exception) {
-            if (command == "gui" || command == "uninstall") MessageBox.Show("Не удалось запустить Evgenium. Нужны Windows 10/11 x64 и Windows PowerShell 5.1.", "Evgenium", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            if (command == "gui" || command == "widget" || command == "uninstall") MessageBox.Show("Не удалось запустить Evgenium. Нужны Windows 10/11 x64 и Windows PowerShell 5.1.", "Evgenium", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         } finally { if (singleInstance != null) singleInstance.Dispose(); }
     }

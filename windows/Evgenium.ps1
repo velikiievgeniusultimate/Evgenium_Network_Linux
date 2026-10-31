@@ -10,9 +10,10 @@ $script:AppRoot = Join-Path $env:LOCALAPPDATA 'EvgeniumNetwork'
 $script:Data = Join-Path $script:AppRoot 'private'
 $script:Sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $script:StatePath = Join-Path $script:Data 'state.json'
-$script:Tunnel = 'Evgenium'
-$script:Service = 'WireGuardTunnel$Evgenium'
-$script:RuntimeOwner = 'HKLM:\SOFTWARE\EvgeniumNetwork\WireGuardRuntime'
+$script:EngineService = 'EvgeniumNetworkEngine'
+$script:EngineData = Join-Path (Join-Path $env:ProgramData 'EvgeniumNetwork') $script:Sid
+$script:PolicyPath = Join-Path $script:Data 'policy.json'
+$script:OptionsPath = Join-Path $script:Data 'options.json'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.Security
 
@@ -42,7 +43,7 @@ function Read-State {
         try { return (Get-Content -LiteralPath $script:StatePath -Raw | ConvertFrom-Json) }
         catch { throw 'Локальные настройки повреждены. Не публикуйте этот файл: он содержит защищённые учётные данные.' }
     }
-    return [pscustomobject]@{schema=1;device=([Guid]::NewGuid().ToString('N'));name=$env:COMPUTERNAME;token='';private_key='';profile=$null}
+    return [pscustomobject]@{schema=1;device=([Guid]::NewGuid().ToString('N'));name='';token='';private_key='';profile=$null}
 }
 function Save-State($State) {
     Assert-NoReparse $script:Data; Protect-Directory $script:Data
@@ -78,47 +79,6 @@ function Invoke-Elevated([string]$Action) {
     } finally { if (Test-Path -LiteralPath $reply) { Remove-Item -LiteralPath $reply -Force } }
     return $true
 }
-function Get-WireGuardPath { return (Join-Path $env:ProgramFiles 'WireGuard\wireguard.exe') }
-function Assert-WireGuardSignature([string]$Path) {
-    $sig = Get-AuthenticodeSignature -LiteralPath $Path
-    if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch '(^|,\s*)O=WireGuard LLC(,|$)') { throw 'Подпись WireGuard не подтверждена. Установка остановлена.' }
-}
-function Ensure-WireGuard {
-    $exe = Get-WireGuardPath
-    if (Test-Path -LiteralPath $exe) { Assert-WireGuardSignature $exe; return $exe }
-    $download = Join-Path $script:Data ('wireguard-' + [Guid]::NewGuid().ToString('N') + '.msi')
-    try {
-        $null = Invoke-WebRequest -UseBasicParsing -Uri 'https://download.wireguard.com/windows-client/wireguard-amd64-1.1.1.msi' -OutFile $download -TimeoutSec 90
-        Assert-WireGuardSignature $download
-        $installer = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList @('/i', ('"' + $download + '"'), '/qn', '/norestart', 'DO_NOT_LAUNCH=1') -Wait -PassThru
-        if ($installer.ExitCode -notin @(0,3010)) { throw 'Установщик WireGuard завершился с ошибкой.' }
-        if (!(Test-Path -LiteralPath $exe)) { throw 'WireGuard не установлен. Возможно, Windows ожидает перезапуск.' }
-        Assert-WireGuardSignature $exe
-        # Record ownership only when Evgenium installed this shared dependency.
-        $msi=New-Object -ComObject WindowsInstaller.Installer
-        $database=$msi.OpenDatabase($download,0)
-        $view=$database.OpenView("SELECT `Value` FROM `Property` WHERE `Property`='ProductCode'")
-        $view.Execute(); $product=$view.Fetch().StringData(1); $view.Close()
-        if ($product -notmatch '^\{[0-9A-Fa-f-]{36}\}$') { throw 'Не удалось сохранить сведения об установленном драйвере.' }
-        $null=New-Item -Path $script:RuntimeOwner -Force
-        Set-ItemProperty -LiteralPath $script:RuntimeOwner -Name OwnerSid -Value $script:Sid
-        Set-ItemProperty -LiteralPath $script:RuntimeOwner -Name ProductCode -Value $product
-        return $exe
-    } finally { if (Test-Path -LiteralPath $download) { Remove-Item -LiteralPath $download -Force } }
-}
-function Invoke-Wg([string]$Arguments, [string]$InputText = '') {
-    $tool = Join-Path $env:ProgramFiles 'WireGuard\wg.exe'
-    Assert-WireGuardSignature $tool
-    if (!('EvgeniumNativeWg' -as [type])) { Add-Type -Path (Join-Path $ExecutableDirectory 'WgProcess.cs') }
-    $result=[EvgeniumNativeWg]::Run($tool,$Arguments,$InputText)
-    if ($result.ExitCode -ne 0) {
-        $detail=[regex]::Replace($result.Error,'[A-Za-z0-9+/_-]{32,}={0,2}','[redacted]')
-        if ($detail.Length -gt 300) { $detail=$detail.Substring(0,300) }
-        throw ('WireGuard '+$Arguments+' завершился с кодом '+$result.ExitCode+': '+$detail.Trim())
-    }
-    return $result.Output
-
-}
 function Check-Key([string]$Key) {
     if ($Key -notmatch '^[A-Za-z0-9+/]{43}=$') { return $false }
     $bytes=[Convert]::FromBase64String($Key)
@@ -130,9 +90,9 @@ function Validate-Profile($Profile) {
 }
 function Enroll($State) {
     if (!$State.token) { throw 'Сначала введите токен клиента.' }
-    if (!$State.private_key) { $State.private_key = Seal (Invoke-Wg 'genkey'); Save-State $State }
+    if (!$State.private_key) { $State.private_key = Seal ((Invoke-Engine 'keygen' | ConvertFrom-Json).private_key) }
     $private = Unseal $State.private_key
-    $public = Invoke-Wg 'pubkey' $private
+    $public = Invoke-Engine 'pubkey' $private
     if (!(Check-Key $public)) { throw 'Не удалось создать ключ устройства.' }
     $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
     try {
@@ -142,7 +102,7 @@ function Enroll($State) {
         $reply = Invoke-RestMethod -UseBasicParsing -Method Post -Uri ($script:Api + '/api/enroll') -WebSession $session -Headers @{'X-CSRF-Token'=$csrf.csrf} -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 25
         if (!$reply.ok) { throw 'Отказ регистрации.' }
         Validate-Profile $reply.profile
-        $State.profile=$reply.profile; Save-State $State
+        $State.profile=$reply.profile; $State.name=$reply.profile.device_name; Save-State $State
     } catch {
         $status = 0
         if ($_.Exception.PSObject.Properties['Response'] -and $_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
@@ -152,90 +112,124 @@ function Enroll($State) {
     } finally { $body=$null; $private=$null }
     return $State
 }
-function Assert-ServiceOwnership {
-    $service=Get-CimInstance -ClassName Win32_Service -Filter ("Name='"+$script:Service+"'") -ErrorAction Stop
-    if (!$service) { return }
-    $exe=[regex]::Escape((Get-WireGuardPath))
-    $conf=[regex]::Escape((Join-Path $script:Data 'Evgenium.conf'))
-    if ($service.PathName -notmatch ('^"?'+$exe+'"?\s+/tunnelservice\s+"?'+$conf+'"?$')) { throw 'Имя Evgenium занято другим VPN-туннелем. Его настройки не изменены.' }
+
+function Invoke-Engine([string]$Arguments, [string]$InputText = '') {
+    $exe=Join-Path $ExecutableDirectory 'EvgeniumEngine.exe'
+    if (!(Test-Path -LiteralPath $exe)) { throw 'Сетевое ядро не найдено. Повторно запустите установщик.' }
+    $result=[EvgeniumProcess]::Run($exe,$Arguments,$InputText,30000)
+    if ($result.ExitCode -ne 0) { throw ('Сетевое ядро: '+$result.Error) }
+    return $result.Output
+}
+function Read-EngineStatus {
+    $path=Join-Path $script:EngineData 'status.json'
+    if (Test-Path -LiteralPath $path) {
+        Assert-NoReparse $path
+        try { return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json) } catch {}
+    }
+    return [pscustomobject]@{state='disconnected';message='VPN отключён.';ranking=@();route='';protected=$false;updated=0;restarts=0}
 }
 function Tunnel-Running {
-    $s=Get-Service -Name $script:Service -ErrorAction SilentlyContinue
-    if ($s) { Assert-ServiceOwnership }
+    $s=Get-Service -Name $script:EngineService -ErrorAction SilentlyContinue
     return ($s -and $s.Status -eq 'Running')
 }
-function Validate-Connection {
-    # curl is told explicitly which adapter/IP to use, and not to use an HTTP proxy.
-    $state=Read-State; if (!$state.profile) { return $false }; Validate-Profile $state.profile
-    $address=($state.profile.address -split '/')[0]
-    $curl=Join-Path $env:SystemRoot 'System32\curl.exe'
-    if (!(Test-Path -LiteralPath $curl)) { throw 'Нужна актуальная Windows 10/11 с системным curl.exe для проверки VPN.' }
-    $answer=& $curl --ipv4 --silent --fail --noproxy '*' --interface $address --connect-timeout 4 --max-time 8 'https://api.ipify.org' 2>$null
-    if ($LASTEXITCODE -ne 0 -or ($answer -join '').Trim() -ne '38.180.164.67') { return $false }
-    $answer=& $curl --ipv4 --silent --fail --noproxy '*' --interface $address --connect-timeout 4 --max-time 8 'https://discord.com/api/v10/gateway' 2>$null
-    return ($LASTEXITCODE -eq 0 -and ($answer -join '') -match 'gateway.discord.gg')
+function Get-LAN {
+    $default=Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop | Where-Object {$_.NextHop -ne '0.0.0.0' -and $_.InterfaceAlias -ne 'EvgeniumTunnel'} | Sort-Object RouteMetric | Select-Object -First 1
+    if (!$default) { return @() }
+    return @(Get-NetIPAddress -InterfaceIndex $default.InterfaceIndex -AddressFamily IPv4 | Where-Object {$_.IPAddress -notmatch '^(127\.|169\.254\.)'} | ForEach-Object {$_.IPAddress+'/'+$_.PrefixLength})
 }
-function Connect-Vpn {
-    [Console]::WriteLine('Проверяю VPN и подключение…')
-    if (Invoke-Elevated 'on') { return }
-    Protect-Directory $script:Data
-    $wg=Ensure-WireGuard
-    $existing=Get-Service -Name $script:Service -ErrorAction SilentlyContinue
-    if ($existing -and $existing.Status -ne 'Running') {
-        Assert-ServiceOwnership
-        Start-Service -Name $script:Service
-        $existing.WaitForStatus('Running',[TimeSpan]::FromSeconds(15))
-    }
-    if (Tunnel-Running) {
-        if (Validate-Connection) { Write-Output 'Подключено через HSVDS → Эстония. IP: 38.180.164.67.'; return }
-        # Keep the existing WireGuard firewall protection active on failure.
-        # It already retries handshakes; reinstalling here would create a cleartext gap.
-        for ($i=0; $i -lt 2; $i++) { Start-Sleep -Seconds 1; if (Validate-Connection) { Write-Output 'Соединение восстановлено через Эстонию. IP: 38.180.164.67.'; return } }
-        throw 'Туннель активен, но Эстония недоступна. WireGuard продолжает восстановление и блокирует утечки. «Отключить» вернёт обычный интернет.'
-    }
-    $state=Enroll (Read-State)
+function Write-EngineConfig([switch]$Repair) {
+    $state=Read-State
     Validate-Profile $state.profile
-    $key=Unseal $state.private_key
-    if (!(Check-Key $key)) { throw 'Ключ устройства повреждён.' }
-    $config="[Interface]`nPrivateKey = $key`nAddress = $($state.profile.address)`nDNS = 1.1.1.1, 1.0.0.1`nMTU = 1280`n`n[Peer]`nPublicKey = $($state.profile.public_key)`nEndpoint = 195.209.211.163:51820`nAllowedIPs = 0.0.0.0/0, ::/0`nPersistentKeepalive = 25`n"
-    $file=Join-Path $script:Data 'Evgenium.conf'
-    [IO.File]::WriteAllText($file, $config, (New-Object Text.UTF8Encoding($false))); $key=$null; $config=$null
-    $process=Start-Process -FilePath $wg -ArgumentList @('/installtunnelservice', ('"' + $file + '"')) -Wait -PassThru
-    if ($process.ExitCode -ne 0) { throw 'WireGuard не смог запустить туннель. Повторите подключение.' }
-    for ($i=0; $i -lt 4; $i++) { Start-Sleep -Milliseconds 750; if ((Tunnel-Running) -and (Validate-Connection)) { Write-Output 'Подключено через HSVDS → Эстония. IP: 38.180.164.67. DNS и Discord доступны.'; return } }
-    throw 'Туннель запущен, но выход через Эстонию не подтверждён. Защита блокирует обычный трафик. Повторите «Включить» для восстановления или нажмите «Отключить».'
+    Protect-Directory $script:EngineData
+    $config=@{schema=1;owner=$script:Sid;private_key=(Unseal $state.private_key);profile=$state.profile;policy=(Read-Policy);lan=@(Get-LAN);reset_rating=[bool]$Repair}
+    # Only the engine's whitelist is serialized; enrollment metadata cannot add
+    # arbitrary Xray options, executables, endpoints or routing rules.
+    $config.profile=@{schema=1;public_key=$state.profile.public_key;endpoint=$state.profile.endpoint;address=$state.profile.address;mtu=$state.profile.mtu}
+    $text=$config | ConvertTo-Json -Depth 10
+    $null=Invoke-Engine 'validate' $text
+    $path=Join-Path $script:EngineData 'engine.json'; $tmp=Join-Path $script:EngineData ([Guid]::NewGuid().ToString('N')+'.tmp')
+    try { [IO.File]::WriteAllText($tmp,$text,(New-Object Text.UTF8Encoding($false))); Move-Item -LiteralPath $tmp -Destination $path -Force }
+    finally { $config.private_key=$null; $text=$null; if (Test-Path -LiteralPath $tmp) {Remove-Item -LiteralPath $tmp -Force} }
+}
+function Connect-Vpn([switch]$Repair) {
+    $operation=if ($Repair) {'repair'} else {'on'}
+    if (Invoke-Elevated $operation) { return }
+    Protect-Directory $script:Data
+    $state=Read-State
+    if (!$state.token) { throw 'Сначала введите токен клиента.' }
+    # Enroll again only when needed. An offline server cannot prevent repair of
+    # an already issued device, and an invalid new token never enables a tunnel.
+    if (!$state.profile -or !$state.private_key) { $null=Enroll $state }
+    Write-EngineConfig -Repair:$Repair
+    $null=Invoke-Engine ('install '+$script:Sid)
+    for ($i=0;$i -lt 80;$i++) {
+        $status=Read-EngineStatus
+        if ($status.state -eq 'connected' -and $status.updated -ge [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-15) { return $status.message }
+        if ($status.state -eq 'error') { throw $status.message }
+        if ($Command -eq 'gui' -or $Command -eq 'widget') { [Windows.Forms.Application]::DoEvents() }
+        Start-Sleep -Milliseconds 250
+    }
+    return 'VPN продолжает подключение и автоматическое восстановление. Защищённый трафик блокируется до связи с Эстонией.'
 }
 function Disconnect-Vpn {
     if (Invoke-Elevated 'off') { return }
-    Assert-NoReparse $script:Data
-    $wg=Get-WireGuardPath
-    $service=Get-Service -Name $script:Service -ErrorAction SilentlyContinue
-    if ($service) {
-        Assert-ServiceOwnership
-        Assert-WireGuardSignature $wg
-        $process=Start-Process -FilePath $wg -ArgumentList '/uninstalltunnelservice', $script:Tunnel -Wait -PassThru
-        if ($process.ExitCode -ne 0) { throw 'Не удалось отключить туннель. Повторите попытку.' }
+    $null=Invoke-Engine 'remove'
+    if (Test-Path -LiteralPath $script:EngineData) {
+        Assert-SafeTree $script:EngineData
+        Remove-Item -LiteralPath $script:EngineData -Recurse -Force
     }
-    for ($i=0; $i -lt 20; $i++) { if (!(Get-Service -Name $script:Service -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Milliseconds 250 }
-    if (Get-Service -Name $script:Service -ErrorAction SilentlyContinue) { throw 'Служба ещё останавливается. Повторите отключение.' }
-    $config=Join-Path $script:Data 'Evgenium.conf'; if (Test-Path -LiteralPath $config) { Remove-Item -LiteralPath $config -Force }
-    Write-Output 'VPN отключён. Обычное подключение восстановлено.'
+    return 'VPN отключён. Обычное подключение восстановлено.'
 }
 function Set-Token([string]$Token, [string]$Name) {
-    Assert-NoReparse $script:Data
     $Token=$Token.Trim()
-    $Name=$Name.Normalize([Text.NormalizationForm]::FormC).Trim()
     if ($Token -notmatch '^EVN1-[A-Za-z0-9_-]{43}$') { throw 'Ожидается полный токен EVN1-…' }
-    if (!$Name.Trim() -or $Name.Length -gt 64 -or $Name -match '\p{C}') { throw 'Имя устройства должно содержать от 1 до 64 символов.' }
-    if (Tunnel-Running) { throw 'Отключите VPN перед изменением токена или имени устройства.' }
+    if (Tunnel-Running) { throw 'Отключите VPN перед изменением токена.' }
+    if (!$Name.Trim()) {$Name=''}
+    if ($Name.Length -gt 64 -or $Name -match '\p{C}') { throw 'Имя устройства должно содержать не больше 64 символов.' }
     $state=Read-State
-    if ($state.token -and (Unseal $state.token) -ne $Token) { $state= [pscustomobject]@{schema=1;device=([Guid]::NewGuid().ToString('N'));name=$Name;token='';private_key='';profile=$null} }
-    $state.token=Seal $Token; $state.name=$Name.Trim(); Save-State $state
+    if ($state.token -and (Unseal $state.token) -ne $Token) { $state=[pscustomobject]@{schema=1;device=([Guid]::NewGuid().ToString('N'));name=$Name;token='';private_key='';profile=$null} }
+    $state.token=Seal $Token; $state.name=$Name
+    # The user's old saved token is preserved if verification fails.
+    $null=Enroll $state
+}
+function Rename-Device([string]$Name) {
+    $Name=$Name.Normalize([Text.NormalizationForm]::FormC).Trim()
+    if (!$Name -or $Name.Length -gt 64 -or $Name -match '\p{C}') {throw 'Имя устройства должно содержать от 1 до 64 символов.'}
+    $state=Read-State; $state.name=$Name; $null=Enroll $state
+}
+function Assert-SafeTree([string]$Path) {
+    Assert-NoReparse $Path
+    if (Test-Path -LiteralPath $Path -PathType Container) {
+        foreach ($child in Get-ChildItem -LiteralPath $Path -Force) {
+            if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Папка приложения содержит ссылку. Удаление остановлено, чтобы сохранить посторонние данные.' }
+            if ($child.PSIsContainer) { Assert-SafeTree $child.FullName }
+        }
+    }
+}
+function Uninstall-App {
+    if (Invoke-Elevated 'uninstall') {return}
+    $null=Invoke-Engine 'uninstall-all'
+    $profiles=Get-CimInstance Win32_UserProfile | Where-Object {!$_.Special -and $_.SID -match '^S-1-5-21-' -and $_.LocalPath}
+    foreach($profile in $profiles){
+        $root=Join-Path $profile.LocalPath 'AppData\Local\EvgeniumNetwork'
+        $startup=Join-Path $profile.LocalPath 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\Evgenium Network.lnk'
+        foreach($path in @($root,$startup)){if(Test-Path -LiteralPath $path){Assert-SafeTree $path;Remove-Item -LiteralPath $path -Recurse -Force}}
+    }
+    $root=Join-Path $env:ProgramData 'EvgeniumNetwork'
+    if(Test-Path -LiteralPath $root){Assert-SafeTree $root;Remove-Item -LiteralPath $root -Recurse -Force}
+}
+function Self-Test {
+    Validate-Profile ([pscustomobject]@{schema=1;public_key='AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';endpoint='195.209.211.163:51820';address='10.78.0.2/32';dns=@('1.1.1.1','1.0.0.1');mtu=1280;allowed_ips=@('0.0.0.0/0','::/0')})
+    $null=Invoke-Engine 'selftest'
 }
 function Validate-Manifest($Manifest) {
-    if ($Manifest.schema -ne 1 -or $Manifest.version -notmatch '^\d{1,3}\.\d{1,3}\.\d{1,3}$') { throw 'Некорректный манифест обновления.' }
+    if ($Manifest.schema -ne 2 -or $Manifest.version -notmatch '^\d{1,3}\.\d{1,3}\.\d{1,3}$') { throw 'Некорректный манифест обновления.' }
     $base='https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-v' + $Manifest.version + '/Evgenium-Windows-' + $Manifest.version + '-x64'
-    if ($Manifest.installer_url -cne ($base+'-Setup.exe') -or $Manifest.installer_sha256 -notmatch '^[a-f0-9]{64}$' -or $Manifest.installer_size -lt 100000 -or $Manifest.installer_size -gt 30MB) { throw 'Манифест не содержит проверенный установщик Evgenium.' }
+    if ($Manifest.installer_url -cne ($base+'-Setup.exe') -or $Manifest.installer_sha256 -notmatch '^[a-f0-9]{64}$' -or $Manifest.installer_size -lt 100000 -or $Manifest.installer_size -gt 100MB) { throw 'Манифест не содержит проверенный установщик Evgenium.' }
+}
+function Assert-Installer([string]$Path,$Manifest) {
+    Validate-Manifest $Manifest
+    if((Get-Item -LiteralPath $Path).Length -ne $Manifest.installer_size -or (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Manifest.installer_sha256){throw 'Контрольная сумма обновления не совпала. Текущая версия сохранена.'}
 }
 function Start-VerifiedInstaller($Manifest) {
     Validate-Manifest $Manifest
@@ -246,7 +240,7 @@ function Start-VerifiedInstaller($Manifest) {
     $installer=Join-Path $stage 'Setup.exe'; $started=$false
     try {
         $null=Invoke-WebRequest -UseBasicParsing -Uri $Manifest.installer_url -OutFile $installer -TimeoutSec 180
-        if ((Get-Item -LiteralPath $installer).Length -ne $Manifest.installer_size -or (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Manifest.installer_sha256) { throw 'Контрольная сумма обновления не совпала. Текущая версия сохранена.' }
+        Assert-Installer $installer $Manifest
         $null=Start-Process -FilePath $installer -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS' -PassThru
         $started=$true; $global:EvgeniumInstallerStarted=$true
     } finally { if (!$started -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force } }
@@ -258,128 +252,4 @@ function Update-App([switch]$InstallCurrent) {
     if (!$InstallCurrent -and [version]$manifest.version -eq [version]$script:Version) { Write-Output ('Установлена актуальная версия ' + $script:Version + '.'); return }
     Start-VerifiedInstaller $manifest
     Write-Output 'Обновление проверено. Приложение закроется и откроется после установки. VPN продолжает работать.'
-}
-function Remove-LegacyInstall {
-    # Runs as the original desktop user; never touches private credentials or VPN.
-    foreach ($name in @('versions','current.txt','current.new')) {
-        $path=Join-Path $script:AppRoot $name
-        if (Test-Path -LiteralPath $path) { Assert-SafeTree $path; Remove-Item -LiteralPath $path -Recurse -Force }
-    }
-}
-function Assert-SafeTree([string]$Path) {
-    Assert-NoReparse $Path
-    if (Test-Path -LiteralPath $Path -PathType Container) {
-        foreach ($child in Get-ChildItem -LiteralPath $Path -Force) {
-            if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Папка приложения содержит ссылку. Удаление остановлено, чтобы сохранить посторонние данные.' }
-            if ($child.PSIsContainer) { Assert-SafeTree $child.FullName }
-        }
-    }
-}
-function Remove-OwnedRuntime {
-    if (!(Test-Path -LiteralPath $script:RuntimeOwner)) { return }
-    $owner=Get-ItemProperty -LiteralPath $script:RuntimeOwner
-    if ($owner.OwnerSid -ne $script:Sid) { return }
-    $other=@(Get-Service -Name 'WireGuardTunnel$*' -ErrorAction SilentlyContinue)
-    if (!$other.Count) {
-        if ($owner.ProductCode -notmatch '^\{[0-9A-Fa-f-]{36}\}$') { throw 'Не удалось определить пакет драйвера. Удаление остановлено.' }
-        $process=Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList '/x',$owner.ProductCode,'/qn','/norestart' -Wait -PassThru
-        if ($process.ExitCode -notin @(0,1605,3010)) { throw 'Не удалось удалить установленный Evgenium драйвер. Повторите удаление.' }
-    }
-    # A pre-existing WireGuard installation, or a runtime shared with other tunnels,
-    # belongs to the user and is intentionally preserved.
-    Remove-Item -LiteralPath $script:RuntimeOwner -Force
-    if (!(Get-ChildItem -LiteralPath 'HKLM:\SOFTWARE\EvgeniumNetwork')) { Remove-Item -LiteralPath 'HKLM:\SOFTWARE\EvgeniumNetwork' -Force }
-}
-function Uninstall-App {
-    Assert-SafeTree $script:AppRoot
-    $needsAdmin=(Get-Service -Name $script:Service -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $script:RuntimeOwner)
-    if ($needsAdmin) {
-        if (!(Invoke-Elevated 'uninstall-system')) { $null=Disconnect-Vpn; Remove-OwnedRuntime }
-    }
-    if (Test-Path -LiteralPath $script:AppRoot) { Remove-Item -LiteralPath $script:AppRoot -Recurse -Force }
-    # Inno removes registered shortcuts and installed files after this succeeds.
-}
-function Self-Test {
-    Validate-Manifest ([pscustomobject]@{schema=1;version='0.2.0';installer_size=1000000;installer_sha256=('a'*64);installer_url='https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-v0.2.0/Evgenium-Windows-0.2.0-x64-Setup.exe'})
-    $rejected=$false; try { Validate-Manifest ([pscustomobject]@{schema=1;version='0.2.0';installer_size=1000000;installer_sha256=('a'*64);installer_url='https://example.com/payload.exe'}) } catch { $rejected=$true }; if (!$rejected) { throw 'Unsafe URL accepted' }
-    Validate-Profile ([pscustomobject]@{schema=1;public_key='AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';endpoint='195.209.211.163:51820';address='10.78.0.2/32';dns=@('1.1.1.1','1.0.0.1');mtu=1280;allowed_ips=@('0.0.0.0/0','::/0')})
-    if (!(Check-Key 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=')) { throw 'Key check failed' }
-    Write-Output ('Evgenium Windows ' + $script:Version + ': selftest OK')
-}
-function Show-Gui {
-    # Transition from the old ZIP updater to a registered Windows installation.
-    $installed=Join-Path $env:LOCALAPPDATA 'Programs\EvgeniumNetwork'
-    if ([IO.Path]::GetFullPath($ExecutableDirectory).TrimEnd('\') -ine [IO.Path]::GetFullPath($installed).TrimEnd('\')) {
-        Add-Type -AssemblyName System.Windows.Forms
-        try { $null=Update-App -InstallCurrent } catch { $null=[Windows.Forms.MessageBox]::Show(($_.Exception.Message+' Скачайте Setup.exe из релиза Windows.'),'Evgenium') }
-        return
-    }
-    Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
-    [Windows.Forms.Application]::EnableVisualStyles()
-    $form=New-Object Windows.Forms.Form; $form.Text='Evgenium Network'; $form.ClientSize=New-Object Drawing.Size(460,570); $form.MinimumSize=$form.Size; $form.BackColor=[Drawing.Color]::FromArgb(24,21,29); $form.ForeColor=[Drawing.Color]::WhiteSmoke; $form.Font=New-Object Drawing.Font('Segoe UI',11); $form.StartPosition='CenterScreen'
-    $title=New-Object Windows.Forms.Label; $title.Text='EVGENIUM'; $title.Font=New-Object Drawing.Font('Segoe UI',24,[Drawing.FontStyle]::Bold); $title.Location=New-Object Drawing.Point(24,24); $title.Size=New-Object Drawing.Size(410,48); $title.ForeColor=[Drawing.Color]::FromArgb(255,91,135); $form.Controls.Add($title)
-    $connect=New-Object Windows.Forms.Button; $connect.Text='ВКЛЮЧИТЬ'; $connect.Location=New-Object Drawing.Point(24,90); $connect.Size=New-Object Drawing.Size(412,156); $connect.BackColor=[Drawing.Color]::FromArgb(196,42,85); $connect.FlatStyle='Flat'; $connect.Font=New-Object Drawing.Font('Segoe UI',22,[Drawing.FontStyle]::Bold); $form.Controls.Add($connect)
-    $off=New-Object Windows.Forms.Button; $off.Text='Отключить'; $off.Location=New-Object Drawing.Point(24,256); $off.Size=New-Object Drawing.Size(200,42); $form.Controls.Add($off)
-    $update=New-Object Windows.Forms.Button; $update.Text='Обновить'; $update.Location=New-Object Drawing.Point(236,256); $update.Size=New-Object Drawing.Size(200,42); $form.Controls.Add($update)
-    $tokenLabel=New-Object Windows.Forms.Label; $tokenLabel.Text='Токен клиента'; $tokenLabel.Location=New-Object Drawing.Point(24,302); $tokenLabel.Size=New-Object Drawing.Size(300,20); $form.Controls.Add($tokenLabel)
-    $token=New-Object Windows.Forms.TextBox; $token.Location=New-Object Drawing.Point(24,324); $token.Size=New-Object Drawing.Size(304,30); $token.UseSystemPasswordChar=$true; $form.Controls.Add($token)
-    $save=New-Object Windows.Forms.Button; $save.Text='Подтвердить'; $save.Location=New-Object Drawing.Point(336,320); $save.Size=New-Object Drawing.Size(100,38); $form.Controls.Add($save)
-    $nameLabel=New-Object Windows.Forms.Label; $nameLabel.Text='Имя устройства'; $nameLabel.Location=New-Object Drawing.Point(24,350); $nameLabel.Size=New-Object Drawing.Size(300,20); $form.Controls.Add($nameLabel)
-    $name=New-Object Windows.Forms.TextBox; $name.Location=New-Object Drawing.Point(24,370); $name.Size=New-Object Drawing.Size(412,30); $form.Controls.Add($name)
-    $status=New-Object Windows.Forms.Label; $status.Location=New-Object Drawing.Point(24,418); $status.Size=New-Object Drawing.Size(412,106); $form.Controls.Add($status)
-    $version=New-Object Windows.Forms.Label; $version.Location=New-Object Drawing.Point(24,538); $version.Size=New-Object Drawing.Size(412,24); $version.Text=('Windows ' + $script:Version + ' · HSVDS → Эстония'); $form.Controls.Add($version)
-    foreach ($button in @($off,$update,$save)) { $button.BackColor=[Drawing.Color]::FromArgb(59,40,54); $button.ForeColor=[Drawing.Color]::WhiteSmoke; $button.FlatStyle='Flat' }
-    foreach ($inputField in @($token,$name)) { $inputField.BackColor=[Drawing.Color]::FromArgb(40,32,43); $inputField.ForeColor=[Drawing.Color]::WhiteSmoke }
-    $state=Read-State; $name.Text=$state.name
-    if ($state.token) { $token.Text='Токен сохранён'; $token.Enabled=$false; $save.Text='Изменить' }
-    $status.Text= if (Tunnel-Running) { 'Туннель запущен. Нажмите «Включить» для проверки и автоматического восстановления.' } else { 'VPN отключён. Введите токен клиента и имя устройства.' }
-    $action={ param($which)
-        $connect.Enabled=$false; $off.Enabled=$false; $update.Enabled=$false; $save.Enabled=$false; $form.UseWaitCursor=$true
-        $status.Text='Выполняется… Подтвердите запрос Windows, если он появится.'; [Windows.Forms.Application]::DoEvents()
-        try {
-            $message=switch ($which) { 'on' { Connect-Vpn } 'off' { Disconnect-Vpn } 'update' { Update-App } }
-            if ($global:EvgeniumInstallerStarted) { $form.Close(); return }
-            if (!$message) { $message=if (Tunnel-Running) { 'Подключено через Эстонию. IP: 38.180.164.67.' } else { 'VPN отключён.' } }; $status.Text=($message -join "`n")
-        } catch { $status.Text=$_.Exception.Message }
-        finally { if (!$form.IsDisposed) { $connect.Enabled=$true; $off.Enabled=$true; $update.Enabled=$true; $save.Enabled=$true; $form.UseWaitCursor=$false } }
-    }.GetNewClosure()
-    $connect.Add_Click({ & $action 'on' }.GetNewClosure()); $off.Add_Click({ & $action 'off' }.GetNewClosure()); $update.Add_Click({ & $action 'update' }.GetNewClosure())
-    $save.Add_Click({
-        try {
-            if (!$token.Enabled) { $token.Text=Unseal ((Read-State).token); $token.Enabled=$true; $token.UseSystemPasswordChar=$false; $save.Text='Подтвердить'; return }
-            Set-Token $token.Text $name.Text; $token.Text='Токен сохранён'; $token.UseSystemPasswordChar=$true; $token.Enabled=$false; $save.Text='Изменить'; $status.Text='Токен сохранён на этом устройстве. Нажмите «Включить».'
-        } catch { $status.Text=$_.Exception.Message }
-    }.GetNewClosure())
-    [Windows.Forms.Application]::Run($form); $form.Dispose()
-}
-try {
-    if ($ResultId -and $ResultId -notmatch '^[a-f0-9]{32}$') { throw 'Некорректный идентификатор операции.' }
-    if ($ExpectedSid -and $ExpectedSid -ne $script:Sid) { throw 'UAC выполнен под другой учётной записью. Используйте ту же учётную запись Windows.' }
-    if (![Environment]::Is64BitProcess) { throw 'Эта сборка предназначена для Windows x64.' }
-    switch ($Command.ToLowerInvariant()) {
-        'gui' { Show-Gui }
-        'on' { Connect-Vpn }
-        'off' { Disconnect-Vpn }
-        'status' { if (Tunnel-Running) { if (Validate-Connection) { 'Подключено через Эстонию. IP: 38.180.164.67.' } else { 'Туннель запущен, доступ через Эстонию не подтверждён. Нажмите «Включить» для восстановления.'; $global:EvgeniumExitCode=1 } } else { 'VPN отключён.' } }
-        'update' { Update-App }
-        'post-install' { Remove-LegacyInstall }
-        'uninstall' { Uninstall-App }
-        'uninstall-system' { if (Invoke-Elevated 'uninstall-system') { return }; $null=Disconnect-Vpn; Remove-OwnedRuntime }
-        'selftest' { Self-Test }
-        default { throw 'Неподдерживаемая внутренняя операция.' }
-    }
-} catch {
-    $global:EvgeniumExitCode=1
-    if ($Command -in @('gui','uninstall')) { Add-Type -AssemblyName System.Windows.Forms; $null=[Windows.Forms.MessageBox]::Show($_.Exception.Message,'Evgenium') }
-    else { [Console]::Error.WriteLine($_.Exception.Message) }
-}
-
-# Only a fixed, non-secret result crosses the UAC boundary. Token/key stay in DPAPI.
-if ($ResultId -match '^[a-f0-9]{32}$' -and $ExpectedSid -eq $script:Sid) {
-    try {
-        Protect-Directory $script:Data
-        $path=Join-Path $script:Data ('operation-'+$ResultId+'.json'); Assert-NoReparse $path
-        $message=if ($global:EvgeniumExitCode) { [string]$Error[0].Exception.Message } else { '' }
-        [IO.File]::WriteAllText($path,(@{ok=($global:EvgeniumExitCode -eq 0);message=$message} | ConvertTo-Json -Compress),(New-Object Text.UTF8Encoding($false)))
-    } catch { $global:EvgeniumExitCode=1 }
 }

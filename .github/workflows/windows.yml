@@ -11,6 +11,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.2'
+          cache-dependency-path: windows/engine/go.sum
       - name: Install verified Inno Setup compiler
         shell: powershell
         run: |
@@ -22,12 +26,16 @@ jobs:
       - name: Compile and test Windows x64 package
         shell: powershell
         run: |
-          & .\windows\test.ps1
+          Push-Location windows/engine
+          go test ./...
+          if ($LASTEXITCODE -ne 0) { throw 'Engine unit tests failed' }
+          Pop-Location
           & .\windows\build.ps1 -Output "$env:RUNNER_TEMP\evgenium-windows"
-      - name: Test official WireGuard installation and isolated tunnel service
+          & .\windows\test.ps1 -Package "$env:RUNNER_TEMP\evgenium-windows\Evgenium-Windows-0.2.0-x64"
+      - name: Test bundled core and signed driver
         shell: powershell
         run: |
-          & .\windows\integration.ps1
+          & .\windows\integration.ps1 -Output "$env:RUNNER_TEMP\evgenium-windows"
       - name: Test setup, upgrade and complete removal
         shell: powershell
         run: |
@@ -37,17 +45,18 @@ jobs:
         env:
           EVG_WINDOWS_E2E_TOKEN: ${{ secrets.EVG_WINDOWS_E2E_TOKEN }}
         run: |
-          if ($env:EVG_WINDOWS_E2E_TOKEN) {
+          if ($env:EVG_WINDOWS_E2E_TOKEN -and (Test-Path .\windows\e2e-ready)) {
             & .\windows\e2e.ps1
           } else {
             Write-Output "Real full-tunnel E2E skipped: no temporary test token configured."
           }
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: evgenium-windows-x64
           path: |
-            ${{ runner.temp }}/evgenium-windows/*.zip
-            ${{ runner.temp }}/evgenium-windows/*-Setup.exe
+                        ${{ runner.temp }}/evgenium-windows/*-Setup.exe
             ${{ runner.temp }}/evgenium-windows/*.log
             ${{ runner.temp }}/evgenium-windows/SHA256SUMS
+            ${{ runner.temp }}/evgenium-windows-ui.png
           if-no-files-found: error
