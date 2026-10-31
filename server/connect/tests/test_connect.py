@@ -236,3 +236,39 @@ vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
 
 if __name__ == '__main__':
     unittest.main()
+
+class WindowsReportTests(EnrollmentPortalTests):
+    def report_body(self):
+        report = dict(schema=1, event='support_bundle', system='windows', manager='0.2.0', report_id='d'*32, time=1793400000, os_build=26300,
+                      checks=dict(routes=[dict(id='ru-wg', label='HSVDS', download_mbps=42.5, rtt_ms=80, losses=0, good=True)], transfers=[], packets={'ru-wg':[dict(size=64, sent=10, received=9, rtt_us=12345, elapsed_ms=1300)]}, services=[]),
+                      counters=dict(tcp_sent=100, tcp_received=100, tcp_retransmitted=2), adapters=[])
+        return dict(token=TOKEN, device=DEVICE, public_key=KEY, report=report)
+
+    def send_report(self, body=None):
+        return self.client.post('/api/report', base_url=BASE, json=body or self.report_body(), headers={'X-CSRF-Token':self.csrf})
+
+    def test_report_authentication_and_idempotent_storage(self):
+        body=self.report_body()
+        self.assertEqual(self.send_report(body).status_code,200)
+        self.assertEqual(self.send_report(body).status_code,200)
+        file=Path(self.tmp.name)/'reports'/('windows-'+'d'*32+'.json')
+        document=json.loads(file.read_text())
+        self.assertEqual(document['account'],'b'*24)
+        self.assertNotIn(TOKEN,file.read_text())
+        self.assertNotIn('label',document['report']['checks']['routes'][0])
+        self.assertEqual(file.stat().st_mode&0o777,0o600)
+        self.reply['profile']['account']='c'*24
+        self.assertEqual(self.send_report(body).status_code,409)
+
+    def test_report_rejects_secret_fields_and_invalid_metrics_before_auth(self):
+        import copy
+        for mutate in [lambda b:b['report'].update(private_key=KEY),lambda b:b['report']['counters'].update(tcp_sent=-1),lambda b:b['report']['checks']['packets']['ru-wg'][0].update(received=11),lambda b:b['report']['checks']['routes'][0].update(id='unknown')]:
+            body=copy.deepcopy(self.report_body());mutate(body)
+            self.assertEqual(self.send_report(body).status_code,400)
+        self.assertEqual(self.calls,[])
+        self.assertFalse((Path(self.tmp.name)/'reports').exists())
+
+    def test_revoked_or_invalid_token_cannot_store_report(self):
+        self.reply={'ok':False,'error':'invalid_token_or_device'}
+        self.assertEqual(self.send_report().status_code,401)
+        self.assertFalse((Path(self.tmp.name)/'reports').exists())

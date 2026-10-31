@@ -11,15 +11,16 @@ $p=Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NOREST
 [Reflection.Assembly]::LoadFile($exe) | Out-Null
 . (Join-Path $PSScriptRoot 'Evgenium.ps1') -Command selftest -ExecutableDirectory $app
 . (Join-Path $PSScriptRoot 'Policy.ps1')
+. (Join-Path $PSScriptRoot 'Reports.ps1')
 if(!(Is-Admin)){throw 'Administrator required for disposable E2E'}
 $task='Evgenium-CI-Emergency-Disconnect';$armed=$false;$off=$false
 $log=Join-Path $output 'network-e2e.log'
 function Note([string]$Text){$Text | Tee-Object -FilePath $log -Append | Write-Output}
-function Curl([string[]]$More=@()){
+function Probe-Http([string[]]$More=@()){
  $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
  try{$text=(& curl.exe --noproxy '*' --silent --show-error --max-time 12 @More 2>$null | Out-String).Trim();return @{code=$LASTEXITCODE;text=$text}}finally{$ErrorActionPreference=$old}
 }
-function Exit-IP { $r=Curl -More @('https://api.ipify.org');if($r.code -ne 0 -or $r.text -notmatch '^\d+\.\d+\.\d+\.\d+$'){throw 'Public IP request failed'};return $r.text }
+function Exit-IP { $r=Probe-Http -More @('https://api.ipify.org');if($r.code -ne 0 -or $r.text -notmatch '^\d+\.\d+\.\d+\.\d+$'){throw 'Public IP request failed'};return $r.text }
 function Wait-Connected {
  for($i=0;$i -lt 24;$i++){$s=Read-EngineStatus;if($s.state -eq 'connected' -and $s.updated -ge [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-20){return};Start-Sleep -Seconds 2}
  $s=Read-EngineStatus;throw ('VPN never connected: '+$s.message)
@@ -36,27 +37,27 @@ try{
  Remove-Item Env:EVG_WINDOWS_E2E_TOKEN
  # This SYSTEM task survives the runner losing its control channel.
  $action=New-ScheduledTaskAction -Execute $engine -Argument 'uninstall-all'
- $trigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5)
+ $trigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(8)
  $settings=New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
  $null=Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger -Settings $settings -User 'SYSTEM' -RunLevel Highest -Force;$armed=$true
- Note 'Independent SYSTEM rollback armed (5 minutes).'
+ Note 'Independent SYSTEM rollback armed (8 minutes).'
  $p=Start-Process $exe -ArgumentList '--command','on' -PassThru
  if(!$p.WaitForExit(35000)){$p.Kill();throw 'Packaged connect timed out'}
  if($p.ExitCode){throw ('Packaged connect failed: '+(Read-EngineStatus).message)}
  Wait-Connected;Assert-Estonia
- $discord=Curl -More @('https://discord.com/api/v10/gateway');if($discord.code -ne 0 -or $discord.text -notmatch 'gateway.discord.gg'){throw 'Discord API/DNS failed'}
+ $discord=Probe-Http -More @('https://discord.com/api/v10/gateway');if($discord.code -ne 0 -or $discord.text -notmatch 'gateway.discord.gg'){throw 'Discord API/DNS failed'}
  $null=Resolve-DnsName github.com -ErrorAction Stop
  Note 'Packaged EXE: full-device Estonia exit, DNS, HTTPS and Discord API PASS.'
  # Loopback must work for browsers, launchers and Codex without a public bypass.
  $listener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0);$listener.Start();$local=New-Object Net.Sockets.TcpClient
  try{$local.Connect('127.0.0.1',$listener.LocalEndpoint.Port);$accepted=$listener.AcceptTcpClient();$accepted.Close()}finally{$local.Close();$listener.Stop()}
- $bound=Curl -More @('--interface',$physicalIP,'https://api.ipify.org');if($bound.code -eq 0){throw 'Physical bind bypassed protection'}
+ $bound=Probe-Http -More @('--interface',$physicalIP,'https://api.ipify.org');if($bound.code -eq 0){throw 'Physical bind bypassed protection'}
  Note 'Loopback works; explicit physical-interface egress blocked.'
  # Drop only our own transport child; persistent protection must survive.
  $ours=Get-CimInstance Win32_Process | Where-Object {$_.ExecutablePath -eq (Join-Path $app 'xray.exe')}
  if(!$ours){throw 'No owned transport child'}
  $ours | ForEach-Object {Stop-Process -Id $_.ProcessId -Force}
- $bound=Curl -More @('--interface',$physicalIP,'https://api.ipify.org');if($bound.code -eq 0){throw 'Traffic escaped during core failure'}
+ $bound=Probe-Http -More @('--interface',$physicalIP,'https://api.ipify.org');if($bound.code -eq 0){throw 'Traffic escaped during core failure'}
  Start-Sleep -Seconds 4;Wait-Connected;Assert-Estonia
  Note 'Owned core crash: fail-closed and automatic recovery PASS.'
  $curl=(Get-Command curl.exe).Source
@@ -70,18 +71,24 @@ try{
  Note 'Domain direct exception + removal PASS.'
  $target=(Resolve-DnsName api.ipify.org -Type A | Where-Object IPAddress | Select-Object -First 1).IPAddress
  Change-And-Wait 'add' ([pscustomobject]@{category='networks';value=($target+'/32')})
- $r=Curl -More @('--resolve',('api.ipify.org:443:'+$target),'https://api.ipify.org');if($r.code -ne 0 -or $r.text -ne $baseline){throw 'IP exception failed'}
+ $r=Probe-Http -More @('--resolve',('api.ipify.org:443:'+$target),'https://api.ipify.org');if($r.code -ne 0 -or $r.text -ne $baseline){throw 'IP exception failed'}
  Change-And-Wait 'remove' ([pscustomobject]@{category='networks';value=($target+'/32')});Assert-Estonia
  Note 'IP direct exception + removal PASS.'
  Change-And-Wait 'add' ([pscustomobject]@{category='ports';value='tcp:443:out'})
  if((Exit-IP) -ne $baseline){throw 'Outbound port exception failed'}
- $r=Curl -More @('--interface',$physicalIP,'https://api.ipify.org');if($r.code -ne 0 -or $r.text -ne $baseline){throw 'Bound outbound port exception failed'}
+ $r=Probe-Http -More @('--interface',$physicalIP,'https://api.ipify.org');if($r.code -ne 0 -or $r.text -ne $baseline){throw 'Bound outbound port exception failed'}
  Change-And-Wait 'remove' ([pscustomobject]@{category='ports';value='tcp:443:out'});Assert-Estonia
  Note 'Port direct exception (including physical bind) + removal PASS.'
  Change-And-Wait 'add' ([pscustomobject]@{category='dns';value='1.1.1.1'})
  $null=Resolve-DnsName github.com -Server 1.1.1.1 -DnsOnly -ErrorAction Stop
  Change-And-Wait 'remove' ([pscustomobject]@{category='dns';value='1.1.1.1'});Assert-Estonia
  Note 'Explicit direct DNS exception + protected resolver restore PASS.'
+ # Explicit user-authorized CI diagnostic account, no real user's report.
+ $report=Create-Report
+ if(@($report.checks.routes | Where-Object good).Count -lt 2){throw 'Fewer than two working carriers'}
+ foreach($route in $report.checks.routes){Note ('Carrier: '+$route.id+' good='+$route.good+' Mbps='+$route.download_mbps)}
+ $id=Send-Report $report;Note ('UDP/DNS/service diagnostic upload acknowledged: '+$id)
+ Assert-Estonia
  $null=Disconnect-Vpn;$off=$true
  if((Exit-IP) -ne $baseline){throw 'Disconnect did not restore ordinary egress'}
  Note 'Disconnect restored ordinary egress PASS.'

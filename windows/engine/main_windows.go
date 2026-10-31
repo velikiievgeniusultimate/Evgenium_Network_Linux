@@ -209,7 +209,7 @@ func following(c Config, ranks []Rank, current string) string {
 type coreProcess struct {
 	cmd  *exec.Cmd
 	done chan error
-	log  *os.File
+	log  *rotatingLog
 	job  windows.Handle
 }
 
@@ -227,11 +227,7 @@ func startCore(c Config, route string, probeOnly bool) (*coreProcess, error) {
 		return nil, e
 	}
 	logPath := filepath.Join(dataDir(c.Owner), "engine.log")
-	if st, e := os.Stat(logPath); e == nil && st.Size() > 1024*1024 {
-		_ = os.Remove(logPath + ".1")
-		_ = os.Rename(logPath, logPath+".1")
-	}
-	f, e := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	f, e := openLog(logPath, 512*1024)
 	if e != nil {
 		return nil, e
 	}

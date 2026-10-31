@@ -30,6 +30,7 @@ jobs:
           python src/evgenium_gui.py --self-test
           python -m unittest discover -s tests -v
           python -m unittest discover -s server/panel/tests -v
+          python -m unittest discover -s server/connect/tests -v
           # Qt 6.4 reports valid outer-component bindings as unqualified warnings.
           /usr/lib/qt6/bin/qmllint --unqualified info src/evgenium_gui.qml
       - name: Legacy upgrade and independent repair in disposable filesystem

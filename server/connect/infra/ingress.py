@@ -70,6 +70,7 @@ def up():
  chain input {{ type filter hook input priority -40; policy accept;
   iifname "{IF}" ip saddr 10.78.0.0/24 ip daddr 195.209.211.163 tcp dport {{ 80, 8443 }} counter accept
   iifname "{IF}" ip saddr 10.78.0.0/24 ip daddr 195.209.211.163 tcp dport 9444 ct original proto-dst 443 counter accept
+  iifname "{IF}" ip saddr 10.78.0.0/24 ip daddr 10.78.0.1 udp dport 24588 counter accept
   iifname "{IF}" counter drop
  }}
  chain forward {{ type filter hook forward priority -40; policy accept;
@@ -101,6 +102,8 @@ def up():
     if ns: nft_rules(ns, True)
     firewall_remove()
     nft_rules(f'''insert rule inet firewall input udp dport 51820 counter accept comment "{PREFIX}input"
+insert rule inet firewall input iifname "{IF}" ip saddr 10.78.0.0/24 ip daddr 10.78.0.1 udp dport 24588 counter accept comment "{PREFIX}diagnostic"
+insert rule inet firewall input tcp dport {{ 24580, 24581 }} counter accept comment "{PREFIX}windows-carriers"
 insert rule inet firewall forward iifname "{IF}" ip saddr 10.78.0.0/24 oifname "evg-relay-host" ct state established,related,new counter accept comment "{PREFIX}out"
 insert rule inet firewall forward iifname "evg-relay-host" oifname "{IF}" ip daddr 10.78.0.0/24 ct state established,related counter accept comment "{PREFIX}in"
 ''')

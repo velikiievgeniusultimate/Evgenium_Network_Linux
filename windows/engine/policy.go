@@ -47,7 +47,11 @@ type Transport struct {
 
 // Added transports only encapsulate authenticated WireGuard packets. They never
 // provide unrestricted server-side egress or replace per-device authentication.
-var transports = []Transport{{ID: "ru-wg", Label: "HSVDS → Эстония · UDP"}}
+var transports = []Transport{
+	{ID: "ru-wg", Label: "HSVDS → Эстония · UDP"},
+	{ID: "ru-tcp", Label: "HSVDS → Эстония · Reality TCP", Network: "raw", Port: 24580, PublicKey: "sBLhmMMiyFypa_ZD847la1nxurq5XvdOrOMqGaFfEyk", ShortID: "ca7df665eb918089", UUID: "df22abb5-c348-48d6-9b74-5991919367c2"},
+	{ID: "ru-xhttp", Label: "HSVDS → Эстония · Reality XHTTP", Network: "xhttp", Port: 24581, PublicKey: "sBLhmMMiyFypa_ZD847la1nxurq5XvdOrOMqGaFfEyk", ShortID: "ca7df665eb918089", UUID: "df22abb5-c348-48d6-9b74-5991919367c2"},
+}
 var sidPattern = regexp.MustCompile(`^S-1-5-21-[0-9]+-[0-9]+-[0-9]+-[0-9]+$`)
 var portPattern = regexp.MustCompile(`^(tcp|udp|both):([0-9]{1,5}):(out|in|both)$`)
 var processPattern = regexp.MustCompile(`^[^<>"|?*\x00-\x1f]+$`)
@@ -177,7 +181,7 @@ func coreConfig(c Config, selected string, probeOnly bool) (map[string]any, erro
 			inbound := "carrier-in-" + t.ID
 			inbounds = append(inbounds, obj{"tag": inbound, "listen": "127.0.0.1", "port": 18570 + i, "protocol": "socks", "settings": obj{"auth": "noauth", "udp": true}})
 			rules = append(rules, obj{"type": "field", "inboundTag": []string{inbound}, "outboundTag": "carrier-" + t.ID})
-			stream := obj{"network": t.Network, "security": "reality", "realitySettings": obj{"serverName": "www.microsoft.com", "fingerprint": "chrome", "password": t.PublicKey, "shortId": t.ShortID}}
+			stream := obj{"network": t.Network, "security": "reality", "realitySettings": obj{"serverName": "www.yandex.ru", "fingerprint": "chrome", "password": t.PublicKey, "shortId": t.ShortID}}
 			if t.Network == "xhttp" {
 				stream["xhttpSettings"] = obj{"path": "/evgenium-wg", "mode": "auto"}
 			}

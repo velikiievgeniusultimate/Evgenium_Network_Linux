@@ -73,7 +73,7 @@ def safe_profile(result, device, endpoint):
 def create_app(config=None, issuer_call=None):
     cfg = config or json.loads(Path(os.environ.get('EVG_CONNECT_CONFIG', '/etc/evgenium-connect/config.json')).read_text())
     app = Flask(__name__, root_path=str(Path(__file__).resolve().parent))
-    app.config.update(MAX_CONTENT_LENGTH=2048, MAX_FORM_PARTS=2)
+    app.config.update(MAX_CONTENT_LENGTH=192*1024, MAX_FORM_PARTS=2)
     # Gunicorn must bind to loopback only; nginx overwrites these two headers.
     if cfg.get('https_proxy', True):
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
@@ -124,6 +124,8 @@ def create_app(config=None, issuer_call=None):
 
     @app.before_request
     def guard():
+        if request.path != '/api/report' and request.content_length and request.content_length > 2048:
+            abort(413)
         g.set_cookie = None
         g.session = None
         if request.host not in cfg.get('allowed_hosts', ['connect.velikiievgenius.com']) or not request.is_secure or request.query_string:
@@ -215,5 +217,59 @@ def create_app(config=None, issuer_call=None):
         except (ValueError, TypeError, KeyError):
             abort(503)
         return jsonify(ok=True, profile=profile)
+
+    @app.post('/api/report')
+    def report():
+        try:
+            from windows_reports import clean_windows
+        except ModuleNotFoundError:
+            from server.connect.windows_reports import clean_windows
+        limited('report', 12, 3600, 200)
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or set(body) != {'token', 'device', 'public_key', 'report'}:
+            abort(400)
+        token, device, key = body['token'], body['device'], body['public_key']
+        if not isinstance(token, str) or not TOKEN.fullmatch(token) or not isinstance(device, str) or not DEVICE.fullmatch(device) or not valid_key(key):
+            abort(400)
+        try:
+            clean = clean_windows(body['report'])
+        except (ValueError, TypeError, KeyError, OverflowError):
+            abort(400)
+        try:
+            # The existing restricted issuer authenticates the same token/device
+            # key; empty name preserves its server-assigned device name.
+            reply = issuer_call(dict(operation='wireguard-enroll', token=token, device=device, public_key=key, name=''))
+        except (OSError, ValueError, TypeError):
+            abort(503)
+        if not isinstance(reply, dict) or not reply.get('ok'):
+            abort(401)
+        try:
+            profile = safe_profile(reply, device, cfg.get('endpoint', '195.209.211.163:51820'))
+        except (ValueError, TypeError, KeyError):
+            abort(503)
+        directory = state / 'reports'
+        directory.mkdir(mode=0o700, exist_ok=True)
+        now = int(time.time())
+        files = list(directory.glob('windows-????????????????????????????????.json'))
+        for old in files:
+            if old.stat().st_mtime < now - 7*86400:
+                old.unlink()
+        if sum(p.stat().st_size for p in directory.glob('windows-*.json')) > 64*1024*1024:
+            abort(507)
+        document = dict(received=now, account=profile['account'], device=device, report=clean)
+        destination = directory / ('windows-' + clean['report_id'] + '.json')
+        try:
+            fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            try:
+                existing = json.loads(destination.read_text())
+            except (OSError, ValueError):
+                abort(503)
+            if existing.get('account') != profile['account'] or existing.get('device') != device or existing.get('report') != clean:
+                abort(409)
+            return jsonify(ok=True, report_id=clean['report_id'])
+        with os.fdopen(fd, 'w') as output:
+            json.dump(document, output, ensure_ascii=False, separators=(',', ':'))
+        return jsonify(ok=True, report_id=clean['report_id'])
 
     return app
