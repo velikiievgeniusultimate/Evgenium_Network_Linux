@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -330,6 +331,11 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 		writeStatus(e.sid, Status{State: "error", Message: "Настройки VPN повреждены. Нажмите «Включить» для восстановления."})
 		return false, 1
 	}
+	for i, v := range c.LAN {
+		p, _ := netip.ParsePrefix(v)
+		c.LAN[i] = p.Masked().String()
+	}
+	sort.Strings(c.LAN)
 	st := Status{State: "connecting", Message: "Включаю защиту сети…"}
 	var old Status
 	if b, x := os.ReadFile(filepath.Join(dataDir(e.sid), "status.json")); x == nil {
@@ -366,11 +372,36 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 	desired := choose(c, st.Ranking)
 	failures := 0
 	lastReset := time.Now()
+	lastNetworkCheck := time.Now()
+	initialApps := routingApplications(c.Policy.Applications)
+	sort.Strings(initialApps)
+	lastApplications := strings.Join(initialApps, "\n")
 	tick := func() time.Duration {
 		if !bridgeWork.TryLock() {
 			return 2 * time.Second
 		}
 		defer bridgeWork.Unlock()
+
+		if core != nil && time.Since(lastNetworkCheck) > 30*time.Second {
+			lastNetworkCheck = time.Now()
+			changed := false
+			if lan, x := physicalLAN(); x == nil && strings.Join(lan, ",") != strings.Join(c.LAN, ",") {
+				c.LAN = lan
+				changed = true
+				_ = writeJSON(filepath.Join(dataDir(c.Owner), "engine.json"), c)
+			}
+			apps := routingApplications(c.Policy.Applications)
+			sort.Strings(apps)
+			signature := strings.Join(apps, "\n")
+			if lastApplications != "" && signature != lastApplications {
+				changed = true
+			}
+			lastApplications = signature
+			if changed {
+				core.stop()
+				core = nil
+			}
+		}
 		if desired == "" {
 			desired = transports[0].ID
 			needRank = true
@@ -661,7 +692,20 @@ func control(command, sid string) error {
 				return e
 			}
 		}
-		return removeGuard()
+		if e = removeGuard(); e != nil {
+			return e
+		}
+		if command == "uninstall-all" {
+			// Wintun refuses to remove a package used by another application's
+			// adapters. Never force-remove or enumerate foreign adapters.
+			exe, _ := os.Executable()
+			dll := windows.NewLazyDLL(filepath.Join(filepath.Dir(exe), "wintun.dll"))
+			proc := dll.NewProc("WintunDeleteDriver")
+			if proc.Find() == nil {
+				_, _, _ = proc.Call()
+			}
+		}
+		return nil
 	case "upgrade-stop":
 		if s != nil {
 			return stopService(s)

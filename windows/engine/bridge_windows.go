@@ -9,9 +9,11 @@ import (
 	"io"
 	"math/bits"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -329,3 +331,31 @@ func loopbackName() string {
 
 var _ = fmt.Sprint
 var _ = os.ErrNotExist
+
+func physicalLAN() ([]string, error) {
+	index, e := physicalIndex()
+	if e != nil {
+		return nil, e
+	}
+	inf, e := net.InterfaceByIndex(int(index))
+	if e != nil {
+		return nil, e
+	}
+	addresses, e := inf.Addrs()
+	if e != nil {
+		return nil, e
+	}
+	result := []string{}
+	for _, a := range addresses {
+		p, e := netip.ParsePrefix(a.String())
+		if e != nil || !p.Addr().Is4() || p.Bits() == 0 || p.Addr().IsLoopback() || p.Addr().IsLinkLocalUnicast() {
+			continue
+		}
+		if p.Overlaps(netip.MustParsePrefix("10.78.0.0/24")) || p.Overlaps(netip.MustParsePrefix("198.18.254.0/30")) {
+			continue
+		}
+		result = append(result, p.Masked().String())
+	}
+	sort.Strings(result)
+	return result, nil
+}
