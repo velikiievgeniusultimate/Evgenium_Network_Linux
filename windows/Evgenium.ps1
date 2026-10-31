@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 $global:EvgeniumExitCode = 0
-$script:Version = '0.2.0'
+$script:Version = '0.2.1'
 $global:EvgeniumInstallerStarted = $false
 $script:Api = 'https://connect.velikiievgenius.com'
 $script:Manifest = 'https://raw.githubusercontent.com/velikiievgeniusultimate/Evgenium_Network_Linux/main/releases/windows/stable.json'

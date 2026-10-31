@@ -63,6 +63,7 @@ function Test-Desktop {
         $window.SetSnapshot(($sample | ConvertTo-Json -Depth 8 -Compress));$window.Show();[EvgeniumDesktop]::PumpEvents()
         if($window.WindowStyle -ne 'None' -or $window.ResizeMode -ne 'CanResize'){throw 'Custom chrome or resizing unavailable'}
         if(!$window.FindVisual('windowTitleBar') -or !$window.FindVisual('minimizeWindow') -or !$window.FindVisual('closeWindow')){throw 'Accessible caption controls missing'}
+        $window.ValidateChrome()
         $out=if($env:RUNNER_TEMP){Join-Path $env:RUNNER_TEMP 'evgenium-windows'}else{$env:TEMP}
         foreach($size in @(@(860,580),@(1040,740),@(1500,900),@(920,660))) {
             $window.Width=$size[0];$window.Height=$size[1]
@@ -76,6 +77,8 @@ function Test-Desktop {
         $sample.has_token=$true;$sample.engine.message='VPN отключён.';$window.SetSnapshot(($sample | ConvertTo-Json -Depth 8 -Compress))
         $window.SetBusy($true);$window.SetBusy($false);$window.WindowState='Minimized';[EvgeniumDesktop]::PumpEvents();if($window.WindowState -ne 'Minimized'){throw 'Minimize failed'}
         $window.OpenMain();$window.Close();if($window.Visible -or $window.IsDisposed){throw 'Close must hide to tray'};$window.OpenMain();[EvgeniumDesktop]::PumpEvents()
+        $window.SavedToken();$window.SetSnapshot(($sample | ConvertTo-Json -Depth 8 -Compress))
+        foreach($dpi in @(96,120,144,192)){$window.SavePreviewAtDpi((Join-Path $out ('ui-dpi-'+$dpi+'.png')),$dpi)}
         $window.SavePreview((Join-Path $env:RUNNER_TEMP 'evgenium-windows-ui.png'))
         # Native compositor screenshot, in addition to an offscreen render.
         Add-Type -AssemblyName System.Drawing

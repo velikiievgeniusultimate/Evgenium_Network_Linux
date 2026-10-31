@@ -73,7 +73,7 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
  private Button Button(string label,Action action,bool primary){var b=new Button{Content=label,Margin=new Thickness(0,0,12,0)};if(primary){b.Background=Accent;b.Foreground=BrushOf("#180d13");b.BorderThickness=new Thickness(0);b.FontWeight=FontWeights.SemiBold;}b.Click+=(s,e)=>action();Accessible(b,label);return b;}
  private StackPanel Card(string title){var content=new StackPanel();if(title!="")content.Children.Add(new TextBlock{Text=title,FontSize=15,FontWeight=FontWeights.SemiBold,Foreground=Main,Margin=new Thickness(0,0,0,14),TextWrapping=TextWrapping.Wrap});cards.Children.Add(new Border{Background=Surface,BorderBrush=BorderBrushColor,BorderThickness=new Thickness(1),CornerRadius=new CornerRadius(7),Padding=new Thickness(18),Margin=new Thickness(0,0,0,16),Child=content});return content;}
  private static Grid Pair(FrameworkElement field,FrameworkElement action){var row=new Grid();row.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(1,GridUnitType.Star)});row.ColumnDefinitions.Add(new ColumnDefinition{Width=GridLength.Auto});field.Margin=new Thickness(0,0,12,0);action.Margin=new Thickness(0);row.Children.Add(field);row.Children.Add(action);Grid.SetColumn(action,1);return row;}
- private static TextBox Input(string label){var t=new TextBox{MinWidth=0};Accessible(t,label);return t;}
+ private static TextBox Input(string label){var t=new TextBox{MinWidth=0,Tag=label=="Токен клиента"?"Введите токен":label};Accessible(t,label);return t;}
  private WrapPanel Actions(params Button[] buttons){var row=new WrapPanel();foreach(var b in buttons){b.Margin=new Thickness(0,0,12,8);row.Children.Add(b);}return row;}
  private void OptionChanged(){if(!Refreshing)Send("option",new{name="startup",value=startup.IsChecked==true});}
  private void Send(string action,object payload){if(Busy&&action!="option")return;var handler=Operation;if(handler!=null)handler(action,payload==null?"{}":json.Serialize(payload));}
@@ -149,21 +149,25 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
  public void SetApps(string text){apps=AsArray(json.DeserializeObject(text));FillApps();}
  private void FillApps(){if(running==null)return;running.Items.Clear();foreach(var v in apps){var a=Map(v);running.Items.Add(new AppItem{Name=TextOf(a,"name"),Path=TextOf(a,"exe")});}if(running.Items.Count>0)running.SelectedIndex=0;}
  public void SetError(string message){lastError=message;if(statusText!=null){statusText.Text=message;statusText.Foreground=BrushOf("#ffad9e");}if(!IsVisible)tray.ShowBalloonTip(5000,"Evgenium",message,Forms.ToolTipIcon.Warning);}
- public void SetBusy(bool value){Busy=value;cards.IsEnabled=!value;navigation.IsEnabled=!value;startup.IsEnabled=!value;if(value){lastError="";if(statusText!=null)statusText.Text="Выполняется… Подтвердите запрос Windows, если он появится.";}}
+ public void SetBusy(bool value){Busy=value;cards.IsEnabled=!value;navigation.IsEnabled=!value;startup.IsEnabled=!value;if(value){lastError="";if(statusText!=null)statusText.Text="Выполняется… Подтвердите запрос Windows, если он появится.";}else ApplySnapshot();}
  public void OpenMain(){Show();WindowState=WindowState.Normal;Activate();}
  public void ExitApplication(){AllowExit=true;Close();}
  public void Dispose(){if(!IsDisposed){AllowExit=true;Close();}tray.Dispose();}
  public static void PumpEvents(){var frame=new DispatcherFrame();Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>frame.Continue=false));Dispatcher.PushFrame(frame);}
- public void SavePreview(string path){UpdateLayout();PumpEvents();var bitmap=new RenderTargetBitmap((int)Math.Ceiling(ActualWidth),(int)Math.Ceiling(ActualHeight),96,96,PixelFormats.Pbgra32);bitmap.Render(visual);var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));using(var file=File.Create(path))encoder.Save(file);}
+ public void SavePreview(string path){SavePreviewAtDpi(path,96);}
+ public void SavePreviewAtDpi(string path,double dpi){UpdateLayout();PumpEvents();var bitmap=new RenderTargetBitmap((int)Math.Ceiling(ActualWidth*dpi/96),(int)Math.Ceiling(ActualHeight*dpi/96),dpi,dpi,PixelFormats.Pbgra32);bitmap.Render(visual);var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));using(var file=File.Create(path))encoder.Save(file);}
  // Layout regression checks cover content measurement, not only window bounds.
- // ScaleTransform simulates the effective DIP viewport on high-DPI monitors.
+ // WPF uses DIPs; separate 96/120/144/192-DPI renders check rasterization.
+ // Actual monitor transitions still require a physical multi-monitor test.
  public void ValidateLayout(double scale){
-  visual.LayoutTransform=new ScaleTransform(scale,scale);UpdateLayout();PumpEvents();
+  UpdateLayout();PumpEvents();
   var scroll=Find<ScrollViewer>("pageScroll");if(scroll.ScrollableWidth>1)throw new Exception("Horizontal overflow on page "+page);
   foreach(var child in cards.Children){var card=(FrameworkElement)child;if(card.ActualWidth>cards.ActualWidth+1)throw new Exception("Card exceeds viewport");}
   ValidateChildren(visual);var close=Find<Button>("closeWindow");var min=Find<Button>("minimizeWindow");var a=min.TransformToAncestor(visual).Transform(new Point(min.ActualWidth,0));var b=close.TransformToAncestor(visual).Transform(new Point(0,0));if(a.X>b.X+1)throw new Exception("Caption buttons overlap");
  }
  private static void ValidateChildren(DependencyObject node){for(int i=0;i<VisualTreeHelper.GetChildrenCount(node);i++){var c=VisualTreeHelper.GetChild(node,i);var f=c as FrameworkElement;var parent=node as FrameworkElement;if(f!=null&&parent!=null&&f.Visibility==Visibility.Visible&&f is Button&&parent is Grid&&f.ActualWidth>parent.ActualWidth+1)throw new Exception("Button exceeds its row");ValidateChildren(c);}}
+ [DllImport("user32.dll")]private static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr w,IntPtr l);
+ public void ValidateChrome(){var h=new WindowInteropHelper(this).Handle;if((GetWindowLong(h,-16)&0x10000)!=0)throw new Exception("Native maximize is enabled");foreach(var point in new[]{new Point(1,1),new Point(ActualWidth-2,1),new Point(1,ActualHeight-2),new Point(ActualWidth-2,ActualHeight-2)}){var p=PointToScreen(point);int expected=point.Y<3?(point.X<3?13:14):(point.X<3?16:17);long xy=((long)(ushort)(int)p.Y<<16)|(ushort)(int)p.X;if(SendMessage(h,0x84,IntPtr.Zero,(IntPtr)xy).ToInt32()!=expected)throw new Exception("Native corner sizing failed");}}
  [DllImport("user32.dll")]private static extern int GetWindowLong(IntPtr h,int index);
  [DllImport("user32.dll")]private static extern int SetWindowLong(IntPtr h,int index,int value);
  [DllImport("dwmapi.dll")]private static extern int DwmSetWindowAttribute(IntPtr h,int attribute,ref int value,int size);
