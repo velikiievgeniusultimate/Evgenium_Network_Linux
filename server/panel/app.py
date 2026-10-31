@@ -62,7 +62,7 @@ def create_app(config=None,broker_call=None):
     cfg=config or json.loads(Path(os.environ.get('EVG_PANEL_CONFIG','/etc/evgenium-panel/config.json')).read_text())
     app=Flask(__name__)
     app.config.update(MAX_CONTENT_LENGTH=4096,MAX_FORM_PARTS=8)
-    if cfg.get('https_proxy'):app.wsgi_app=ProxyFix(app.wsgi_app,x_proto=1)
+    if cfg.get('https_proxy'):app.wsgi_app=ProxyFix(app.wsgi_app,x_proto=1,x_for=1)
     state=Path(cfg['state_dir']);state.mkdir(mode=0o700,parents=True,exist_ok=True)
     cipher=Fernet(cfg['encryption_key'].encode());database=state/'panel.sqlite3'
     broker_call=broker_call or (lambda body:rpc(cfg['broker_socket'],body))

@@ -169,3 +169,40 @@ POST `/api/report` в существующем сервисе регистрац
 Для отключения новых резервов остановите только evgenium-windows-ingress.service;
 нативный WireGuard и остальные клиенты продолжат работать. Основные маршруты/DNS,
 3X-UI и strongSwan при этой работе не изменялись.
+
+
+## Direct owner panel — 31 October 2026
+
+`panel.velikiievgenius.com` now has an unproxied A record for `195.209.211.163`,
+TTL300. The previous proxied CNAME/Cloudflare Tunnel path is no longer used by DNS.
+The unchanged panel application/database/broker stay on HSVDS. Password, TOTP,
+trusted-browser cookies and all account/device tokens are preserved.
+
+The shared frontend recognizes the panel's SNI and sends PROXYv2 only to the
+new loopback9445 TLS frontend. It uses `/etc/evgenium-panel/tls.pem`, overwrites
+X-Forwarded-Proto and X-Forwarded-For, then uses loopback9081. The panel trusts
+one proxy for protocol and source IP; an incoming forged header cannot bypass
+per-client rate limits. Authentication is still required for administrative APIs.
+Both domains receive HTTP301 from80 toHTTPS; ACME HTTP paths use the existing
+9083 webroot server. Other SNI still uses the unchanged original443 listener.
+The HAProxy source now requires both portal and owner-panel PEM files; provision
+these before deploying this shared configuration on a new server.
+
+Certbot lineage `/etc/letsencrypt/live/evgenium-panel-direct` was initially
+issued with one temporary DNS TXT record. The Cloudflare API token remained on
+the operator computer. That TXT record was deleted after issuance. Renewal was
+then reconfigured to webroot/HTTP-01 and tested against the staging CA. No DNS
+API credential or manual DNS hook is needed on the server for renewal.
+The shared deploy hook handles each lineage separately and checks the full
+HAProxy configuration before a graceful reload, restoring the previous PEM if
+configuration validation fails. Certbot's existing timer remains enabled.
+
+Rollback files, including a private online SQLite backup, are under
+`/root/evg-panel-direct-20261031`. These files contain credentials; never publish.
+For rollback, restore only the saved frontend/app/deploy-hook source and the
+previous proxied CNAME DNS record after testing the retained cloudflared service.
+Do not restore an old SQLite database over new owner/account/device changes.
+The original443 PID/configuration, VPN routing/firewall/DNS and Estonian services
+were not replaced. The Cloudflare connector is retained for operator rollback,
+not enabled as an automatic fallback. DNS caches may retain the previous edge
+addresses for up to the old TTL after a cutover.

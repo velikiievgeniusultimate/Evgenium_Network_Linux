@@ -1,6 +1,6 @@
 # Панель владельца Evgenium Network
 
-Панель и издатель сертификатов работают на HSVDS (Ubuntu 24.04). Внешний доступ — через отдельный Cloudflare Tunnel с выходом через Эстонию.
+Панель и издатель сертификатов работают на HSVDS (Ubuntu 24.04). Публичный HTTPS идёт напрямую на HSVDS: DNS-запись A `195.209.211.163`, без проксирования Cloudflare. VPN и связь с Эстонией для открытия панели не нужны.
 
 ```text
 https://panel.velikiievgenius.com
@@ -38,7 +38,23 @@ sudo bash server/panel/install.sh
 
 Панель слушает `127.0.0.1:9081` и Unix socket `/var/lib/evgenium-panel-http/panel.sock`. Разрешённый домен задаётся `allowed_hosts` в `/etc/evgenium-panel/config.json`. Первичная настройка нового сервера использует root-only `/root/evgenium-panel-bootstrap.txt` в течение 24 часов. Не сбрасывайте владельца при обновлении.
 
-Cloudflare Tunnel направляет выбранный hostname в Unix socket панели, `httpHostHeader` совпадает с hostname. Connector token передаётся systemd через LoadCredential, а не в аргументах процесса. Существующий connector работает в `evg-link`; внешняя доступность панели зависит от канала с Эстонией.
+Прямой HTTPS обслуживает общий HAProxy из `server/connect/infra`: SNI панели
+выбирает отдельный TLS frontend на loopback 9445, затем Gunicorn 9081. Публичный
+HTTP 80 перенаправляет на HTTPS. Перед включением этой конфигурации нужны оба
+действительных PEM: `/etc/evgenium-connect/tls.pem` и `/etc/evgenium-panel/tls.pem`.
+Сертификат панели — Certbot lineage `evgenium-panel-direct`; автопродление через
+HTTP webroot `/var/lib/evgenium-connect-acme`. Общий deploy hook обновляет только
+нужный PEM и плавно перезагружает HAProxy. Подробности в `server/connect/infra/OPERATIONS.md`.
+
+Фронтенд принудительно задаёт `X-Forwarded-Proto: https` и реальный клиентский
+`X-Forwarded-For`; приложение доверяет ровно одному прокси. Gunicorn должен
+оставаться на loopback. Публичный порт 9081 или доверие произвольным заголовкам
+клиента недопустимы. Host/Origin, CSRF, пароль/TOTP и запрет кеширования сохраняются.
+
+Прежний Cloudflare connector оставлен для ручного отката и не используется
+основной DNS-записью. Он работает в `evg-link`; не возвращайте его в основной
+маршрут без решения владельца: тогда снова появится зависимость от Cloudflare
+и межсерверного канала.
 
 ## Резервное копирование и проверки
 

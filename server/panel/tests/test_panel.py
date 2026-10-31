@@ -68,6 +68,17 @@ class AuthenticationTests(unittest.TestCase):
         self.assertEqual(self.client.get('/',base_url='http://localhost').status_code,400)
         self.assertEqual(self.client.get('/',base_url='https://attacker.invalid').status_code,400)
         self.assertEqual(self.post('/api/login',[]).status_code,400)
+    def test_trusted_front_ip_is_used_for_session_limits(self):
+        response=self.client.get('/api/session',base_url='https://localhost',headers={'X-Forwarded-For':'198.51.100.123, 192.0.2.7'})
+        self.assertEqual(response.status_code,200)
+        # The trusted loopback frontend overwrites this header; ProxyFix trusts
+        # exactly its final value, never the caller's arbitrary first address.
+        fresh=self.app.test_client()
+        fresh.get('/api/session',base_url='https://localhost',headers={'X-Forwarded-For':'198.51.100.123, 192.0.2.7'})
+        with closing(sqlite3.connect(self.root/'panel.sqlite3')) as c:
+            self.assertIsNotNone(c.execute("SELECT 1 FROM attempts WHERE bucket='session:192.0.2.7'").fetchone())
+            self.assertIsNone(c.execute("SELECT 1 FROM attempts WHERE bucket='session:198.51.100.123'").fetchone())
+
     def test_cookie_and_headers(self):
         c=self.client.get_cookie(web.COOKIE);self.assertTrue(c.secure);self.assertTrue(c.http_only);self.assertEqual(c.same_site,'Strict')
         r=self.client.get('/',base_url='https://localhost');self.assertIn("frame-ancestors 'none'",r.headers['Content-Security-Policy']);self.assertIn('max-age=',r.headers['Strict-Transport-Security'])
