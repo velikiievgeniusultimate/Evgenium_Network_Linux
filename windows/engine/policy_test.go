@@ -49,7 +49,7 @@ func TestPolicyAndDNSIsolation(t *testing.T) {
 		t.Fatal("application can bypass DNS isolation")
 	}
 	last := rules[len(rules)-1].(map[string]any)
-	if last["outboundTag"] != "ru-wg" {
+	if last["outboundTag"] != "vpn" {
 		t.Fatal("unmatched traffic can bypass VPN")
 	}
 }

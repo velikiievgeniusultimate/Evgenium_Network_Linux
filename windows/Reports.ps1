@@ -1,4 +1,4 @@
-function Create-Report {
+﻿function Create-Report {
     if (!(Tunnel-Running)) {$null=Connect-Vpn}
     $exe=Join-Path $ExecutableDirectory 'EvgeniumEngine.exe'
     $before=[Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetTcpIPv4Statistics()

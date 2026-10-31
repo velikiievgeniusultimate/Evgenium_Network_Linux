@@ -1,4 +1,4 @@
-try {
+﻿try {
     if ($ResultId -and $ResultId -notmatch '^[a-f0-9]{32}$') { throw 'Некорректный идентификатор операции.' }
     if ($ExpectedSid -and $ExpectedSid -ne $script:Sid) { throw 'UAC выполнен под другой учётной записью. Используйте ту же учётную запись Windows.' }
     if (![Environment]::Is64BitProcess) { throw 'Эта сборка предназначена для Windows x64.' }

@@ -6,7 +6,7 @@ if ($TestVersion) {if($env:GITHUB_ACTIONS -ne 'true'){throw 'Version fixtures ar
 if ($version -notmatch '^\d+\.\d+\.\d+$') {throw 'Invalid VERSION'}
 $package=Join-Path $Output ('Evgenium-Windows-'+$version+'-x64');$null=New-Item -ItemType Directory -Force -Path $package
 $bundle=Join-Path $Output 'Bundle.ps1'
-$text=@('Evgenium.ps1','Policy.ps1','Reports.ps1','Desktop.ps1','Entry.ps1') | ForEach-Object {Get-Content -LiteralPath (Join-Path $root $_) -Raw}
+$text=@('Evgenium.ps1','Policy.ps1','Reports.ps1','Desktop.ps1','Entry.ps1') | ForEach-Object {Get-Content -LiteralPath (Join-Path $root $_) -Raw -Encoding UTF8}
 $content=($text -join "`r`n").Replace("`$script:Version = '0.2.0'",("`$script:Version = '"+$version+"'"))
 [IO.File]::WriteAllText($bundle,$content,[Text.Encoding]::UTF8)
 $tokens=$null;$errors=$null;$null=[Management.Automation.Language.Parser]::ParseFile($bundle,[ref]$tokens,[ref]$errors)
@@ -15,7 +15,7 @@ $assembly=Join-Path $Output 'AssemblyInfo.cs'
 [IO.File]::WriteAllText($assembly,('[assembly:System.Reflection.AssemblyVersion("'+$version+'.0")][assembly:System.Reflection.AssemblyFileVersion("'+$version+'.0")]'),[Text.Encoding]::UTF8)
 $compiler=Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $automation=[Management.Automation.PowerShell].Assembly.Location
-& $compiler '/nologo' '/optimize+' '/platform:x64' '/target:winexe' ('/out:'+(Join-Path $package 'Evgenium.exe')) ('/reference:'+$automation) '/reference:System.Windows.Forms.dll' '/reference:System.Drawing.dll' '/reference:System.Web.Extensions.dll' ('/resource:'+$bundle+',Evgenium.ps1') (Join-Path $root 'Host.cs') (Join-Path $root 'ProcessRunner.cs') (Join-Path $root 'Desktop.cs') $assembly
+& $compiler '/nologo' '/codepage:65001' '/optimize+' '/platform:x64' '/target:winexe' ('/out:'+(Join-Path $package 'Evgenium.exe')) ('/reference:'+$automation) '/reference:System.Windows.Forms.dll' '/reference:System.Drawing.dll' '/reference:System.Web.Extensions.dll' ('/resource:'+$bundle+',Evgenium.ps1') (Join-Path $root 'Host.cs') (Join-Path $root 'ProcessRunner.cs') (Join-Path $root 'Desktop.cs') $assembly
 if($LASTEXITCODE -ne 0){throw 'GUI compilation failed'}
 Push-Location (Join-Path $root 'engine')
 try {& go build -trimpath -ldflags ('-s -w -H=windowsgui -X main.version='+$version) -o (Join-Path $package 'EvgeniumEngine.exe') .;if($LASTEXITCODE -ne 0){throw 'Engine compilation failed'}} finally {Pop-Location}

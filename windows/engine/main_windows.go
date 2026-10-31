@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,6 +21,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -127,22 +130,29 @@ func probe(t Transport) Rank {
 	r.Good = true
 	return r
 }
+
+var currentBridge *packetBridge
+var bridgeWork sync.Mutex
+
 func probeAll(previous []Rank) []Rank {
-	result := make([]Rank, len(transports))
-	var group sync.WaitGroup
-	for i, t := range transports {
-		group.Add(1)
-		go func(i int, t Transport) {
-			defer group.Done()
-			result[i] = probe(t)
-			for _, p := range previous {
-				if p.ID == t.ID {
-					result[i].Losses = p.Losses
-				}
-			}
-		}(i, t)
+	result := make([]Rank, 0, len(transports))
+	old := ""
+	if currentBridge != nil {
+		old = currentBridge.currentRoute()
+		defer currentBridge.route(old)
 	}
-	group.Wait()
+	for _, t := range transports {
+		if currentBridge != nil {
+			_ = currentBridge.route(t.ID)
+		}
+		r := probe(t)
+		for _, p := range previous {
+			if p.ID == r.ID {
+				r.Losses = p.Losses
+			}
+		}
+		result = append(result, r)
+	}
 	sort.SliceStable(result, func(i, j int) bool {
 		if result[i].Good != result[j].Good {
 			return result[i].Good
@@ -152,14 +162,11 @@ func probeAll(previous []Rank) []Rank {
 	return result
 }
 func choose(c Config, ranks []Rank) string {
+	if c.Policy.Route != "" && c.Policy.Route != "auto" {
+		return c.Policy.Route
+	}
 	for _, r := range ranks {
-		if r.Losses >= 3 {
-			continue
-		}
-		if c.Policy.Route != "" && c.Policy.Route != "auto" && r.ID != c.Policy.Route {
-			continue
-		}
-		if r.Good {
+		if r.Losses < 3 && r.Good {
 			return r.ID
 		}
 	}
@@ -170,6 +177,7 @@ type coreProcess struct {
 	cmd  *exec.Cmd
 	done chan error
 	log  *os.File
+	job  windows.Handle
 }
 
 func startCore(c Config, route string, probeOnly bool) (*coreProcess, error) {
@@ -198,17 +206,28 @@ func startCore(c Config, route string, probeOnly bool) (*coreProcess, error) {
 	cmd.Dir = filepath.Dir(exe)
 	cmd.Stdout = f
 	cmd.Stderr = f
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_SUSPENDED}
 	if e = cmd.Start(); e != nil {
 		f.Close()
 		return nil, e
 	}
-	p := &coreProcess{cmd: cmd, done: make(chan error, 1), log: f}
-	go func() { p.done <- cmd.Wait(); f.Close() }()
+	job, e := containChild(cmd.Process.Pid)
+	if e != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		f.Close()
+		return nil, e
+	}
+	p := &coreProcess{cmd: cmd, done: make(chan error, 1), log: f, job: job}
+	go func() { e := cmd.Wait(); f.Close(); p.done <- e }()
 	return p, nil
 }
 func (p *coreProcess) stop() {
 	if p != nil {
+		if p.job != 0 {
+			windows.CloseHandle(p.job)
+			p.job = 0
+		}
 		_ = p.cmd.Process.Kill()
 		select {
 		case <-p.done:
@@ -217,18 +236,74 @@ func (p *coreProcess) stop() {
 	}
 }
 
+func (p *coreProcess) dead() bool {
+	if p == nil {
+		return true
+	}
+	select {
+	case e := <-p.done:
+		p.done <- e
+		return true
+	default:
+		return false
+	}
+}
+func containChild(pid int) (windows.Handle, error) {
+	job, e := windows.CreateJobObject(nil, nil)
+	if e != nil {
+		return 0, e
+	}
+	bad := func(e error) (windows.Handle, error) { windows.CloseHandle(job); return 0, e }
+	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	if _, e = windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); e != nil {
+		return bad(e)
+	}
+	process, e := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(pid))
+	if e != nil {
+		return bad(e)
+	}
+	defer windows.CloseHandle(process)
+	if e = windows.AssignProcessToJobObject(job, process); e != nil {
+		return bad(e)
+	}
+	snapshot, e := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if e != nil {
+		return bad(e)
+	}
+	defer windows.CloseHandle(snapshot)
+	var thread windows.ThreadEntry32
+	thread.Size = uint32(unsafe.Sizeof(thread))
+	for e = windows.Thread32First(snapshot, &thread); e == nil; e = windows.Thread32Next(snapshot, &thread) {
+		if thread.OwnerProcessID != uint32(pid) {
+			continue
+		}
+		h, e := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, thread.ThreadID)
+		if e != nil {
+			return bad(e)
+		}
+		_, e = windows.ResumeThread(h)
+		windows.CloseHandle(h)
+		if e != nil {
+			return bad(e)
+		}
+		return job, nil
+	}
+	return bad(errors.New("child_thread_not_found"))
+}
+
 type engineService struct{ sid string }
 
 func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, updates chan<- svc.Status) (bool, uint32) {
 	updates <- svc.Status{State: svc.StartPending}
 	c, err := readConfig(e.sid)
 	if err != nil {
-		writeStatus(e.sid, Status{State: "error", Message: "Настройки VPN повреждены. Нажмите «Восстановить»."})
+		writeStatus(e.sid, Status{State: "error", Message: "Настройки VPN повреждены. Нажмите «Включить» для восстановления."})
 		return false, 1
 	}
 	st := Status{State: "connecting", Message: "Включаю защиту сети…"}
 	var old Status
-	if b, err := os.ReadFile(filepath.Join(dataDir(e.sid), "status.json")); err == nil {
+	if b, x := os.ReadFile(filepath.Join(dataDir(e.sid), "status.json")); x == nil {
 		_ = json.Unmarshal(b, &old)
 		if !c.ResetRating {
 			st.Ranking = old.Ranking
@@ -236,20 +311,136 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 	}
 	if err = updateGuard(c, 0); err != nil {
 		st.State = "error"
-		st.Message = "Не удалось включить защиту Windows."
+		st.Message = "Не удалось включить защиту Windows: " + err.Error()
 		writeStatus(e.sid, st)
 		return false, 2
 	}
 	st.Protected = true
 	writeStatus(e.sid, st)
+	currentBridge, err = newPacketBridge()
+	if err != nil {
+		st.State = "error"
+		st.Message = "Не удалось запустить локальный транспорт. Повторю после перезапуска службы."
+		writeStatus(e.sid, st)
+		return false, 3
+	}
+	defer currentBridge.close()
+	server, err := diagnosticServer(e.sid)
+	if err != nil {
+		return false, 4
+	}
+	defer server.Close()
 	updates <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 	var core *coreProcess
 	defer func() { core.stop() }()
-	interval := time.NewTimer(0)
-	defer interval.Stop()
 	needRank := len(st.Ranking) == 0
-	desired := ""
+	desired := choose(c, st.Ranking)
 	failures := 0
+	lastReset := time.Now()
+	tick := func() time.Duration {
+		if !bridgeWork.TryLock() {
+			return 2 * time.Second
+		}
+		defer bridgeWork.Unlock()
+		if desired == "" {
+			desired = transports[0].ID
+			needRank = true
+		}
+		if core == nil {
+			st.State = "connecting"
+			st.Message = "Подключаю HSVDS → Эстония…"
+			st.Route = desired
+			writeStatus(e.sid, st)
+			if err = updateGuard(c, 0); err == nil {
+				_ = currentBridge.route(desired)
+				core, err = startCore(c, "vpn", false)
+			}
+			if err != nil {
+				st.Message = "Не удалось запустить ядро. Повторяю автоматически."
+				writeStatus(e.sid, st)
+				core = nil
+				return 5 * time.Second
+			}
+			var luid uint64
+			for i := 0; i < 30; i++ {
+				if luid, err = tunnelLUID(); err == nil {
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			if err != nil {
+				core.stop()
+				core = nil
+				return 3 * time.Second
+			}
+			if err = updateGuard(c, luid); err != nil {
+				core.stop()
+				core = nil
+				st.Message = "Восстанавливаю защиту сетевого адаптера: " + err.Error()
+				writeStatus(e.sid, st)
+				return 3 * time.Second
+			}
+		}
+		if needRank {
+			st.Message = "Быстро проверяю доступные маршруты…"
+			writeStatus(e.sid, st)
+			st.Ranking = probeAll(st.Ranking)
+			needRank = false
+			c.ResetRating = false
+			_ = writeJSON(filepath.Join(dataDir(c.Owner), "engine.json"), c)
+			best := choose(c, st.Ranking)
+			if best != "" {
+				desired = best
+			}
+			_ = currentBridge.route(desired)
+		}
+		st.Route = desired
+		if healthy(desired) {
+			failures = 0
+			st.State = "connected"
+			st.Message = "Подключено через Эстонию. IP: 38.180.164.67."
+			for i := range st.Ranking {
+				if st.Ranking[i].ID == desired {
+					st.Ranking[i].Good = true
+				}
+			}
+		} else {
+			failures++
+			st.State = "recovering"
+			st.Message = "Связь потеряна. Восстанавливаю автоматически; трафик защищён."
+			if core.dead() {
+				core.stop()
+				core = nil
+				st.Restarts++
+				return 2 * time.Second
+			}
+			if failures >= 2 {
+				failures = 0
+				for i := range st.Ranking {
+					if st.Ranking[i].ID == desired {
+						st.Ranking[i].Losses++
+						st.Ranking[i].Good = false
+					}
+				}
+				currentBridge.resetCarrier(desired)
+				next := choose(c, st.Ranking)
+				if next != "" {
+					desired = next
+					_ = currentBridge.route(desired)
+				} else if time.Since(lastReset) > 45*time.Second {
+					for i := range st.Ranking {
+						st.Ranking[i].Losses = 0
+					}
+					needRank = true
+					lastReset = time.Now()
+				}
+			}
+		}
+		writeStatus(e.sid, st)
+		return 5 * time.Second
+	}
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
 		select {
 		case change := <-requests:
@@ -266,108 +457,74 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 				if next, x := readConfig(e.sid); x == nil {
 					c = next
 					needRank = c.ResetRating || len(st.Ranking) == 0
-					if needRank {
+					if c.ResetRating {
 						st.Ranking = nil
 					}
-					desired = ""
-					core.stop()
-					core = nil
-					interval.Reset(0)
-				}
-			}
-		case <-interval.C:
-			if core == nil {
-				if desired == "" {
 					desired = choose(c, st.Ranking)
-				}
-				if desired == "" {
-					desired = transports[0].ID
-					needRank = true
-				}
-				st.State = "connecting"
-				st.Message = "Подключаю HSVDS → Эстония…"
-				st.Route = desired
-				writeStatus(e.sid, st)
-				if err = updateGuard(c, 0); err == nil {
-					core, err = startCore(c, desired, false)
-				}
-				if err != nil {
-					st.Message = "Не удалось запустить сетевое ядро. Повторяю автоматически."
-					writeStatus(e.sid, st)
-					core = nil
-					interval.Reset(5 * time.Second)
-					continue
-				}
-				var luid uint64
-				for i := 0; i < 30; i++ {
-					if luid, err = tunnelLUID(); err == nil {
-						break
-					}
-					time.Sleep(100 * time.Millisecond)
-				}
-				if err != nil || updateGuard(c, luid) != nil {
 					core.stop()
 					core = nil
-					st.Message = "Сетевой адаптер ещё не готов. Восстанавливаю автоматически."
-					writeStatus(e.sid, st)
-					interval.Reset(3 * time.Second)
-					continue
-				}
-				time.Sleep(300 * time.Millisecond)
-				if needRank {
-					st.Message = "Быстро проверяю доступные маршруты…"
-					writeStatus(e.sid, st)
-					st.Ranking = probeAll(st.Ranking)
-					needRank = false
-					c.ResetRating = false
-					_ = writeJSON(filepath.Join(dataDir(c.Owner), "engine.json"), c)
-					best := choose(c, st.Ranking)
-					if best != "" && best != desired {
-						core.stop()
-						core = nil
-						desired = best
-						interval.Reset(0)
-						continue
-					}
+					timer.Reset(0)
 				}
 			}
-			if healthy(desired) {
-				failures = 0
-				st.State = "connected"
-				st.Message = "Подключено через Эстонию. IP: 38.180.164.67."
-				for i := range st.Ranking {
-					if st.Ranking[i].ID == desired {
-						st.Ranking[i].Good = true
-					}
-				}
-			} else {
-				failures++
-				st.State = "recovering"
-				st.Message = "Связь потеряна. Восстанавливаю автоматически; трафик защищён."
-				if failures >= 2 {
-					failures = 0
-					for i := range st.Ranking {
-						if st.Ranking[i].ID == desired {
-							st.Ranking[i].Losses++
-							st.Ranking[i].Good = false
-						}
-					}
-					next := choose(c, st.Ranking)
-					core.stop()
-					core = nil
-					st.Restarts++
-					if next != "" {
-						desired = next
-					} else {
-						desired = ""
-						needRank = true
-					}
-				}
-			}
-			writeStatus(e.sid, st)
-			interval.Reset(5 * time.Second)
+		case <-timer.C:
+			timer.Reset(tick())
 		}
 	}
+}
+func diagnosticServer(sid string) (*http.Server, error) {
+	key := make([]byte, 32)
+	if _, e := rand.Read(key); e != nil {
+		return nil, e
+	}
+	token := base64.RawURLEncoding.EncodeToString(key)
+	if e := os.WriteFile(filepath.Join(dataDir(sid), "control.key"), []byte(token), 0600); e != nil {
+		return nil, e
+	}
+	listener, e := net.Listen("tcp4", "127.0.0.1:18559")
+	if e != nil {
+		return nil, e
+	}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if r.Method != "POST" || r.URL.Path != "/diagnose" || r.URL.RawQuery != "" || r.Host != "127.0.0.1:18559" || r.Header.Get("Origin") != "" || subtle.ConstantTimeCompare([]byte(auth), []byte(token)) != 1 || r.ContentLength > 0 {
+			http.Error(w, "denied", 403)
+			return
+		}
+		deadline := time.Now().Add(30 * time.Second)
+		for !bridgeWork.TryLock() {
+			if time.Now().After(deadline) {
+				http.Error(w, "busy", 409)
+				return
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+		defer bridgeWork.Unlock()
+		old := currentBridge.currentRoute()
+		defer currentBridge.route(old)
+		routes := probeAll(nil)
+		transfers := []TransferProbe{}
+		packets := map[string][]PacketProbe{}
+		for _, route := range routes {
+			if !route.Good {
+				continue
+			}
+			_ = currentBridge.route(route.ID)
+			transfers = append(transfers, uploadProbe(route.ID))
+			packets[route.ID] = udpPackets(routePort(route.ID))
+		}
+		_ = currentBridge.route(old)
+		services := serviceProbes(routePort(old))
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(map[string]any{"routes": routes, "transfers": transfers, "packets": packets, "services": services})
+	})
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 3 * time.Second, WriteTimeout: 180 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 4096}
+	go server.Serve(listener)
+	return server, nil
 }
 func managedService(m *mgr.Mgr) (*mgr.Service, error) {
 	s, e := m.OpenService(serviceName)
@@ -565,29 +722,23 @@ func run() error {
 		if len(args) != 2 || !sidPattern.MatchString(args[1]) {
 			return errors.New("invalid_owner")
 		}
-		var st Status
-		b, err := os.ReadFile(filepath.Join(dataDir(args[1]), "status.json"))
-		if err != nil {
-			return err
+		token, e := os.ReadFile(filepath.Join(dataDir(args[1]), "control.key"))
+		if e != nil {
+			return e
 		}
-		if err = json.Unmarshal(b, &st); err != nil {
-			return err
+		request, _ := http.NewRequest("POST", "http://127.0.0.1:18559/diagnose", nil)
+		request.Header.Set("Authorization", "Bearer "+string(token))
+		client := &http.Client{Timeout: 180 * time.Second, Transport: &http.Transport{Proxy: nil}}
+		response, e := client.Do(request)
+		if e != nil {
+			return e
 		}
-		routes := probeAll(st.Ranking)
-		transfers := []TransferProbe{}
-		packets := map[string][]PacketProbe{}
-		for _, r := range routes {
-			if !r.Good {
-				continue
-			}
-			transfers = append(transfers, uploadProbe(r.ID))
-			packets[r.ID] = udpPackets(routePort(r.ID))
+		defer response.Body.Close()
+		if response.StatusCode != 200 {
+			return fmt.Errorf("diagnostic_http_%d", response.StatusCode)
 		}
-		services := []ServiceProbe{}
-		if st.Route != "" {
-			services = serviceProbes(routePort(st.Route))
-		}
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"routes": routes, "transfers": transfers, "packets": packets, "services": services})
+		_, e = io.Copy(os.Stdout, io.LimitReader(response.Body, 128*1024))
+		return e
 	case "routes":
 		return json.NewEncoder(os.Stdout).Encode(transports)
 	case "selftest":

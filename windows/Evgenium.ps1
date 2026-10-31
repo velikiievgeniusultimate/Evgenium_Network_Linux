@@ -175,8 +175,10 @@ function Disconnect-Vpn {
     if (Invoke-Elevated 'off') { return }
     $null=Invoke-Engine 'remove'
     if (Test-Path -LiteralPath $script:EngineData) {
-        Assert-SafeTree $script:EngineData
-        Remove-Item -LiteralPath $script:EngineData -Recurse -Force
+        $old=Read-EngineStatus
+        foreach($name in @('engine.json','core.json','control.key')){$path=Join-Path $script:EngineData $name;if(Test-Path -LiteralPath $path){Assert-NoReparse $path;Remove-Item -LiteralPath $path -Force}}
+        $old.state='disconnected';$old.protected=$false;$old.message='VPN отключён.'
+        [IO.File]::WriteAllText((Join-Path $script:EngineData 'status.json'),($old | ConvertTo-Json -Depth 8),(New-Object Text.UTF8Encoding($false)))
     }
     return 'VPN отключён. Обычное подключение восстановлено.'
 }

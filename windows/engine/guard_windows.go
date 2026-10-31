@@ -126,6 +126,16 @@ func fillGuard(s *wf.Session, sub wf.SublayerID, c Config, luid uint64) error {
 		if e = addRule(s, sub, "engine", layer, 1000, wf.ActionPermit, &wf.Match{Field: wf.FieldALEAppID, Op: wf.MatchTypeEqual, Value: app}); e != nil {
 			return e
 		}
+		if layer == wf.LayerALEAuthConnectV4 {
+			engineApp, err := wf.AppID(exe)
+			if err != nil {
+				return err
+			}
+			if err = addRule(s, sub, "encrypted-wg-bridge", layer, 1000, wf.ActionPermit, &wf.Match{Field: wf.FieldALEAppID, Op: wf.MatchTypeEqual, Value: engineApp}, &wf.Match{Field: wf.FieldIPRemoteAddress, Op: wf.MatchTypeEqual, Value: netip.MustParseAddr("195.209.211.163")}, &wf.Match{Field: wf.FieldIPRemotePort, Op: wf.MatchTypeEqual, Value: uint16(51820)}, &wf.Match{Field: wf.FieldIPProtocol, Op: wf.MatchTypeEqual, Value: uint8(17)}); err != nil {
+				return err
+			}
+		}
+
 		if e = addRule(s, sub, "loopback", layer, 990, wf.ActionPermit, &wf.Match{Field: wf.FieldFlags, Op: wf.MatchTypeFlagsAllSet, Value: uint32(wf.ConditionFlagIsLoopback)}); e != nil {
 			return e
 		}
@@ -222,33 +232,17 @@ func updateGuard(c Config, luid uint64) error {
 		return e
 	}
 	defer s.Close()
-	if e = ensureObjects(s); e != nil {
-		return e
-	}
-	// A retained barrier makes replacement fail closed, including process death.
-	// Never delete the previous policy until the barrier is fully installed.
-	existing, e := s.Rules()
-	if e != nil {
-		return e
-	}
-	barrier := false
-	for _, r := range existing {
-		if r.Provider == provider && r.Sublayer == barrierLayer {
-			barrier = true
-		}
-	}
-	if !barrier {
-		if e = fillGuard(s, barrierLayer, c, 0); e != nil {
+	return s.Transaction(func() error {
+		if e := ensureObjects(s); e != nil {
 			return e
 		}
-	}
-	if e = removeRules(s, policyLayer); e != nil {
-		return e
-	}
-	if e = fillGuard(s, policyLayer, c, luid); e != nil {
-		return e
-	}
-	return removeRules(s, barrierLayer)
+		for _, sub := range []wf.SublayerID{policyLayer, barrierLayer} {
+			if e := removeRules(s, sub); e != nil {
+				return e
+			}
+		}
+		return fillGuard(s, policyLayer, c, luid)
+	})
 }
 func removeGuard() error {
 	s, e := wf.New(&wf.Options{Name: "Evgenium Network disconnect"})

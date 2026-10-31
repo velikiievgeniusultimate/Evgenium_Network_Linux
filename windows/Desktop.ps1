@@ -1,4 +1,4 @@
-function Snapshot-Desktop($Window) {
+﻿function Snapshot-Desktop($Window) {
     $state=Read-State
     $status=Read-EngineStatus
     $running=Tunnel-Running

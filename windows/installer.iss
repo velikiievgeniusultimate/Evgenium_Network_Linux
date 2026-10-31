@@ -1,4 +1,4 @@
-#ifndef AppVersion
+﻿#ifndef AppVersion
  #error AppVersion required
 #endif
 #ifndef PackageDir

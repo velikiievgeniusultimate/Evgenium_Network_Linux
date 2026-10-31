@@ -15,3 +15,5 @@ require (
 	golang.org/x/tools v0.9.4-0.20230601214343-86c93e8732cc // indirect
 	honnef.co/go/tools v0.4.5 // indirect
 )
+
+replace github.com/tailscale/wf => ./wfp

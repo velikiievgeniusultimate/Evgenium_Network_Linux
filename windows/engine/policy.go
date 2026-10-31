@@ -172,23 +172,21 @@ func coreConfig(c Config, selected string, probeOnly bool) (map[string]any, erro
 	for i, t := range transports {
 		check := "check-" + t.ID
 		inbounds = append(inbounds, obj{"tag": check, "listen": "127.0.0.1", "port": 18554 + i, "protocol": "socks", "settings": obj{"auth": "noauth", "udp": true}})
-		rules = append(rules, obj{"type": "field", "inboundTag": []string{check}, "outboundTag": t.ID})
-		endpoint := c.Profile.Endpoint
-		wg := obj{"tag": t.ID, "protocol": "wireguard", "settings": obj{"secretKey": c.PrivateKey, "address": []string{c.Profile.Address}, "mtu": 1280, "noKernelTun": true, "peers": []any{obj{"endpoint": endpoint, "publicKey": c.Profile.PublicKey, "allowedIPs": []string{"0.0.0.0/0", "::/0"}, "keepAlive": 25}}}}
+		rules = append(rules, obj{"type": "field", "inboundTag": []string{check}, "outboundTag": "vpn"})
 		if t.Network != "" {
-			// Server accepts only UDP to its own local WG listener, never arbitrary traffic.
-			wg["settings"].(obj)["peers"].([]any)[0].(obj)["endpoint"] = "127.0.0.1:51820"
-			wg["proxySettings"] = obj{"tag": "carrier-" + t.ID}
+			inbound := "carrier-in-" + t.ID
+			inbounds = append(inbounds, obj{"tag": inbound, "listen": "127.0.0.1", "port": 18570 + i, "protocol": "socks", "settings": obj{"auth": "noauth", "udp": true}})
+			rules = append(rules, obj{"type": "field", "inboundTag": []string{inbound}, "outboundTag": "carrier-" + t.ID})
 			stream := obj{"network": t.Network, "security": "reality", "realitySettings": obj{"serverName": "www.microsoft.com", "fingerprint": "chrome", "password": t.PublicKey, "shortId": t.ShortID}}
 			if t.Network == "xhttp" {
 				stream["xhttpSettings"] = obj{"path": "/evgenium-wg", "mode": "auto"}
 			}
 			outbounds = append(outbounds, obj{"tag": "carrier-" + t.ID, "protocol": "vless", "settings": obj{"vnext": []any{obj{"address": "195.209.211.163", "port": t.Port, "users": []any{obj{"id": t.UUID, "encryption": "none"}}}}}, "streamSettings": stream})
 		}
-		outbounds = append(outbounds, wg)
 	}
-	if selected == "" {
-		selected = transports[0].ID
+	outbounds = append(outbounds, obj{"tag": "vpn", "protocol": "wireguard", "settings": obj{"secretKey": c.PrivateKey, "address": []string{c.Profile.Address}, "mtu": 1280, "noKernelTun": true, "peers": []any{obj{"endpoint": c.Profile.Endpoint, "publicKey": c.Profile.PublicKey, "allowedIPs": []string{"0.0.0.0/0", "::/0"}, "keepAlive": 25}}}, "proxySettings": obj{"tag": "wg-bridge"}}, obj{"tag": "wg-bridge", "protocol": "socks", "settings": obj{"servers": []any{obj{"address": "127.0.0.1", "port": 18560}}}, "streamSettings": obj{"sockopt": obj{"interface": loopbackName()}}})
+	if true {
+		selected = "vpn"
 	}
 	outbounds = append(outbounds, obj{"tag": "direct", "protocol": "freedom", "settings": obj{"domainStrategy": "UseIPv4"}}, obj{"tag": "dns-out", "protocol": "dns"}, obj{"tag": "block", "protocol": "blackhole"})
 	if !probeOnly {
