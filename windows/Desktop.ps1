@@ -56,11 +56,37 @@ function Show-Gui([switch]$WidgetOnly) {
 }
 function Test-Desktop {
     Add-Type -AssemblyName System.Windows.Forms;Add-Type -AssemblyName System.Drawing
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class EvgeniumChromeProbe {
+ [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h,int m,IntPtr w,IntPtr l);
+ public static int Hit(IntPtr h,int x,int y){return SendMessage(h,0x84,IntPtr.Zero,(IntPtr)((y<<16)|(x&0xffff))).ToInt32();}
+}
+'@
     $window=New-Object EvgeniumDesktop
     try {
         $sample=@{has_token=$true;device_name='Устройство-1';running=$false;engine=@{state='disconnected';message='VPN отключён.';protected=$false;ranking=@()};policy=@{applications=@();networks=@();ports=@();dns=@();disabled_base=@();route='auto'};options=@{widget=$false;startup=$false};routes=@()}
         $window.SetSnapshot(($sample | ConvertTo-Json -Depth 8 -Compress));$window.Show();$window.Refresh();[Windows.Forms.Application]::DoEvents()
-        if($window.Controls.Count -lt 2){throw 'Desktop layout missing'}
+        if($window.FormBorderStyle -ne 'None' -or $window.MaximizeBox){throw 'System caption must be absent'}
+        $caption=$window.Controls.Find('windowTitleBar',$true)[0]
+        $minimize=$window.Controls.Find('minimizeWindow',$true)[0]
+        $close=$window.Controls.Find('closeWindow',$true)[0]
+        if(!$caption -or !$minimize -or !$close){throw 'Accessible caption controls missing'}
+        if($minimize.Right -gt $close.Left){throw 'Caption controls overlap or are reversed'}
+        foreach($c in @(@(1,1,13),@(($window.ClientSize.Width-2),1,14),@(1,($window.ClientSize.Height-2),16),@(($window.ClientSize.Width-2),($window.ClientSize.Height-2),17))){
+            $point=$window.PointToScreen((New-Object Drawing.Point($c[0],$c[1])))
+            if([EvgeniumChromeProbe]::Hit($window.Handle,$point.X,$point.Y) -ne $c[2]){throw 'Native corner resizing unavailable'}
+        }
+        $old=$window.Size;$window.Size=New-Object Drawing.Size(($old.Width+100),($old.Height+60));[Windows.Forms.Application]::DoEvents()
+        if($window.ClientSize.Width -lt 1100 -or $close.Right -gt $caption.Width){throw 'Resizable caption layout failed'}
+        $window.Size=$old
+        $minimize.PerformClick();[Windows.Forms.Application]::DoEvents()
+        if($window.WindowState -ne 'Minimized'){throw 'Minimize failed'}
+        $window.OpenMain();[Windows.Forms.Application]::DoEvents()
+        $close.PerformClick();[Windows.Forms.Application]::DoEvents()
+        if($window.Visible -or $window.IsDisposed){throw 'Caption close must hide to tray without stopping VPN'}
+        $window.OpenMain();$window.Refresh();[Windows.Forms.Application]::DoEvents()
         $bitmap=New-Object Drawing.Bitmap($window.Width,$window.Height);$window.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$window.Width,$window.Height)))
         if($env:RUNNER_TEMP){$bitmap.Save((Join-Path $env:RUNNER_TEMP 'evgenium-windows-ui.png'),[Drawing.Imaging.ImageFormat]::Png)};$bitmap.Dispose()
     }finally{$window.AllowExit=$true;$window.Close();$window.Dispose()}

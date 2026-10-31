@@ -2,11 +2,15 @@
 using System.IO;
 using System.Management.Automation;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Management.Automation.Runspaces;
 using System.Windows.Forms;
 internal static class Host {
+    [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr context);
     [STAThread] static int Main(string[] args) {
+        // Per-monitor v2 keeps our caption and resize border usable on scaled displays.
+        try { SetProcessDpiAwarenessContext((IntPtr)(-4)); } catch (EntryPointNotFoundException) {}
         string command = "gui";
         string expectedSid = "";
         string resultId = "";

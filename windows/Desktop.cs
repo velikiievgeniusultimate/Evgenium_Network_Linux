@@ -14,7 +14,7 @@ public sealed class EvgeniumDesktop : Form {
  public string LastReport=""; private string LastError="";
  private readonly JavaScriptSerializer json=new JavaScriptSerializer();
  private readonly Color Bg=Color.FromArgb(20,18,23),Surface=Color.FromArgb(33,28,36),Side=Color.FromArgb(25,21,28),Accent=Color.FromArgb(255,88,109),TextMain=Color.FromArgb(255,241,233),Muted=Color.FromArgb(186,168,175),Border=Color.FromArgb(72,48,60);
- private readonly Panel body=new Panel(),sidebar=new Panel(); private Panel deviceCard;
+ private readonly Panel shell=new Panel(),body=new Panel(),sidebar=new Panel(); private Panel deviceCard;
  private readonly FlowLayoutPanel cards=new FlowLayoutPanel();
  private readonly Label pageTitle=new Label(),deviceName=new Label(),connectionTitle=new Label(),tokenHint=new Label(),sideStatus=new Label();
  private readonly Button toggle=new Button(),tokenSave=new Button(),deviceSave=new Button();
@@ -32,16 +32,18 @@ public sealed class EvgeniumDesktop : Form {
  [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr h);
  public EvgeniumDesktop() {
   Application.EnableVisualStyles(); Text="Evgenium Network";ClientSize=new Size(1040,700);MinimumSize=new Size(900,620);StartPosition=FormStartPosition.CenterScreen;BackColor=Bg;ForeColor=TextMain;Font=new Font("Segoe UI",10);AutoScaleMode=AutoScaleMode.Dpi;
-  sidebar.Dock=DockStyle.Left;sidebar.Width=222;sidebar.BackColor=Side;Controls.Add(sidebar);
+  FormBorderStyle=FormBorderStyle.None;MaximizeBox=false;MinimizeBox=true;Padding=new Padding(6);
+  shell.Dock=DockStyle.Fill;shell.BackColor=Bg;Controls.Add(shell);
+  sidebar.Dock=DockStyle.Left;sidebar.Width=222;sidebar.BackColor=Side;shell.Controls.Add(sidebar);
   var mark=new DrillMark {Location=new Point(18,18),Size=new Size(52,57)};sidebar.Controls.Add(mark);
   sidebar.Controls.Add(LabelAt("EVGENIUM",18,84,190,30,20,true,TextMain));sidebar.Controls.Add(LabelAt("N E T W O R K",18,116,190,20,9,false,Muted));
   string[] labels={"VPN","Приложения","Сайты и IP","Порты","DNS"},badges={"VPN","APP","NET","PRT","DNS"};
   for(int i=0;i<labels.Length;i++){int index=i;var b=ButtonAt(badges[i]+"    "+labels[i],16,166+i*51,190,44,false);b.TextAlign=ContentAlignment.MiddleLeft;b.Click+=(s,e)=>{page=index;ShowPage();};sidebar.Controls.Add(b);}
-  widgetOption.Text="Виджет";widgetOption.SetBounds(18,500,190,28);widgetOption.ForeColor=Muted;widgetOption.Anchor=AnchorStyles.Bottom|AnchorStyles.Left;widgetOption.Top=ClientSize.Height-156;sidebar.Controls.Add(widgetOption);widgetOption.CheckedChanged+=(s,e)=>{if(!Refreshing)Send("option",new {name="widget",value=widgetOption.Checked});ShowWidget(widgetOption.Checked);};
-  startupOption.Text="Запускать с Windows";startupOption.SetBounds(18,532,190,28);startupOption.ForeColor=Muted;startupOption.Anchor=AnchorStyles.Bottom|AnchorStyles.Left;startupOption.Top=ClientSize.Height-124;sidebar.Controls.Add(startupOption);startupOption.CheckedChanged+=(s,e)=>{if(!Refreshing)Send("option",new{name="startup",value=startupOption.Checked});};
-  sideStatus.SetBounds(18,ClientSize.Height-73,190,26);sideStatus.Anchor=AnchorStyles.Bottom|AnchorStyles.Left;sideStatus.ForeColor=Muted;sidebar.Controls.Add(sideStatus);
-  sidebar.Controls.Add(LabelAt("Windows 0.2.0",18,ClientSize.Height-42,190,24,9,false,Muted,AnchorStyles.Bottom|AnchorStyles.Left));
-  body.Dock=DockStyle.Fill;body.Padding=new Padding(28);Controls.Add(body);body.BringToFront();
+  widgetOption.Text="Виджет";widgetOption.SetBounds(18,500,190,28);widgetOption.ForeColor=Muted;widgetOption.Anchor=AnchorStyles.Bottom|AnchorStyles.Left;widgetOption.Top=sidebar.ClientSize.Height-156;sidebar.Controls.Add(widgetOption);widgetOption.CheckedChanged+=(s,e)=>{if(!Refreshing)Send("option",new {name="widget",value=widgetOption.Checked});ShowWidget(widgetOption.Checked);};
+  startupOption.Text="Запускать с Windows";startupOption.SetBounds(18,532,190,28);startupOption.ForeColor=Muted;startupOption.Anchor=AnchorStyles.Bottom|AnchorStyles.Left;startupOption.Top=sidebar.ClientSize.Height-124;sidebar.Controls.Add(startupOption);startupOption.CheckedChanged+=(s,e)=>{if(!Refreshing)Send("option",new{name="startup",value=startupOption.Checked});};
+  sideStatus.SetBounds(18,sidebar.ClientSize.Height-73,190,26);sideStatus.Anchor=AnchorStyles.Bottom|AnchorStyles.Left;sideStatus.ForeColor=Muted;sidebar.Controls.Add(sideStatus);
+  sidebar.Controls.Add(LabelAt("Windows 0.2.0",18,sidebar.ClientSize.Height-42,190,24,9,false,Muted,AnchorStyles.Bottom|AnchorStyles.Left));
+  body.Dock=DockStyle.Fill;body.Padding=new Padding(28);shell.Controls.Add(body);body.BringToFront();
   var top=new Panel {Dock=DockStyle.Top,Height=76};top.Controls.Add(LabelAt("EVGENIUM  /  ПОДКЛЮЧЕНИЕ",0,0,600,18,8,false,Accent));pageTitle.SetBounds(0,26,680,45);pageTitle.Font=new Font(Font.FontFamily,24,FontStyle.Bold);pageTitle.ForeColor=TextMain;top.Controls.Add(pageTitle);body.Controls.Add(top);
   cards.Dock=DockStyle.Fill;cards.FlowDirection=FlowDirection.TopDown;cards.WrapContents=false;cards.AutoScroll=true;cards.Padding=new Padding(0,4,8,12);body.Controls.Add(cards);cards.BringToFront();cards.Resize+=(s,e)=>ResizeCards();
   StatusText.SetBounds(0,0,700,36);StatusText.ForeColor=Color.FromArgb(255,173,158);StatusText.AutoSize=false;StatusText.Text="";
@@ -54,7 +56,39 @@ public sealed class EvgeniumDesktop : Form {
   MouseEventHandler drag=(s,e)=>{if(e.Button==MouseButtons.Left){ReleaseCapture();SendMessage(widget.Handle,0xA1,(IntPtr)2,IntPtr.Zero);}};widget.MouseDown+=drag;wh.MouseDown+=drag;widgetStatus.MouseDown+=drag;
   widget.FormClosing+=(s,e)=>{if(!AllowExit){e.Cancel=true;widgetOption.Checked=false;widget.Hide();}};
   FormClosing+=(s,e)=>{if(!AllowExit&&e.CloseReason==CloseReason.UserClosing){e.Cancel=true;Hide();}else{AllowExit=true;tray.Visible=false;widget.Close();}};
-  ShowPage();
+  BuildCaption();ShowPage();
+ }
+ // Keep the native resize/move loop and accessibility, but paint our own chrome.
+ protected override CreateParams CreateParams { get {var p=base.CreateParams;p.Style=(p.Style|0x00040000|0x00020000|0x00080000)&~0x00010000;return p;} }
+ [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hwnd,int attribute,ref int value,int size);
+ protected override void OnHandleCreated(EventArgs e){base.OnHandleCreated(e);try{int dark=1,round=2,none=unchecked((int)0xfffffffe);DwmSetWindowAttribute(Handle,20,ref dark,4);DwmSetWindowAttribute(Handle,33,ref round,4);DwmSetWindowAttribute(Handle,34,ref none,4);}catch(DllNotFoundException){}catch(EntryPointNotFoundException){} }
+ protected override void OnPaint(PaintEventArgs e){base.OnPaint(e);using(var pen=new Pen(Border))e.Graphics.DrawRectangle(pen,0,0,ClientSize.Width-1,ClientSize.Height-1);}
+ private void BuildCaption(){
+  var caption=new Panel{Name="windowTitleBar",Dock=DockStyle.Top,Height=38,BackColor=Side};
+  var label=LabelAt("E V G E N I U M   N E T W O R K",12,0,350,38,8,false,Muted);label.TextAlign=ContentAlignment.MiddleLeft;caption.Controls.Add(label);
+  MouseEventHandler drag=(s,e)=>{if(e.Button==MouseButtons.Left&&e.Clicks==1){ReleaseCapture();SendMessage(Handle,0xA1,(IntPtr)2,IntPtr.Zero);}};caption.MouseDown+=drag;label.MouseDown+=drag;
+  var close=new CaptionButton(true){Name="closeWindow",AccessibleName="Закрыть",Dock=DockStyle.Right,Width=44,BackColor=Side,ForeColor=TextMain};close.Click+=(s,e)=>Close();caption.Controls.Add(close);
+  var minimize=new CaptionButton(false){Name="minimizeWindow",AccessibleName="Свернуть",Dock=DockStyle.Right,Width=44,BackColor=Side,ForeColor=TextMain};minimize.Click+=(s,e)=>WindowState=FormWindowState.Minimized;caption.Controls.Add(minimize);minimize.BringToFront();
+  Controls.Add(caption);shell.BringToFront();
+ }
+ protected override void WndProc(ref Message m){
+  if(m.Msg==0x83){m.Result=IntPtr.Zero;return;} // WM_NCCALCSIZE
+  if(m.Msg==0xA3||(m.Msg==0x112&&(m.WParam.ToInt64()&0xfff0)==0xf030)){m.Result=IntPtr.Zero;return;} // No double-click/keyboard maximize.
+  if(m.Msg==0x84){ // WM_NCHITTEST uses signed desktop coordinates, including left-hand monitors.
+   long xy=m.LParam.ToInt64();var p=PointToClient(new Point(unchecked((short)(xy&0xffff)),unchecked((short)((xy>>16)&0xffff))));
+   if(p.X>=0&&p.Y>=0&&p.X<ClientSize.Width&&p.Y<ClientSize.Height){
+    int edge=Math.Max(6,(int)Math.Round(6.0*DeviceDpi/96));bool l=p.X<edge,r=p.X>=ClientSize.Width-edge,t=p.Y<edge,b=p.Y>=ClientSize.Height-edge;
+    int hit=t?(l?13:r?14:12):b?(l?16:r?17:15):l?10:r?11:1;m.Result=(IntPtr)hit;return;
+   }
+  }
+  base.WndProc(ref m);
+ }
+ private sealed class CaptionButton:Button {
+  private readonly bool close;private bool hover;
+  public CaptionButton(bool isClose){close=isClose;FlatStyle=FlatStyle.Flat;FlatAppearance.BorderSize=0;TabStop=true;Cursor=Cursors.Hand;SetStyle(ControlStyles.UserPaint|ControlStyles.OptimizedDoubleBuffer,true);}
+  protected override void OnMouseEnter(EventArgs e){hover=true;Invalidate();base.OnMouseEnter(e);}
+  protected override void OnMouseLeave(EventArgs e){hover=false;Invalidate();base.OnMouseLeave(e);}
+  protected override void OnPaint(PaintEventArgs e){e.Graphics.Clear(hover?(close?Color.FromArgb(58,32,45):Color.FromArgb(43,32,42)):BackColor);float cx=ClientSize.Width/2f,cy=ClientSize.Height/2f;using(var pen=new Pen(hover&&close?Color.FromArgb(255,88,109):ForeColor,1.2f)){if(close){e.Graphics.DrawLine(pen,cx-5,cy-5,cx+5,cy+5);e.Graphics.DrawLine(pen,cx-5,cy+5,cx+5,cy-5);}else e.Graphics.DrawLine(pen,cx-5,cy,cx+5,cy);}if(Focused)ControlPaint.DrawFocusRectangle(e.Graphics,new Rectangle(5,5,Width-10,Height-10));}
  }
  private Label LabelAt(string text,int x,int y,int w,int h,float size,bool bold,Color color,AnchorStyles anchor=AnchorStyles.Top|AnchorStyles.Left){return new Label{Text=text,Bounds=new Rectangle(x,y,w,h),Font=new Font(Font.FontFamily,size,bold?FontStyle.Bold:FontStyle.Regular),ForeColor=color,Anchor=anchor};}
  private void StyleButton(Button b,bool primary){b.FlatStyle=FlatStyle.Flat;b.FlatAppearance.BorderColor=Border;b.BackColor=primary?Accent:Color.FromArgb(41,32,43);b.ForeColor=primary?Color.FromArgb(24,13,19):TextMain;b.Cursor=Cursors.Hand;b.Font=new Font(Font.FontFamily,10,primary?FontStyle.Bold:FontStyle.Regular);}
