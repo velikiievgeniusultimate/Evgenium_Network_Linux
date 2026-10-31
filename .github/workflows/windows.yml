@@ -55,7 +55,7 @@ jobs:
         with:
           name: evgenium-windows-x64
           path: |
-                        ${{ runner.temp }}/evgenium-windows/*-Setup.exe
+            ${{ runner.temp }}/evgenium-windows/*-Setup.exe
             ${{ runner.temp }}/evgenium-windows/*.log
             ${{ runner.temp }}/evgenium-windows/SHA256SUMS
             ${{ runner.temp }}/evgenium-windows-ui.png
