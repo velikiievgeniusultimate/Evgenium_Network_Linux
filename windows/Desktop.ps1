@@ -89,5 +89,12 @@ public static class EvgeniumChromeProbe {
         $window.OpenMain();$window.Refresh();[Windows.Forms.Application]::DoEvents()
         $bitmap=New-Object Drawing.Bitmap($window.Width,$window.Height);$window.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$window.Width,$window.Height)))
         if($env:RUNNER_TEMP){$bitmap.Save((Join-Path $env:RUNNER_TEMP 'evgenium-windows-ui.png'),[Drawing.Imaging.ImageFormat]::Png)};$bitmap.Dispose()
+    }catch{
+        if($env:RUNNER_TEMP){
+            $log=Join-Path $env:RUNNER_TEMP 'evgenium-windows/ui-selftest.log'
+            [IO.File]::WriteAllText($log,($_ | Out-String)+"`n"+$_.ScriptStackTrace,[Text.Encoding]::UTF8)
+            if(!$window.IsDisposed){$bitmap=New-Object Drawing.Bitmap($window.Width,$window.Height);$window.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$window.Width,$window.Height)));$bitmap.Save((Join-Path $env:RUNNER_TEMP 'evgenium-windows-ui.png'),[Drawing.Imaging.ImageFormat]::Png);$bitmap.Dispose()}
+        }
+        throw
     }finally{$window.AllowExit=$true;$window.Close();$window.Dispose()}
 }
