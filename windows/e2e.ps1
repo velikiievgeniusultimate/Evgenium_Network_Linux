@@ -83,12 +83,32 @@ try{
  $null=Resolve-DnsName github.com -Server 1.1.1.1 -DnsOnly -ErrorAction Stop
  Change-And-Wait 'remove' ([pscustomobject]@{category='dns';value='1.1.1.1'});Assert-Estonia
  Note 'Explicit direct DNS exception + protected resolver restore PASS.'
+ # Test real alternate carriers and health-triggered fallback, not just scores.
+ foreach($id in @('ru-tcp','ru-xhttp')){Change-And-Wait 'route' ([pscustomobject]@{value=$id});Assert-Estonia;Note ('Fixed route '+$id+' PASS.')}
+ Change-And-Wait 'route' ([pscustomobject]@{value='auto'});Assert-Estonia
+ $oldRoute=(Read-EngineStatus).route
+ $rule='Evgenium-CI-Drop-Selected-Carrier'
+ try{
+  if($oldRoute -eq 'ru-wg'){$program=$engine;$protocol='UDP';$port=51820}else{$program=Join-Path $app 'xray.exe';$protocol='TCP';$port=if($oldRoute -eq 'ru-tcp'){24580}else{24581}}
+  $null=New-NetFirewallRule -Name $rule -DisplayName $rule -Direction Outbound -Action Block -Program $program -Protocol $protocol -RemoteAddress 195.209.211.163 -RemotePort $port
+  $switched=$false
+  for($i=0;$i -lt 32;$i++){Start-Sleep -Seconds 2;$s=Read-EngineStatus;if($s.state -eq 'connected' -and $s.route -ne $oldRoute){$switched=$true;break}}
+  if(!$switched){throw 'Automatic carrier fallback failed'};Assert-Estonia
+  Note ('Blocked '+$oldRoute+' -> automatic '+$s.route+' fallback PASS.')
+ }finally{Remove-NetFirewallRule -Name $rule -ErrorAction SilentlyContinue}
  # Explicit user-authorized CI diagnostic account, no real user's report.
  $report=Create-Report
  if(@($report.checks.routes | Where-Object good).Count -lt 2){throw 'Fewer than two working carriers'}
  foreach($route in $report.checks.routes){Note ('Carrier: '+$route.id+' good='+$route.good+' Mbps='+$route.download_mbps)}
  $id=Send-Report $report;Note ('UDP/DNS/service diagnostic upload acknowledged: '+$id)
  Assert-Estonia
+ $stateHash=(Get-FileHash $script:StatePath).Hash
+ $fixture=Join-Path $output 'upgrade-fixture/Evgenium-Windows-0.2.1-x64-Setup.exe'
+ $p=Start-Process $fixture -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOLAUNCH' -Wait -PassThru
+ if($p.ExitCode){throw 'Active VPN upgrade failed'}
+ Start-Sleep -Seconds 3;Wait-Connected;Assert-Estonia
+ if((Get-FileHash $script:StatePath).Hash -cne $stateHash){throw 'Active update changed token/key/device'}
+ Note 'Active VPN update: token preserved, tunnel resumed, Estonia exit PASS.'
  $null=Disconnect-Vpn;$off=$true
  if((Exit-IP) -ne $baseline){throw 'Disconnect did not restore ordinary egress'}
  Note 'Disconnect restored ordinary egress PASS.'

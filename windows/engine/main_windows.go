@@ -388,7 +388,6 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 			if lan, x := physicalLAN(); x == nil && strings.Join(lan, ",") != strings.Join(c.LAN, ",") {
 				c.LAN = lan
 				changed = true
-				_ = writeJSON(filepath.Join(dataDir(c.Owner), "engine.json"), c)
 			}
 			apps := routingApplications(c.Policy.Applications)
 			sort.Strings(apps)
@@ -447,7 +446,6 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 			st.Ranking = probeAll(st.Ranking)
 			needRank = false
 			c.ResetRating = false
-			_ = writeJSON(filepath.Join(dataDir(c.Owner), "engine.json"), c)
 			best := choose(c, st.Ranking)
 			if best != "" {
 				desired = best
