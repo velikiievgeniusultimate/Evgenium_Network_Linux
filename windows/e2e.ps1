@@ -45,7 +45,9 @@ try{
  if(!$p.WaitForExit(35000)){$p.Kill();throw 'Packaged connect timed out'}
  if($p.ExitCode){throw ('Packaged connect failed: '+(Read-EngineStatus).message)}
  Wait-Connected;Assert-Estonia
- $discord=Probe-Http -More @('https://discord.com/api/v10/gateway');if($discord.code -ne 0 -or $discord.text -notmatch 'gateway.discord.gg'){throw 'Discord API/DNS failed'}
+ $discordOk=$false
+ for($i=0;$i -lt 3;$i++){$discord=Probe-Http -More @('https://discord.com/api/v10/gateway');if($discord.code -eq 0 -and $discord.text -match 'gateway.discord.gg'){$discordOk=$true;break};Start-Sleep -Seconds 2}
+ if(!$discordOk){throw 'Discord API/DNS failed after bounded retries'}
  $null=Resolve-DnsName github.com -ErrorAction Stop
  Note 'Packaged EXE: full-device Estonia exit, DNS, HTTPS and Discord API PASS.'
  # Loopback must work for browsers, launchers and Codex without a public bypass.

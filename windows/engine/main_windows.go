@@ -111,10 +111,37 @@ func request(port int, addr string, limit int64) ([]byte, error) {
 	}
 	return b, e
 }
-func healthy(id string) bool {
-	b, e := request(routePort(id), "https://api.ipify.org", 128)
-	return e == nil && strings.TrimSpace(string(b)) == "38.180.164.67"
+
+// Two independent HTTPS checks avoid treating one external API outage as a
+// broken VPN. Both must still report the exact expected Estonia exit.
+func confirmedExit(port int, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	client := socksClient(port, timeout)
+	defer client.CloseIdleConnections()
+	for _, address := range []string{"https://api.ipify.org", "https://www.cloudflare.com/cdn-cgi/trace"} {
+		req, _ := http.NewRequestWithContext(ctx, "GET", address, nil)
+		r, e := client.Do(req)
+		if e != nil {
+			continue
+		}
+		b, e := io.ReadAll(io.LimitReader(r.Body, 2048))
+		r.Body.Close()
+		if e != nil || r.StatusCode != 200 {
+			continue
+		}
+		if strings.TrimSpace(string(b)) == "38.180.164.67" {
+			return true
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			if line == "ip=38.180.164.67" {
+				return true
+			}
+		}
+	}
+	return false
 }
+func healthy(id string) bool { return confirmedExit(routePort(id), 7*time.Second) }
 func probe(t Transport) Rank {
 	r := Rank{ID: t.ID, Label: t.Label}
 	start := time.Now()
@@ -131,8 +158,11 @@ func probe(t Transport) Rank {
 		}
 		return io.ReadAll(io.LimitReader(response.Body, limit))
 	}
-	ip, e := quick("https://api.ipify.org", 128)
-	if e != nil || strings.TrimSpace(string(ip)) != "38.180.164.67" {
+	timeout := 4 * time.Second
+	if t.Network != "" {
+		timeout = 6 * time.Second
+	}
+	if !confirmedExit(routePort(t.ID), timeout) {
 		r.Error = "Выход в Эстонии не подтверждён"
 		return r
 	}
