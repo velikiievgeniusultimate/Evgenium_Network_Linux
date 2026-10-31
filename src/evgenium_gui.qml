@@ -12,6 +12,7 @@ C.ApplicationWindow {
     visible: true
     title: "Evgenium Network"
     color: "#141217"
+    flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowSystemMenuHint | Qt.WindowMinimizeButtonHint
 
     readonly property color bg: "#141217"
     readonly property color surface: "#211c24"
@@ -381,8 +382,82 @@ ctx.restore()
         border.color: root.border
     }
 
+    // Native system operations preserve snapping, compositor scaling and resize limits.
+    Rectangle {
+        id: titleBar
+        objectName: "windowTitleBar"
+        anchors { left: parent.left; right: parent.right; top: parent.top }
+        height: 38
+        color: root.sidebar
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton
+            onPressed: function(mouse) { root.startSystemMove() }
+            onDoubleClicked: function(mouse) { mouse.accepted = true }
+        }
+        C.Label {
+            anchors { left: parent.left; leftMargin: 18; verticalCenter: parent.verticalCenter }
+            text: "EVGENIUM NETWORK"
+            color: root.textMuted
+            font.pixelSize: 10
+            font.letterSpacing: 1.6
+        }
+        Row {
+            anchors { right: parent.right; rightMargin: 7; top: parent.top; bottom: parent.bottom }
+            C.ToolButton {
+                id: minimizeWindow
+                objectName: "minimizeWindow"
+                width: 44; height: titleBar.height
+                Accessible.name: "Свернуть"
+                hoverEnabled: true
+                onClicked: root.showMinimized()
+                background: Rectangle { color: minimizeWindow.hovered ? root.sidebarHover : "transparent" }
+                contentItem: Item {
+                    Rectangle { anchors.centerIn: parent; width: 12; height: 1; color: root.textMain }
+                }
+                C.ToolTip.visible: hovered
+                C.ToolTip.text: "Свернуть"
+            }
+            C.ToolButton {
+                id: closeWindow
+                objectName: "closeWindow"
+                width: 44; height: titleBar.height
+                Accessible.name: "Закрыть"
+                hoverEnabled: true
+                onClicked: root.close()
+                background: Rectangle { color: closeWindow.hovered ? root.accentSoft : "transparent" }
+                contentItem: Item {
+                    Rectangle { anchors.centerIn: parent; width: 14; height: 1; rotation: 45; color: closeWindow.hovered ? root.accent : root.textMain }
+                    Rectangle { anchors.centerIn: parent; width: 14; height: 1; rotation: -45; color: closeWindow.hovered ? root.accent : root.textMain }
+                }
+                C.ToolTip.visible: hovered
+                C.ToolTip.text: "Закрыть"
+            }
+        }
+        Rectangle { anchors { left: parent.left; right: parent.right; bottom: parent.bottom } height: 1; color: root.border }
+    }
+
+    // Separate corner zones keep resizing usable without covering caption buttons.
+    component ResizeZone: MouseArea {
+        required property int edges
+        z: 100
+        acceptedButtons: Qt.LeftButton
+        onPressed: function(mouse) { root.startSystemResize(edges) }
+    }
+    ResizeZone { objectName: "resizeTopLeft"; anchors { top: parent.top; left: parent.left } width: 10; height: 10; edges: Qt.TopEdge | Qt.LeftEdge; cursorShape: Qt.SizeFDiagCursor }
+    ResizeZone { objectName: "resizeTopRight"; anchors { top: parent.top; right: parent.right } width: 10; height: 10; edges: Qt.TopEdge | Qt.RightEdge; cursorShape: Qt.SizeBDiagCursor }
+    ResizeZone { objectName: "resizeBottomLeft"; anchors { bottom: parent.bottom; left: parent.left } width: 10; height: 10; edges: Qt.BottomEdge | Qt.LeftEdge; cursorShape: Qt.SizeBDiagCursor }
+    ResizeZone { objectName: "resizeBottomRight"; anchors { bottom: parent.bottom; right: parent.right } width: 10; height: 10; edges: Qt.BottomEdge | Qt.RightEdge; cursorShape: Qt.SizeFDiagCursor }
+    ResizeZone { anchors { top: parent.top; left: parent.left; right: parent.right; leftMargin: 10; rightMargin: 10 } height: 5; edges: Qt.TopEdge; cursorShape: Qt.SizeVerCursor }
+    ResizeZone { anchors { bottom: parent.bottom; left: parent.left; right: parent.right; leftMargin: 10; rightMargin: 10 } height: 5; edges: Qt.BottomEdge; cursorShape: Qt.SizeVerCursor }
+    ResizeZone { anchors { top: parent.top; bottom: parent.bottom; left: parent.left; topMargin: 10; bottomMargin: 10 } width: 5; edges: Qt.LeftEdge; cursorShape: Qt.SizeHorCursor }
+    ResizeZone { anchors { top: parent.top; bottom: parent.bottom; right: parent.right; topMargin: 10; bottomMargin: 10 } width: 5; edges: Qt.RightEdge; cursorShape: Qt.SizeHorCursor }
+    Rectangle { anchors.fill: parent; color: "transparent"; border.color: root.border; z: 99 }
+
     RowLayout {
         anchors.fill: parent
+        anchors.topMargin: titleBar.height
+        anchors.margins: 1
         spacing: 0
         Rectangle {
             Layout.preferredWidth: 222

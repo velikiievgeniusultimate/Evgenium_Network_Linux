@@ -67,3 +67,24 @@ class QmlStateTests(unittest.TestCase):
         Qt.exit(0)
     }}
 ''',shorten_watchdog=True)
+
+    def test_caption_actions_and_resize_zones(self):
+        self.exercise('''
+    property bool closeRequested: false
+    onClosing: function(event) { root.closeRequested = true; event.accepted = false }
+    Timer { interval: 1200; running: true; onTriggered: {
+        if (!(root.flags & Qt.FramelessWindowHint) || (root.flags & Qt.WindowMaximizeButtonHint)) {
+            console.error("Unexpected native caption flags"); Qt.exit(1); return
+        }
+        if (minimizeWindow.x + minimizeWindow.width > closeWindow.x || closeWindow.width < 40) {
+            console.error("Caption buttons overlap"); Qt.exit(1); return
+        }
+        root.width = 1200; root.height = 800
+        minimizeWindow.clicked()
+        if (root.visibility !== Window.Minimized) { console.error("Minimize failed"); Qt.exit(1); return }
+        root.showNormal()
+        closeWindow.clicked()
+        if (!root.closeRequested) { console.error("Close not requested"); Qt.exit(1); return }
+        Qt.exit(0)
+    }}
+''')
