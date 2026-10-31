@@ -429,6 +429,7 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 			if changed {
 				core.stop()
 				core = nil
+				currentBridge.resetAllCarriers()
 			}
 		}
 		if desired == "" {
@@ -460,11 +461,13 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 			if err != nil {
 				core.stop()
 				core = nil
+				currentBridge.resetAllCarriers()
 				return 3 * time.Second
 			}
 			if err = updateGuard(c, luid); err != nil {
 				core.stop()
 				core = nil
+				currentBridge.resetAllCarriers()
 				st.Message = "Восстанавливаю защиту сетевого адаптера: " + err.Error()
 				writeStatus(e.sid, st)
 				return 3 * time.Second
@@ -499,6 +502,7 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 			if core.dead() {
 				core.stop()
 				core = nil
+				currentBridge.resetAllCarriers()
 				st.Restarts++
 				return 2 * time.Second
 			}
@@ -556,8 +560,12 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 						st.Ranking = nil
 					}
 					desired = choose(c, st.Ranking)
+					st.State = "connecting"
+					st.Message = "Применяю настройки и восстанавливаю соединение…"
+					writeStatus(e.sid, st)
 					core.stop()
 					core = nil
+					currentBridge.resetAllCarriers()
 					timer.Reset(0)
 				}
 			}
