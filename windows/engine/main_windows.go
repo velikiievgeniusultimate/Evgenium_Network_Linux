@@ -117,13 +117,27 @@ func healthy(id string) bool {
 func probe(t Transport) Rank {
 	r := Rank{ID: t.ID, Label: t.Label}
 	start := time.Now()
-	if !healthy(t.ID) {
+	quick := func(address string, limit int64) ([]byte, error) {
+		client := socksClient(routePort(t.ID), 2500*time.Millisecond)
+		defer client.CloseIdleConnections()
+		response, err := client.Get(address)
+		if err != nil {
+			return nil, err
+		}
+		defer response.Body.Close()
+		if response.StatusCode != 200 {
+			return nil, errors.New("http")
+		}
+		return io.ReadAll(io.LimitReader(response.Body, limit))
+	}
+	ip, e := quick("https://api.ipify.org", 128)
+	if e != nil || strings.TrimSpace(string(ip)) != "38.180.164.67" {
 		r.Error = "Выход в Эстонии не подтверждён"
 		return r
 	}
 	r.RTT = time.Since(start).Milliseconds()
 	start = time.Now()
-	b, e := request(routePort(t.ID), "https://speed.cloudflare.com/__down?bytes=262144", 262144)
+	b, e := quick("https://speed.cloudflare.com/__down?bytes=262144", 262144)
 	if e == nil && len(b) == 262144 {
 		r.Mbps = float64(len(b)) * 8 / time.Since(start).Seconds() / 1e6
 	}
@@ -167,6 +181,25 @@ func choose(c Config, ranks []Rank) string {
 	}
 	for _, r := range ranks {
 		if r.Losses < 3 && r.Good {
+			return r.ID
+		}
+	}
+	return ""
+}
+
+func following(c Config, ranks []Rank, current string) string {
+	if c.Policy.Route != "" && c.Policy.Route != "auto" {
+		return c.Policy.Route
+	}
+	position := -1
+	for i, r := range ranks {
+		if r.ID == current {
+			position = i
+		}
+	}
+	for step := 1; step < len(ranks); step++ {
+		r := ranks[(position+step)%len(ranks)]
+		if r.Good && r.Losses < 3 {
 			return r.ID
 		}
 	}
@@ -419,11 +452,10 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 				for i := range st.Ranking {
 					if st.Ranking[i].ID == desired {
 						st.Ranking[i].Losses++
-						st.Ranking[i].Good = false
 					}
 				}
 				currentBridge.resetCarrier(desired)
-				next := choose(c, st.Ranking)
+				next := following(c, st.Ranking, desired)
 				if next != "" {
 					desired = next
 					_ = currentBridge.route(desired)

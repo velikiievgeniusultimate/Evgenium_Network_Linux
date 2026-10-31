@@ -15,7 +15,7 @@ function Show-Gui([switch]$WidgetOnly) {
         if ($action -in @('refresh','running','token-edit')) {
             try {
                 switch($action){'refresh'{Snapshot-Desktop $window};'running'{$window.SetApps((ConvertTo-Json -InputObject @(Get-RunningApps) -Compress))};'token-edit'{$saved=Read-State;$window.SetTokenEditing($(if($saved.token){Unseal $saved.token}else{''}))}}
-            }catch{$window.StatusText.Text=$_.Exception.Message}
+            }catch{$window.SetError($_.Exception.Message)}
             return
         }
         $window.SetBusy($true);[Windows.Forms.Application]::DoEvents()
@@ -38,14 +38,14 @@ function Show-Gui([switch]$WidgetOnly) {
             }
             Snapshot-Desktop $window
             if($action -in @('add','remove','base')){$window.RefreshPolicy()}
-        } catch {$window.StatusText.Text=$_.Exception.Message}
+        } catch {$window.SetError($_.Exception.Message)}
         finally {if(!$window.IsDisposed){$window.SetBusy($false)}}
     }.GetNewClosure()
     $window.add_Operation($handler)
     $timer=New-Object Windows.Forms.Timer;$timer.Interval=2000
     $timer.add_Tick({
         if($closeEvent.WaitOne(0)){$window.ExitApplication();return}
-        if(!$window.Busy){try{Snapshot-Desktop $window}catch{$window.StatusText.Text=$_.Exception.Message}}
+        if(!$window.Busy){try{Snapshot-Desktop $window}catch{$window.SetError($_.Exception.Message)}}
     }.GetNewClosure())
     $window.add_Shown({if($WidgetOnly){$window.Hide()}}.GetNewClosure())
     try {

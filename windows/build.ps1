@@ -30,7 +30,7 @@ $sig=Get-AuthenticodeSignature -LiteralPath (Join-Path $package 'wintun.dll')
 if($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'WireGuard'){throw 'Wintun signature not verified'}
 Copy-Item -LiteralPath (Join-Path $root 'README.txt') -Destination $package
 [IO.File]::WriteAllText((Join-Path $package 'VERSION'),$version,[Text.Encoding]::ASCII)
-foreach($command in @('selftest','status','ui-selftest')){$p=Start-Process -FilePath (Join-Path $package 'Evgenium.exe') -ArgumentList '--command',$command -Wait -PassThru;if($p.ExitCode -ne 0){throw ('Packaged '+$command+' failed')}}
+foreach($command in @('selftest','status','ui-selftest')){$p=Start-Process -FilePath (Join-Path $package 'Evgenium.exe') -ArgumentList '--command',$command -PassThru;if(!$p.WaitForExit(30000)){$p.Kill();throw ('Packaged '+$command+' timed out')};if($p.ExitCode -ne 0){throw ('Packaged '+$command+' failed')}}
 if(!$InnoCompiler){$InnoCompiler=Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'}
 & $InnoCompiler ('/DAppVersion='+$version) ('/DPackageDir='+$package) ('/DOutputDir='+$Output) (Join-Path $root 'installer.iss')
 if($LASTEXITCODE -ne 0){throw 'Installer compilation failed'}

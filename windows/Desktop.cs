@@ -11,7 +11,7 @@ public sealed class EvgeniumDesktop : Form {
  public readonly TextBox TokenInput=new TextBox(), NameInput=new TextBox();
  public readonly Label StatusText=new Label();
  public bool Busy, TokenEditing, Refreshing, AllowExit;
- public string LastReport="";
+ public string LastReport=""; private string LastError="";
  private readonly JavaScriptSerializer json=new JavaScriptSerializer();
  private readonly Color Bg=Color.FromArgb(20,18,23),Surface=Color.FromArgb(33,28,36),Side=Color.FromArgb(25,21,28),Accent=Color.FromArgb(255,88,109),TextMain=Color.FromArgb(255,241,233),Muted=Color.FromArgb(186,168,175),Border=Color.FromArgb(72,48,60);
  private readonly Panel body=new Panel(),sidebar=new Panel(); private Panel deviceCard;
@@ -95,7 +95,7 @@ public sealed class EvgeniumDesktop : Form {
     if(page==3){protocol.Items.Clear();protocol.Items.AddRange(new object[]{"TCP","UDP","BOTH"});protocol.SelectedIndex=0;protocol.DropDownStyle=ComboBoxStyle.DropDownList;protocol.SetBounds(18,119,100,30);entry.Controls.Add(protocol);direction.Items.Clear();direction.Items.AddRange(new object[]{"Исходящие","Входящие","Оба"});direction.SelectedIndex=0;direction.DropDownStyle=ComboBoxStyle.DropDownList;direction.SetBounds(132,119,210,30);entry.Controls.Add(direction);}
     exceptions.FlowDirection=FlowDirection.TopDown;exceptions.WrapContents=false;exceptions.AutoSize=true;exceptions.Padding=new Padding(18);var list=Card(160);exceptions.Dock=DockStyle.Fill;exceptions.AutoScroll=true;list.Controls.Add(exceptions);
     showBase.Text="Отобразить базовые исключения";showBase.SetBounds(0,0,650,38);showBase.ForeColor=Muted;showBase.CheckedChanged-=ShowBaseChanged;showBase.CheckedChanged+=ShowBaseChanged;var baseCard=Card(180);showBase.SetBounds(18,12,640,30);baseCard.Controls.Add(showBase);baseRules.SetBounds(18,48,640,120);baseRules.FlowDirection=FlowDirection.TopDown;baseRules.WrapContents=false;baseRules.Visible=showBase.Checked;baseCard.Controls.Add(baseRules);
-    if(page==1){var processes=Card(120);processes.Controls.Add(LabelAt("Запущены сейчас",18,12,640,25,12,true,TextMain));running.SetBounds(18,48,478,30);running.DropDownStyle=ComboBoxStyle.DropDownList;processes.Controls.Add(running);var pick=ButtonAt("В обход",510,44,150,38,false);pick.Click+=(s,e)=>{var item=running.SelectedItem as AppItem;if(item!=null)Send("add",new{category="applications",value=item.Path});};processes.Controls.Add(pick);var browse=ButtonAt("Выбрать .exe…",18,82,180,30,false);browse.Click+=(s,e)=>{using(var dialog=new OpenFileDialog{Filter="Приложения (*.exe)|*.exe",CheckFileExists=true})if(dialog.ShowDialog(this)==DialogResult.OK)Send("add",new{category="applications",value=dialog.FileName});};processes.Controls.Add(browse);var refresh=ButtonAt("Обновить список",220,82,200,30,false);refresh.Click+=(s,e)=>Send("running",null);processes.Controls.Add(refresh);FillApps();}
+    if(page==1){var processes=Card(120);processes.Controls.Add(LabelAt("Запущены сейчас",18,12,640,25,12,true,TextMain));running.SetBounds(18,48,478,30);running.DropDownStyle=ComboBoxStyle.DropDown;running.AutoCompleteMode=AutoCompleteMode.SuggestAppend;running.AutoCompleteSource=AutoCompleteSource.ListItems;processes.Controls.Add(running);var pick=ButtonAt("В обход",510,44,150,38,false);pick.Click+=(s,e)=>{var item=running.SelectedItem as AppItem;if(item!=null)Send("add",new{category="applications",value=item.Path});};processes.Controls.Add(pick);var browse=ButtonAt("Выбрать .exe…",18,82,180,30,false);browse.Click+=(s,e)=>{using(var dialog=new OpenFileDialog{Filter="Приложения (*.exe)|*.exe",CheckFileExists=true})if(dialog.ShowDialog(this)==DialogResult.OK)Send("add",new{category="applications",value=dialog.FileName});};processes.Controls.Add(browse);var refresh=ButtonAt("Обновить список",220,82,200,30,false);refresh.Click+=(s,e)=>Send("running",null);processes.Controls.Add(refresh);FillApps();}
     FillPolicyList();
    }
    ResizeCards();
@@ -118,7 +118,7 @@ public sealed class EvgeniumDesktop : Form {
    string label=TextOf(engine,"message","VPN отключён.");string engineState=TextOf(engine,"state");bool connected=active&&engineState=="connected";
    connectionTitle.Text=connected?"Подключено через Эстонию":active?"Подключение и восстановление…":"VPN отключён";connectionTitle.ForeColor=connected?Color.FromArgb(166,216,194):TextMain;
    toggle.Text=active||BoolOf(engine,"protected")?"Отключить":"Подключить";widgetToggle.Text=active||BoolOf(engine,"protected")?"ВЫКЛ":"ВКЛ";widgetStatus.Text=connected?"● Подключено":active?"◌ Подключение":"○ Отключено";sideStatus.Text=widgetStatus.Text;
-   if(!Busy)StatusText.Text=label;
+   if(!Busy)StatusText.Text=LastError!=""?LastError:label;
    deviceName.Text=TextOf(state,"device_name","Имя появится после ввода токена");deviceName.Visible=!editingName;
    bool saved=BoolOf(state,"has_token");if(deviceCard!=null)deviceCard.Visible=saved;TokenInput.Visible=TokenEditing||!saved;TokenInput.UseSystemPasswordChar=!TokenEditing;tokenHint.Visible=saved&&!TokenEditing;tokenHint.Text="Токен сохранён на этом устройстве";tokenSave.Text=saved&&!TokenEditing?"Изменить":"Подтвердить";
    if(!saved)TokenEditing=true;
@@ -134,7 +134,8 @@ public sealed class EvgeniumDesktop : Form {
  public void RefreshPolicy(){Refreshing=true;try{if(page>0)FillPolicyList();exceptionInput.Clear();}finally{Refreshing=false;}}
  public void SetApps(string text){apps=AsArray(json.DeserializeObject(text));FillApps();}
  private void FillApps(){running.Items.Clear();foreach(var v in apps){var a=Map(v);running.Items.Add(new AppItem{Name=TextOf(a,"name"),Path=TextOf(a,"exe")});}if(running.Items.Count>0)running.SelectedIndex=0;}
- public void SetBusy(bool value){Busy=value;UseWaitCursor=value;SetControlsEnabled(cards,!value);widgetToggle.Enabled=!value;if(value)StatusText.Text="Выполняется… Подтвердите запрос Windows, если он появится.";}
+ public void SetError(string message){LastError=message;StatusText.Text=message;if(!Visible)tray.ShowBalloonTip(5000,"Evgenium",message,ToolTipIcon.Warning);}
+ public void SetBusy(bool value){Busy=value;if(value)LastError="";UseWaitCursor=value;SetControlsEnabled(cards,!value);widgetToggle.Enabled=!value;if(value)StatusText.Text="Выполняется… Подтвердите запрос Windows, если он появится.";}
  private void SetControlsEnabled(Control parent,bool enabled){foreach(Control c in parent.Controls){if(c is Button||c is ComboBox||c is TextBox||c is CheckBox)c.Enabled=enabled;SetControlsEnabled(c,enabled);}}
  public void ShowWidget(bool enabled){if(enabled&&!widget.Visible&&!IsDisposed)widget.Show();else if(!enabled&&widget.Visible)widget.Hide();}
  public void OpenMain(){Show();WindowState=FormWindowState.Normal;BringToFront();Activate();}

@@ -3,6 +3,7 @@ using System.IO;
 using System.Management.Automation;
 using System.Reflection;
 using System.Threading;
+using System.Management.Automation.Runspaces;
 using System.Windows.Forms;
 internal static class Host {
     [STAThread] static int Main(string[] args) {
@@ -26,7 +27,11 @@ internal static class Host {
                 if (!created) { MessageBox.Show("Evgenium уже открыт. Найдите его окно на панели задач.", "Evgenium"); return 0; }
             }
             using (var reader = new StreamReader(Assembly.GetExecutingAssembly().GetManifestResourceStream("Evgenium.ps1")))
+            using (var runspace = RunspaceFactory.CreateRunspace())
             using (var ps = PowerShell.Create()) {
+                runspace.ApartmentState=ApartmentState.STA;
+                runspace.ThreadOptions=PSThreadOptions.UseCurrentThread;
+                runspace.Open();ps.Runspace=runspace;
                 ps.AddScript(reader.ReadToEnd()).AddParameter("Command", command).AddParameter("ExpectedSid", expectedSid).AddParameter("ResultId", resultId).AddParameter("ExecutableDirectory", AppDomain.CurrentDomain.BaseDirectory);
                 foreach (var item in ps.Invoke()) if (item != null) Console.WriteLine(item.ToString());
                 if (ps.InvocationStateInfo.State == PSInvocationState.Failed) throw new Exception("Evgenium could not complete the operation.");
