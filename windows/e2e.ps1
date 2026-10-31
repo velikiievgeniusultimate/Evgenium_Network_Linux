@@ -8,7 +8,9 @@ $setup=Join-Path $output ('Evgenium-Windows-'+$version+'-x64-Setup.exe')
 $app=Join-Path $env:ProgramFiles 'EvgeniumNetwork';$exe=Join-Path $app 'Evgenium.exe';$engine=Join-Path $app 'EvgeniumEngine.exe'
 if(Test-Path $app){throw 'Existing installation; refuse test'}
 $p=Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOLAUNCH' -Wait -PassThru;if($p.ExitCode){throw 'E2E setup failed'}
-[Reflection.Assembly]::LoadFile($exe) | Out-Null
+# Keep the test harness assembly separate: loading the installed EXE would
+# lock it in powershell.exe and create an artificial installer failure.
+[Reflection.Assembly]::LoadFile((Join-Path $output ('Evgenium-Windows-'+$version+'-x64/Evgenium.exe'))) | Out-Null
 . (Join-Path $PSScriptRoot 'Evgenium.ps1') -Command selftest -ExecutableDirectory $app
 . (Join-Path $PSScriptRoot 'Policy.ps1')
 . (Join-Path $PSScriptRoot 'Reports.ps1')
@@ -125,8 +127,8 @@ try{
  Assert-Estonia
  $stateHash=(Get-FileHash $script:StatePath).Hash
  $fixture=Join-Path $output 'upgrade-fixture/Evgenium-Windows-0.2.1-x64-Setup.exe'
- $p=Start-Process $fixture -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOLAUNCH' -Wait -PassThru
- if($p.ExitCode){throw 'Active VPN upgrade failed'}
+ $p=Start-Process $fixture -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOLAUNCH',('/LOG="'+(Join-Path $output 'active-upgrade.log')+'"') -Wait -PassThru
+ if($p.ExitCode){throw ('Active VPN upgrade failed: '+$p.ExitCode)}
  Start-Sleep -Seconds 3;Wait-Connected;Assert-Estonia
  if((Get-FileHash $script:StatePath).Hash -cne $stateHash){throw 'Active update changed token/key/device'}
  Note 'Active VPN update: token preserved, tunnel resumed, Estonia exit PASS.'
