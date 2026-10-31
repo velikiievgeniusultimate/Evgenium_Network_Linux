@@ -60,7 +60,7 @@ function Protect-EngineDirectory {
 function Read-State {
     Assert-NoReparse $script:StatePath
     if (Test-Path -LiteralPath $script:StatePath) {
-        try { return (Get-Content -LiteralPath $script:StatePath -Raw | ConvertFrom-Json) }
+        try { return (Get-Content -LiteralPath $script:StatePath -Raw -Encoding UTF8 | ConvertFrom-Json) }
         catch { throw 'Локальные настройки повреждены. Не публикуйте этот файл: он содержит защищённые учётные данные.' }
     }
     return [pscustomobject]@{schema=1;device=([Guid]::NewGuid().ToString('N'));name='';token='';private_key='';profile=$null}
@@ -92,7 +92,7 @@ function Invoke-Elevated([string]$Action) {
         } catch { throw 'Для управления VPN нужно подтвердить запрос Windows. Действие отменено.' }
         if (Test-Path -LiteralPath $reply) {
             Assert-NoReparse $reply
-            $result=Get-Content -LiteralPath $reply -Raw | ConvertFrom-Json
+            $result=Get-Content -LiteralPath $reply -Raw -Encoding UTF8 | ConvertFrom-Json
             if (!$result.ok) { throw $result.message }
         } elseif ($process.ExitCode -ne 0) { throw 'Операция не выполнена. Подтвердите UAC своей учётной записью Windows и повторите попытку.' }
         if ($process.ExitCode -ne 0) { throw 'Операция не завершена. Повторите попытку.' }
@@ -144,7 +144,7 @@ function Read-EngineStatus {
     $path=Join-Path $script:EngineData 'status.json'
     if (Test-Path -LiteralPath $path) {
         Assert-NoReparse $path
-        try { return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json) } catch {}
+        try { return (Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json) } catch {}
     }
     return [pscustomobject]@{state='disconnected';message='VPN отключён.';ranking=@();route='';protected=$false;updated=0;restarts=0}
 }

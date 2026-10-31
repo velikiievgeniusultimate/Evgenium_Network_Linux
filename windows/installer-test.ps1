@@ -1,7 +1,7 @@
 ﻿param([string]$Output)
 $ErrorActionPreference='Stop'
 if($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted'){throw 'Disposable hosted runner only'}
-$version=(Get-Content (Join-Path $PSScriptRoot 'VERSION') -Raw).Trim();$package=Join-Path $Output ('Evgenium-Windows-'+$version+'-x64')
+$version=(Get-Content (Join-Path $PSScriptRoot 'VERSION') -Raw -Encoding UTF8).Trim();$package=Join-Path $Output ('Evgenium-Windows-'+$version+'-x64')
 [Reflection.Assembly]::LoadFile((Join-Path $package 'Evgenium.exe')) | Out-Null
 . (Join-Path $PSScriptRoot 'Evgenium.ps1') -Command selftest -ExecutableDirectory $package
 . (Join-Path $PSScriptRoot 'Policy.ps1')

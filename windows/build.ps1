@@ -1,7 +1,7 @@
 ﻿param([string]$Output=(Join-Path $PSScriptRoot 'dist'),[string]$InnoCompiler='', [string]$TestVersion='')
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
-$version=(Get-Content -LiteralPath (Join-Path $root 'VERSION') -Raw).Trim()
+$version=(Get-Content -LiteralPath (Join-Path $root 'VERSION') -Raw -Encoding UTF8).Trim()
 if ($TestVersion) {if($env:GITHUB_ACTIONS -ne 'true'){throw 'Version fixtures are CI only'};$version=$TestVersion}
 if ($version -notmatch '^\d+\.\d+\.\d+$') {throw 'Invalid VERSION'}
 $package=Join-Path $Output ('Evgenium-Windows-'+$version+'-x64');$null=New-Item -ItemType Directory -Force -Path $package

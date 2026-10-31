@@ -2,7 +2,7 @@
     $value=[pscustomobject]@{applications=@();networks=@();ports=@();dns=@();disabled_base=@();route='auto'}
     if (Test-Path -LiteralPath $script:PolicyPath) {
         Assert-NoReparse $script:PolicyPath
-        $saved=Get-Content -LiteralPath $script:PolicyPath -Raw | ConvertFrom-Json
+        $saved=Get-Content -LiteralPath $script:PolicyPath -Raw -Encoding UTF8 | ConvertFrom-Json
         foreach ($name in @('applications','networks','ports','dns','disabled_base','route')) {
             if ($saved.PSObject.Properties[$name]) {$value.$name=$saved.$name}
         }
@@ -57,7 +57,7 @@ function Read-Options {
     $o=[pscustomobject]@{widget=$true;startup=$false}
     if (Test-Path -LiteralPath $script:OptionsPath) {
         Assert-NoReparse $script:OptionsPath
-        try {$v=Get-Content -LiteralPath $script:OptionsPath -Raw | ConvertFrom-Json;foreach($k in @('widget','startup')){if($v.PSObject.Properties[$k]){$o.$k=[bool]$v.$k}}} catch {}
+        try {$v=Get-Content -LiteralPath $script:OptionsPath -Raw -Encoding UTF8 | ConvertFrom-Json;foreach($k in @('widget','startup')){if($v.PSObject.Properties[$k]){$o.$k=[bool]$v.$k}}} catch {}
     }
     return $o
 }

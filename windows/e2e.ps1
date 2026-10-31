@@ -2,7 +2,7 @@
 $ErrorActionPreference='Stop'
 if($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted'){throw 'Disposable GitHub-hosted runner only'}
 if(!$env:EVG_WINDOWS_E2E_TOKEN){throw 'Temporary test token missing'}
-$version=(Get-Content (Join-Path $PSScriptRoot 'VERSION') -Raw).Trim()
+$version=(Get-Content (Join-Path $PSScriptRoot 'VERSION') -Raw -Encoding UTF8).Trim()
 $output=Join-Path $env:RUNNER_TEMP 'evgenium-windows'
 $setup=Join-Path $output ('Evgenium-Windows-'+$version+'-x64-Setup.exe')
 $app=Join-Path $env:ProgramFiles 'EvgeniumNetwork';$exe=Join-Path $app 'Evgenium.exe';$engine=Join-Path $app 'EvgeniumEngine.exe'
@@ -15,7 +15,7 @@ $p=Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NOREST
 if(!(Is-Admin)){throw 'Administrator required for disposable E2E'}
 $task='Evgenium-CI-Emergency-Disconnect';$armed=$false;$off=$false
 $log=Join-Path $output 'network-e2e.log'
-function Note([string]$Text){$Text | Tee-Object -FilePath $log -Append | Write-Output}
+function Note([string]$Text){[IO.File]::AppendAllText($log,$Text+"`n",(New-Object Text.UTF8Encoding($false)));Write-Output $Text}
 function Probe-Http([string[]]$More=@()){
  $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
  try{$text=(& curl.exe --noproxy '*' --silent --show-error --max-time 12 @More 2>$null | Out-String).Trim();return @{code=$LASTEXITCODE;text=$text}}finally{$ErrorActionPreference=$old}
@@ -96,7 +96,7 @@ try{
  Note ('FAIL: '+$_.Exception.Message)
  $s=Read-EngineStatus;Note ($s | ConvertTo-Json -Depth 6 -Compress)
  # Core log has no credentials/configuration. Keep only bounded recent engine errors.
- $path=Join-Path $script:EngineData 'engine.log';if(Test-Path $path){Get-Content $path -Tail 35 | ForEach-Object {Note $_}}
+ $path=Join-Path $script:EngineData 'engine.log';if(Test-Path $path){Get-Content $path -Tail 35 -Encoding UTF8 | ForEach-Object {Note $_}}
  throw
 }finally{
  Remove-Item Env:EVG_WINDOWS_E2E_TOKEN -ErrorAction SilentlyContinue

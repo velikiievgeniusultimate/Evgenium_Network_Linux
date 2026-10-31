@@ -1,6 +1,6 @@
 ﻿param([string]$Output)
 $ErrorActionPreference='Stop'
-$version=(Get-Content (Join-Path $PSScriptRoot 'VERSION') -Raw).Trim();$package=Join-Path $Output ('Evgenium-Windows-'+$version+'-x64')
+$version=(Get-Content (Join-Path $PSScriptRoot 'VERSION') -Raw -Encoding UTF8).Trim();$package=Join-Path $Output ('Evgenium-Windows-'+$version+'-x64')
 $sig=Get-AuthenticodeSignature (Join-Path $package 'wintun.dll');if($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'WireGuard'){throw 'Driver signature'}
 # Validate the actual production config, including TUN, WG, all carriers and DNS.
 # Xray -test only builds configuration: no routes/firewall/adapter activation.
