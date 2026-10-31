@@ -78,8 +78,10 @@ public static class EvgeniumChromeProbe {
             $point=$window.PointToScreen((New-Object Drawing.Point($c[0],$c[1])))
             if([EvgeniumChromeProbe]::Hit($window.Handle,$point.X,$point.Y) -ne $c[2]){throw 'Native corner resizing unavailable'}
         }
-        $old=$window.Size;$window.Size=New-Object Drawing.Size(($old.Width+100),($old.Height+60));[Windows.Forms.Application]::DoEvents()
-        if($window.ClientSize.Width -lt 1100 -or $close.Right -gt $caption.Width){throw 'Resizable caption layout failed'}
+        # The hosted Windows desktop may be only 1024px wide: test a real shrink,
+        # then grow back, without requesting a size beyond the monitor tracking limit.
+        $old=$window.Size;$window.Size=New-Object Drawing.Size([Math]::Max($window.MinimumSize.Width,($old.Width-80)),[Math]::Max($window.MinimumSize.Height,($old.Height-40)));[Windows.Forms.Application]::DoEvents()
+        if($window.Width -ge $old.Width -or $close.Right -gt $caption.Width){throw 'Resizable caption layout failed'}
         $window.Size=$old
         $minimize.PerformClick();[Windows.Forms.Application]::DoEvents()
         if($window.WindowState -ne 'Minimized'){throw 'Minimize failed'}
@@ -92,7 +94,7 @@ public static class EvgeniumChromeProbe {
     }catch{
         if($env:RUNNER_TEMP){
             $log=Join-Path $env:RUNNER_TEMP 'evgenium-windows/ui-selftest.log'
-            [IO.File]::WriteAllText($log,($_ | Out-String)+"`n"+$_.ScriptStackTrace,[Text.Encoding]::UTF8)
+            [IO.File]::WriteAllText($log,($_.Exception.ToString()+"`n"+$_.ScriptStackTrace),[Text.Encoding]::UTF8)
             if(!$window.IsDisposed){$bitmap=New-Object Drawing.Bitmap($window.Width,$window.Height);$window.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$window.Width,$window.Height)));$bitmap.Save((Join-Path $env:RUNNER_TEMP 'evgenium-windows-ui.png'),[Drawing.Imaging.ImageFormat]::Png);$bitmap.Dispose()}
         }
         throw
