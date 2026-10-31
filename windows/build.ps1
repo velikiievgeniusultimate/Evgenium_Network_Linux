@@ -24,7 +24,14 @@ try{$accent=0;for($x=0;$x -lt $bitmap.Width;$x++){for($y=0;$y -lt $bitmap.Height
 Push-Location (Join-Path $root 'engine')
 try {& go build -trimpath -ldflags ('-s -w -H=windowsgui -X main.version='+$version) -o (Join-Path $package 'EvgeniumEngine.exe') .;if($LASTEXITCODE -ne 0){throw 'Engine compilation failed'}} finally {Pop-Location}
 $cache=Join-Path $env:RUNNER_TEMP 'evgenium-xray-26.10.29.zip'
-if(!(Test-Path $cache)){Invoke-WebRequest -UseBasicParsing 'https://github.com/XTLS/Xray-core/releases/download/v26.10.29/Xray-windows-64.zip' -OutFile $cache}
+if(!(Test-Path $cache)){
+    try{Invoke-WebRequest -UseBasicParsing 'https://github.com/XTLS/Xray-core/releases/download/v26.10.29/Xray-windows-64.zip' -OutFile $cache}
+    catch{
+        # Byte-identical archive retained with its licenses; the same pinned
+        # checksum below applies to both sources. No unverified runtime fallback.
+        Invoke-WebRequest -UseBasicParsing 'https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-runtime-v26.10.29/Xray-windows-64-v26.10.29.zip' -OutFile $cache
+    }
+}
 if((Get-FileHash $cache).Hash.ToLowerInvariant() -ne 'fce33e81cccf50e7aab572b175519a50b5e0f9d2f5c8d1ed73012ea5c9ad4d58'){throw 'Xray archive checksum mismatch'}
 $unpack=Join-Path $Output 'xray';Expand-Archive $cache $unpack -Force
 foreach($file in @('xray.exe','wintun.dll','LICENSE-Wintun')){Copy-Item -LiteralPath (Join-Path $unpack $file) -Destination $package}
