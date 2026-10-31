@@ -48,7 +48,7 @@ jobs:
           if ($env:EVG_WINDOWS_E2E_TOKEN -and (Test-Path .\windows\e2e-ready)) {
             & .\windows\e2e.ps1
           } else {
-            Write-Output "Real full-tunnel E2E skipped: no temporary test token configured."
+            Write-Output "Real full-tunnel E2E not enabled: temporary test token or readiness marker missing."
           }
       - uses: actions/upload-artifact@v4
         if: always()

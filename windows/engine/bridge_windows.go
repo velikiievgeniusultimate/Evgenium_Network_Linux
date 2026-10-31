@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -9,10 +10,13 @@ import (
 	"math/bits"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
-	"unsafe"
 )
 
 // One authenticated WG session survives carrier changes. All carriers return
@@ -35,14 +39,23 @@ type packetBridge struct {
 	closed      bool
 }
 
+// Query the original default routes, explicitly excluding our TUN. A best-route
+// lookup after activation would select the TUN again and recursively eat WG.
 func physicalIndex() (uint32, error) {
-	sa := windows.RawSockaddrInet4{Family: windows.AF_INET, Addr: [4]byte{195, 209, 211, 163}}
-	var index uint32
-	r, _, _ := windows.NewLazySystemDLL("iphlpapi.dll").NewProc("GetBestInterfaceEx").Call(uintptr(unsafe.Pointer(&sa)), uintptr(unsafe.Pointer(&index)))
-	if r != 0 {
-		return 0, windows.Errno(r)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := `$ErrorActionPreference='Stop'; $r=Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' | Where-Object {$_.InterfaceAlias -ne 'EvgeniumTunnel' -and $_.State -eq 'Alive'} | Sort-Object @{Expression={$_.RouteMetric+$_.InterfaceMetric}} | Select-Object -First 1; if(!$r){exit 2}; [Console]::Write($r.InterfaceIndex)`
+	cmd := exec.CommandContext(ctx, filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	out, e := cmd.Output()
+	if e != nil {
+		return 0, fmt.Errorf("physical_route: %w", e)
 	}
-	return index, nil
+	index, e := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 32)
+	if e != nil || index == 0 {
+		return 0, errors.New("physical_route_missing")
+	}
+	return uint32(index), nil
 }
 func nativeUDP() (*net.UDPConn, error) {
 	index, e := physicalIndex()

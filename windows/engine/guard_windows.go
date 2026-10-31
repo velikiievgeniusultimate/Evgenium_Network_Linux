@@ -153,23 +153,39 @@ func fillGuard(s *wf.Session, sub wf.SublayerID, c Config, luid uint64) error {
 				return e
 			}
 		}
+		if !c.Policy.base("dns:stub") {
+			if e = addRule(s, sub, "disabled-loopback-dns", layer, 995, wf.ActionBlock,
+				&wf.Match{Field: wf.FieldFlags, Op: wf.MatchTypeFlagsAllSet, Value: uint32(wf.ConditionFlagIsLoopback)},
+				&wf.Match{Field: wf.FieldIPRemotePort, Op: wf.MatchTypeEqual, Value: uint16(53)}); e != nil {
+				return e
+			}
+		}
 		for i, text := range c.Policy.Ports {
 			m := portPattern.FindStringSubmatch(text)
-			if m == nil || m[3] == "out" {
+			if m == nil {
 				continue
 			}
 			var port uint16
 			fmt.Sscan(m[2], &port)
-			conditions := []*wf.Match{{Field: wf.FieldIPLocalPort, Op: wf.MatchTypeEqual, Value: port}}
-			if m[1] != "both" {
-				proto := uint8(6)
-				if m[1] == "udp" {
-					proto = 17
+			for _, direction := range []string{"out", "in"} {
+				if m[3] != "both" && m[3] != direction {
+					continue
 				}
-				conditions = append(conditions, &wf.Match{Field: wf.FieldIPProtocol, Op: wf.MatchTypeEqual, Value: proto})
-			}
-			if e = addRule(s, sub, fmt.Sprintf("server-port-%d", i), layer, 900, wf.ActionPermit, conditions...); e != nil {
-				return e
+				field := wf.FieldIPRemotePort
+				if direction == "in" {
+					field = wf.FieldIPLocalPort
+				}
+				conditions := []*wf.Match{{Field: field, Op: wf.MatchTypeEqual, Value: port}}
+				if m[1] != "both" {
+					proto := uint8(6)
+					if m[1] == "udp" {
+						proto = 17
+					}
+					conditions = append(conditions, &wf.Match{Field: wf.FieldIPProtocol, Op: wf.MatchTypeEqual, Value: proto})
+				}
+				if e = addRule(s, sub, fmt.Sprintf("port-%d-%s", i, direction), layer, 900, wf.ActionPermit, conditions...); e != nil {
+					return e
+				}
 			}
 		}
 		if layer == wf.LayerALEAuthConnectV4 {
