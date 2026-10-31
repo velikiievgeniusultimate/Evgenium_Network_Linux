@@ -11,6 +11,7 @@
         'apply-policy' { if (Invoke-Elevated 'apply-policy') {return}; if (Tunnel-Running) {Write-EngineConfig; $null=Invoke-Engine 'reload'} }
         'uninstall' { Uninstall-App }
         'selftest' { Self-Test }
+        'prepare' { Prepare-App }
         'status' { (Read-EngineStatus).state }
         'ui-selftest' { Test-Desktop }
         'close-gui' { try {$e=[Threading.EventWaitHandle]::OpenExisting('Local\EvgeniumNetwork.Close'); $null=$e.Set();$e.Dispose()} catch {} }

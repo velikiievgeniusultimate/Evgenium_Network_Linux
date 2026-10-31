@@ -126,7 +126,7 @@ try{
  $id=Send-Report $report;Note ('UDP/DNS/service diagnostic upload acknowledged: '+$id)
  Assert-Estonia
  $stateHash=(Get-FileHash $script:StatePath).Hash
- $fixture=Join-Path $output 'upgrade-fixture/Evgenium-Windows-0.2.1-x64-Setup.exe'
+ $v=[version]$version;$newer=('{0}.{1}.{2}' -f $v.Major,$v.Minor,($v.Build+1));$fixture=Join-Path $output ('upgrade-fixture/Evgenium-Windows-'+$newer+'-x64-Setup.exe')
  $p=Start-Process $fixture -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOLAUNCH',('/LOG="'+(Join-Path $output 'active-upgrade.log')+'"') -Wait -PassThru
  if($p.ExitCode){throw ('Active VPN upgrade failed: '+$p.ExitCode)}
  Start-Sleep -Seconds 3;Wait-Connected;Assert-Estonia

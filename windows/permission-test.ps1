@@ -6,6 +6,7 @@ $testRoot=Join-Path $env:SystemDrive ('evg-permission-'+[Guid]::NewGuid().ToStri
 $user='evgAclTest';$plain='EvG!'+[Guid]::NewGuid().ToString('N')+'a7';$password=ConvertTo-SecureString $plain -AsPlainText -Force
 try{
  $null=New-LocalUser -Name $user -Password $password -AccountNeverExpires -PasswordNeverExpires
+ Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $user
  $null=New-Item -ItemType Directory $testRoot
  Copy-Item (Join-Path $Output ('Evgenium-Windows-'+$version+'-x64')) (Join-Path $testRoot 'package') -Recurse
  Copy-Item (Join-Path $PSScriptRoot 'Evgenium.ps1') $testRoot
@@ -17,6 +18,7 @@ try{
 param([string]$Root)
 $ErrorActionPreference='Stop'
 try {
+ $env:LOCALAPPDATA=Join-Path $Root 'user-data'
  [Reflection.Assembly]::LoadFile((Join-Path $Root 'package/Evgenium.exe')) | Out-Null
  . (Join-Path $Root 'Evgenium.ps1') -Command selftest -ExecutableDirectory (Join-Path $Root 'package')
  . (Join-Path $Root 'Policy.ps1')
@@ -36,10 +38,12 @@ try {
  [IO.File]::WriteAllText((Join-Path $testRoot 'normal-user.ps1'),$script,[Text.Encoding]::UTF8)
  $cred=New-Object Management.Automation.PSCredential(($env:COMPUTERNAME+'\'+$user),$password)
  $p=Start-Process (Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe') -Credential $cred -LoadUserProfile -WorkingDirectory $testRoot -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+(Join-Path $testRoot 'normal-user.ps1')+'"'),'-Root',('"'+$testRoot+'"') -PassThru
+ $handle=$p.Handle
  if(!$p.WaitForExit(60000)){$p.Kill();throw 'Standard-user test timed out'}
  $result=Get-Content (Join-Path $testRoot 'result.txt') -Raw -Encoding UTF8
  [IO.File]::WriteAllText((Join-Path $Output 'standard-user.log'),$result,[Text.Encoding]::UTF8)
- if($p.ExitCode -ne 0){throw $result};Write-Output $result
+ $p.Refresh()
+ if($result -notmatch '^PASS:' -or ($null -ne $p.ExitCode -and $p.ExitCode -ne 0)){throw $result};Write-Output $result
 }finally{
  $plain=$null;$password=$null
  Remove-LocalUser -Name $user -ErrorAction SilentlyContinue

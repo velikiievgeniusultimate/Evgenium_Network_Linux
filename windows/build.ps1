@@ -7,7 +7,7 @@ if ($version -notmatch '^\d+\.\d+\.\d+$') {throw 'Invalid VERSION'}
 $package=Join-Path $Output ('Evgenium-Windows-'+$version+'-x64');$null=New-Item -ItemType Directory -Force -Path $package
 $bundle=Join-Path $Output 'Bundle.ps1'
 $text=@('Evgenium.ps1','Policy.ps1','Reports.ps1','Desktop.ps1','Entry.ps1') | ForEach-Object {Get-Content -LiteralPath (Join-Path $root $_) -Raw -Encoding UTF8}
-$content=($text -join "`r`n").Replace("`$script:Version = '0.2.0'",("`$script:Version = '"+$version+"'"))
+$content=($text -join "`r`n").Replace("`$script:Version = '"+(Get-Content (Join-Path $root 'VERSION') -Raw -Encoding UTF8).Trim()+"'",("`$script:Version = '"+$version+"'"))
 [IO.File]::WriteAllText($bundle,$content,[Text.Encoding]::UTF8)
 $tokens=$null;$errors=$null;$null=[Management.Automation.Language.Parser]::ParseFile($bundle,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw ($errors | Out-String)}

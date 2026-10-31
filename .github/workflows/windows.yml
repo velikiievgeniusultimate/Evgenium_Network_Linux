@@ -31,7 +31,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Engine unit tests failed' }
           Pop-Location
           & .\windows\build.ps1 -Output "$env:RUNNER_TEMP\evgenium-windows"
-          & .\windows\test.ps1 -Package "$env:RUNNER_TEMP\evgenium-windows\Evgenium-Windows-0.2.0-x64"
+          $version=(Get-Content .\windows\VERSION -Raw).Trim()
+          & .\windows\test.ps1 -Package "$env:RUNNER_TEMP\evgenium-windows\Evgenium-Windows-$version-x64"
       - name: Test real non-administrator ACL and settings
         shell: powershell
         run: |

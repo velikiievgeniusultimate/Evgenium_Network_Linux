@@ -103,7 +103,14 @@ begin
  end;
 end;
 procedure CurStepChanged(CurStep: TSetupStep);
-begin if CurStep=ssDone then Completed:=True;end;
+var Code: Integer;
+begin
+ if CurStep=ssPostInstall then begin
+  if not Exec(ExpandConstant('{app}\Evgenium.exe'),'--command prepare','',SW_HIDE,ewWaitUntilTerminated,Code) then RaiseException('Не удалось запустить подготовку компонентов VPN.');
+  if Code<>0 then RaiseException('Не удалось подготовить компоненты VPN. Повторите установку с правами администратора.');
+ end;
+ if CurStep=ssDone then Completed:=True;
+end;
 procedure DeinitializeSetup;
 var Code: Integer;
 begin

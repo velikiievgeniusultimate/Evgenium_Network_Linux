@@ -243,6 +243,16 @@ function Uninstall-App {
     $root=Join-Path $env:ProgramData 'EvgeniumNetwork'
     if(Test-Path -LiteralPath $root){Assert-SafeTree $root;Remove-Item -LiteralPath $root -Recurse -Force}
 }
+function Prepare-App {
+    if (!(Is-Admin)) {throw 'Установщик должен запуститься с правами администратора.'}
+    # Prepare only our own directory and validate the bundled engine. Enrollment
+    # and routes wait for a token; no Windows audit/user privileges are changed.
+    Protect-EngineDirectory
+    Self-Test
+    foreach($file in @('xray.exe','wintun.dll')) {
+        if(!(Test-Path -LiteralPath (Join-Path $ExecutableDirectory $file))){throw ('Отсутствует компонент '+$file)}
+    }
+}
 function Self-Test {
     Validate-Profile ([pscustomobject]@{schema=1;public_key='AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';endpoint='195.209.211.163:51820';address='10.78.0.2/32';dns=@('1.1.1.1','1.0.0.1');mtu=1280;allowed_ips=@('0.0.0.0/0','::/0')})
     $null=Invoke-Engine 'selftest'
