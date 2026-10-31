@@ -80,3 +80,60 @@ func TestKeyAndServerValidation(t *testing.T) {
 		t.Fatal("zero key")
 	}
 }
+
+func TestRussiaExitIsOptInAndOverridesOnlySelectedProcesses(t *testing.T) {
+	c := fixture()
+	ordinary, err := marshalCore(c, "vpn", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(ordinary), `"tag": "russia"`) {
+		t.Fatal("Russia egress enabled by default")
+	}
+	c.Policy.BlueStacksRussia = true
+	c.Policy.Applications = []string{"HD-Player.exe"}
+	c.Policy.Ports = []string{"both:443:both"}
+	c.Policy.DNS = []string{"1.1.1.1"}
+	v, err := coreConfig(c, "vpn", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := v["routing"].(obj)["rules"].([]any)
+	russiaAt, directAt, dnsAt := -1, -1, -1
+	for i, value := range rules {
+		r := value.(obj)
+		if r["outboundTag"] == "dns-out" {
+			dnsAt = i
+		}
+		if r["outboundTag"] == "russia" && r["process"] != nil {
+			russiaAt = i
+			for _, name := range r["process"].([]string) {
+				if strings.Contains(strings.ToLower(name), "discord") || name == "System" || name == "svchost.exe" {
+					t.Fatal("Unrelated processes routed through Russia")
+				}
+			}
+		}
+		if r["outboundTag"] == "direct" && r["process"] != nil {
+			directAt = i
+		}
+	}
+	if russiaAt < 0 || russiaAt >= directAt || russiaAt >= dnsAt {
+		t.Fatal("Direct/DNS exceptions override Russia-only policy")
+	}
+	if rules[len(rules)-1].(obj)["outboundTag"] != "vpn" {
+		t.Fatal("Default Estonia route changed")
+	}
+	var russian obj
+	for _, out := range v["outbounds"].([]any) {
+		if out.(obj)["tag"] == "russia" {
+			russian = out.(obj)
+		}
+	}
+	if russian == nil || russian["streamSettings"].(obj)["sockopt"].(obj)["dialerProxy"] != "vpn" {
+		t.Fatal("Russian proxy could leave outside authenticated WireGuard")
+	}
+	c.Policy.RussiaApplications = []string{"bad.exe\ninject"}
+	if validateConfig(c) == nil {
+		t.Fatal("Unvalidated Russia process rule")
+	}
+}

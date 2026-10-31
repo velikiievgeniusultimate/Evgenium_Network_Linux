@@ -69,6 +69,36 @@ try{
  if((Exit-IP) -ne $baseline){throw 'Application exception failed'}
  Change-And-Wait 'remove' ([pscustomobject]@{category='applications';value=$curl});Assert-Estonia
  Note 'Application direct exception + removal PASS.'
+ # A process-name fixture exercises the same Windows TUN lookup used for the
+ # emulator, without pretending this runner has BlueStacks or Mobile Legends.
+ $split=Join-Path $output 'split-egress';$null=New-Item -ItemType Directory -Force $split
+ $bluePlayer=Join-Path $split 'HD-Player.exe';Copy-Item $curl $bluePlayer
+ $blueAgent=Join-Path $split 'HD-Agent.exe';$ordinaryUdp=Join-Path $split 'ordinary-udp.exe'
+ $compiler=Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+ & $compiler /nologo /optimize+ /platform:x64 ('/out:'+$blueAgent) (Join-Path $PSScriptRoot 'russia-udp-test.cs')
+ if($LASTEXITCODE){throw 'UDP process fixture compilation failed'};Copy-Item $blueAgent $ordinaryUdp
+ Change-And-Wait 'bluestacks-russia' ([pscustomobject]@{enabled=$true})
+ $r=(& $bluePlayer --noproxy '*' --silent --show-error --max-time 12 'https://api.ipify.org' | Out-String).Trim()
+ if($LASTEXITCODE -ne 0 -or $r -ne '195.209.211.163'){throw 'BlueStacks-named process did not use Russian TCP exit'}
+ $r=(& $blueAgent | Out-String).Trim();if($LASTEXITCODE -ne 0 -or $r -ne '195.209.211.163'){throw 'BlueStacks-named process did not use Russian UDP exit'}
+ Assert-Estonia
+ $r=(& $ordinaryUdp | Out-String).Trim();if($LASTEXITCODE -ne 0 -or $r -ne '38.180.164.67'){throw 'Unrelated UDP process left Estonia'}
+ $discord=Probe-Http -More @('https://discord.com/api/v10/gateway');if($discord.code -ne 0 -or $discord.text -notmatch 'gateway.discord.gg'){throw 'Discord failed during split egress'}
+ Note 'BlueStacks-named fixtures: TCP/UDP Russia; unrelated TCP/UDP and Discord Estonia PASS. Real emulator/game not tested.'
+ # Conflict rules must not permit physical egress or override the Russia rule.
+ Change-And-Wait 'add' ([pscustomobject]@{category='applications';value=$bluePlayer})
+ Change-And-Wait 'add' ([pscustomobject]@{category='ports';value='tcp:443:out'})
+ $r=(& $bluePlayer --noproxy '*' --silent --show-error --max-time 12 'https://api.ipify.org' | Out-String).Trim()
+ if($LASTEXITCODE -ne 0 -or $r -ne '195.209.211.163'){throw 'Direct exception overrode Russia policy'}
+ $oldPreference=$ErrorActionPreference;$ErrorActionPreference='Continue'
+ try{& $bluePlayer --noproxy '*' --interface $physicalIP --silent --max-time 5 'https://api.ipify.org' 2>$null | Out-Null;$escaped=$LASTEXITCODE -eq 0}finally{$ErrorActionPreference=$oldPreference}
+ if($escaped){throw 'Russia-selected process escaped via physical bind'}
+ Change-And-Wait 'remove' ([pscustomobject]@{category='ports';value='tcp:443:out'})
+ Change-And-Wait 'remove' ([pscustomobject]@{category='applications';value=$bluePlayer})
+ Change-And-Wait 'bluestacks-russia' ([pscustomobject]@{enabled=$false});Assert-Estonia
+ $r=(& $bluePlayer --noproxy '*' --silent --show-error --max-time 12 'https://api.ipify.org' | Out-String).Trim()
+ if($LASTEXITCODE -ne 0 -or $r -ne '38.180.164.67'){throw 'Disabling split egress did not restore Estonia'}
+ Note 'Russia priority, physical-bind protection and disabling restores Estonia PASS.'
  Change-And-Wait 'add' ([pscustomobject]@{category='networks';value='=api.ipify.org'})
  if((Exit-IP) -ne $baseline){throw 'Domain exception failed'}
  Change-And-Wait 'remove' ([pscustomobject]@{category='networks';value='=api.ipify.org'});Assert-Estonia

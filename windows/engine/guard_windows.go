@@ -153,6 +153,17 @@ func fillGuard(s *wf.Session, sub wf.SublayerID, c Config, luid uint64) error {
 				return e
 			}
 		}
+		for i, p := range appPaths(russiaApplications(c.Policy)) {
+			id, err := wf.AppID(p)
+			if err != nil {
+				continue
+			}
+			// Above every direct exception but below loopback and the TUN. A
+			// Russia-only application cannot escape via a broad port/IP rule.
+			if err = addRule(s, sub, fmt.Sprintf("russia-only-%d", i), layer, 970, wf.ActionBlock, &wf.Match{Field: wf.FieldALEAppID, Op: wf.MatchTypeEqual, Value: id}); err != nil {
+				return err
+			}
+		}
 		if !c.Policy.base("dns:stub") {
 			if e = addRule(s, sub, "disabled-loopback-dns", layer, 995, wf.ActionBlock,
 				&wf.Match{Field: wf.FieldFlags, Op: wf.MatchTypeFlagsAllSet, Value: uint32(wf.ConditionFlagIsLoopback)},

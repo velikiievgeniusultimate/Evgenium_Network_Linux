@@ -41,6 +41,8 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
  private ComboBox route,running,protocol,direction;
  private StackPanel deviceCard,exceptions,baseRules;
  private CheckBox showBase;
+ private CheckBox blueStacksRussia;
+ private TextBlock russiaStatus;
  private static readonly Brush Bg=BrushOf("#141217"),Surface=BrushOf("#211c24"),Accent=BrushOf("#ff586d"),Muted=BrushOf("#baa8af"),Main=BrushOf("#fff1e9"),BorderBrushColor=BrushOf("#48303c");
  public EvgeniumDesktop(){
   Title="Evgenium Network";Width=1040;Height=740;MinWidth=860;MinHeight=580;Background=Bg;Foreground=Main;FontFamily=new FontFamily("Segoe UI");FontSize=13;WindowStartupLocation=WindowStartupLocation.CenterScreen;
@@ -80,7 +82,7 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
  public void Navigate(int index){
   page=index;bool previous=Refreshing;Refreshing=true;
   try{
-   cards.Children.Clear();deviceCard=null;statusText=null;connectionTitle=null;tokenInput=null;nameInput=null;tokenHint=null;tokenSave=null;deviceSave=null;route=null;toggle=null;resultText=null;exceptions=null;baseRules=null;
+   cards.Children.Clear();deviceCard=null;statusText=null;connectionTitle=null;tokenInput=null;nameInput=null;tokenHint=null;tokenSave=null;deviceSave=null;route=null;toggle=null;resultText=null;exceptions=null;baseRules=null;blueStacksRussia=null;russiaStatus=null;
    for(int i=0;i<navButtons.Count;i++){bool selected=i==page;navButtons[i].Background=selected?BrushOf("#3a202d"):Brushes.Transparent;((Border)navButtons[i].Tag).Background=selected?Accent:BrushOf("#302330");}
    pageTitle.Text=new[]{"Ваш VPN","Исключения приложений","Сайты и IP","Исключения портов","DNS"}[page];breadcrumb.Text="EVGENIUM  /  "+new[]{"ПОДКЛЮЧЕНИЕ","ПРИЛОЖЕНИЯ","САЙТЫ И IP","ПОРТЫ","DNS"}[page];
    statusText=Text("",13);statusText.Foreground=Muted;Card("").Children.Add(statusText);
@@ -101,6 +103,15 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
   resultText=Text("",13);resultText.Foreground=Muted;Card("Результат").Children.Add(resultText);
  }
  private void BuildExceptions(){
+  if(page==1){
+   var russia=Card("BlueStacks → Россия");
+   blueStacksRussia=new CheckBox{Content=Text("Выходить через HSVDS с российским IP",14),Margin=new Thickness(0,0,0,12)};
+   Accessible(blueStacksRussia,"BlueStacks через Россию");
+   blueStacksRussia.Checked+=(s,e)=>{if(!Refreshing)Send("bluestacks-russia",new{enabled=true});};blueStacksRussia.Unchecked+=(s,e)=>{if(!Refreshing)Send("bluestacks-russia",new{enabled=false});};russia.Children.Add(blueStacksRussia);
+   var explanation=Text("Весь BlueStacks, включая Mobile Legends, использует российский выход. Discord, браузер и остальные программы продолжают работать через Эстонию. После изменения перезапустите BlueStacks.",13);explanation.Foreground=Muted;russia.Children.Add(explanation);
+   russiaStatus=Text("",13);russiaStatus.Margin=new Thickness(0,12,0,0);russia.Children.Add(russiaStatus);
+   var check=Text("Проверьте IP в браузере внутри BlueStacks: должен быть 195.209.211.163. Режим Hyper-V может скрывать процесс эмулятора — не считайте его настроенным, пока IP не проверен.",12);check.Foreground=Muted;check.Margin=new Thickness(0,12,0,0);russia.Children.Add(check);
+  }
   category=new[]{"","applications","networks","ports","dns"}[page];
   string[] descriptions={"","Выбранные приложения подключаются напрямую. Остальные используют VPN.","Добавьте домен, адрес или подсеть. Домены включают поддомены; знак = задаёт точное совпадение.","Исходящие — подключения к порту. Входящие — прямые ответы вашего сервера. Оба — оба направления.","Обычный DNS остаётся в VPN. Добавленные DNS-серверы получают запросы напрямую и могут видеть запрашиваемые имена."};
   var entry=Card("Новое исключение");var help=Text(descriptions[page],13);help.Foreground=Muted;help.Margin=new Thickness(0,0,0,16);entry.Children.Add(help);exceptionInput=Input("Новое исключение");
@@ -132,6 +143,7 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
   var engine=Map(snapshot.ContainsKey("engine")?snapshot["engine"]:null);var options=Map(snapshot.ContainsKey("options")?snapshot["options"]:null);bool active=BoolOf(snapshot,"running"),connected=active&&TextOf(engine,"state")=="connected";
   startup.IsChecked=BoolOf(options,"startup");sideStatus.Text=connected?"● Подключено":active?"◌ Подключение":"○ Отключено";sideStatus.Foreground=connected?BrushOf("#a6d8c2"):Muted;
   if(statusText!=null&&!Busy){statusText.Text=lastError!=""?lastError:TextOf(engine,"message","VPN отключён.");statusText.Foreground=lastError!=""?BrushOf("#ffad9e"):Muted;}
+  if(blueStacksRussia!=null){blueStacksRussia.IsChecked=BoolOf(policy,"bluestacks_russia");bool enabled=blueStacksRussia.IsChecked==true;russiaStatus.Text=!enabled?"Выключено. BlueStacks использует обычный маршрут VPN.":!active?"Включите VPN, чтобы использовать российский выход.":TextOf(engine,"russia_message","Проверяю российский выход…");russiaStatus.Foreground=enabled&&TextOf(engine,"russia_state")=="unavailable"?BrushOf("#ffad9e"):Muted;}
   if(page!=0||connectionTitle==null)return;
   connectionTitle.Text=connected?"Подключено через Эстонию":active?"Подключение и восстановление…":"VPN отключён";connectionTitle.Foreground=connected?BrushOf("#a6d8c2"):Main;toggle.Content=active||BoolOf(engine,"protected")?"Отключить":"Подключить";
   bool saved=BoolOf(snapshot,"has_token");ShowElement((UIElement)VisualTreeHelper.GetParent(deviceCard),saved);deviceName.Text=TextOf(snapshot,"device_name","Имя появится после ввода токена");ShowElement(deviceName,!editingName);ShowElement(nameInput,editingName);deviceSave.Content=editingName?"Сохранить":"Изменить имя";

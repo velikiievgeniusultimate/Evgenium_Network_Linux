@@ -43,14 +43,16 @@ type Rank struct {
 	Error  string  `json:"error,omitempty"`
 }
 type Status struct {
-	Version   string `json:"version"`
-	State     string `json:"state"`
-	Message   string `json:"message"`
-	Route     string `json:"route"`
-	Protected bool   `json:"protected"`
-	Updated   int64  `json:"updated"`
-	Restarts  int    `json:"restarts"`
-	Ranking   []Rank `json:"ranking"`
+	Version       string `json:"version"`
+	State         string `json:"state"`
+	Message       string `json:"message"`
+	Route         string `json:"route"`
+	Protected     bool   `json:"protected"`
+	Updated       int64  `json:"updated"`
+	Restarts      int    `json:"restarts"`
+	Ranking       []Rank `json:"ranking"`
+	RussiaState   string `json:"russia_state,omitempty"`
+	RussiaMessage string `json:"russia_message,omitempty"`
 }
 
 func dataDir(sid string) string {
@@ -115,6 +117,9 @@ func request(port int, addr string, limit int64) ([]byte, error) {
 // Two independent HTTPS checks avoid treating one external API outage as a
 // broken VPN. Both must still report the exact expected Estonia exit.
 func confirmedExit(port int, timeout time.Duration) bool {
+	return confirmedExpectedExit(port, "38.180.164.67", timeout)
+}
+func confirmedExpectedExit(port int, expected string, timeout time.Duration) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	client := socksClient(port, timeout)
@@ -130,11 +135,11 @@ func confirmedExit(port int, timeout time.Duration) bool {
 		if e != nil || r.StatusCode != 200 {
 			continue
 		}
-		if strings.TrimSpace(string(b)) == "38.180.164.67" {
+		if strings.TrimSpace(string(b)) == expected {
 			return true
 		}
 		for _, line := range strings.Split(string(b), "\n") {
-			if line == "ip=38.180.164.67" {
+			if line == "ip="+expected {
 				return true
 			}
 		}
@@ -403,7 +408,8 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 	failures := 0
 	lastReset := time.Now()
 	lastNetworkCheck := time.Now()
-	initialApps := routingApplications(c.Policy.Applications)
+	lastRussiaCheck := time.Time{}
+	initialApps := routingApplications(append(append([]string{}, c.Policy.Applications...), russiaApplications(c.Policy)...))
 	sort.Strings(initialApps)
 	lastApplications := strings.Join(initialApps, "\n")
 	tick := func() time.Duration {
@@ -419,7 +425,7 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 				c.LAN = lan
 				changed = true
 			}
-			apps := routingApplications(c.Policy.Applications)
+			apps := routingApplications(append(append([]string{}, c.Policy.Applications...), russiaApplications(c.Policy)...))
 			sort.Strings(apps)
 			signature := strings.Join(apps, "\n")
 			if lastApplications != "" && signature != lastApplications {
@@ -437,6 +443,9 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 			needRank = true
 		}
 		if core == nil {
+			lastRussiaCheck = time.Time{}
+			st.RussiaState = ""
+			st.RussiaMessage = ""
 			st.State = "connecting"
 			st.Message = "Подключаю HSVDS → Эстония…"
 			st.Route = desired
@@ -486,6 +495,16 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 			_ = currentBridge.route(desired)
 		}
 		st.Route = desired
+		if len(russiaApplications(c.Policy)) > 0 && time.Since(lastRussiaCheck) > 30*time.Second {
+			lastRussiaCheck = time.Now()
+			if confirmedExpectedExit(18558, "195.209.211.163", 4*time.Second) {
+				st.RussiaState = "ready"
+				st.RussiaMessage = "Российский выход доступен. IP: 195.209.211.163."
+			} else {
+				st.RussiaState = "unavailable"
+				st.RussiaMessage = "Российский выход не подтверждён. Для выбранных процессов нет перехода на местный IP или Эстонию."
+			}
+		}
 		if healthy(desired) {
 			failures = 0
 			st.State = "connected"
@@ -555,6 +574,9 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 			case svc.Cmd(128):
 				if next, x := readConfig(e.sid); x == nil {
 					c = next
+					lastRussiaCheck = time.Time{}
+					st.RussiaState = ""
+					st.RussiaMessage = ""
 					needRank = c.ResetRating || len(st.Ranking) == 0
 					if c.ResetRating {
 						st.Ranking = nil

@@ -206,3 +206,50 @@ The original443 PID/configuration, VPN routing/firewall/DNS and Estonian service
 were not replaced. The Cloudflare connector is retained for operator rollback,
 not enabled as an automatic fallback. DNS caches may retain the previous edge
 addresses for up to the old TTL after a cutover.
+
+
+## Optional Windows BlueStacks exit in Russia (0.2.2)
+
+The default authenticated client path still exits in Estonia. Windows can opt
+specific BlueStacks processes into a separate SOCKS egress at 10.78.0.1:18088
+inside the same per-device WireGuard session. Its TCP control and UDP datagrams
+are encrypted by WireGuard; there is no new public anonymous proxy or token.
+The proxy runs in the root network namespace, whose public exit is
+195.209.211.163. Account/device revocation removes that device's WG access.
+
+Install `russia-exit.json` alongside `ingress.py` and install/enable
+`evgenium-russia-exit.service`. It uses the existing pinned 26.10.29 Xray at
+`/opt/evgenium-windows-ingress/xray`; it does not change the Reality carriers.
+Before deployment, back up the existing ingress script, nftables and policy
+routes. Validate the JSON with `xray run -test -config ...` and validate nft
+`socket cgroupv2` support on the deployment kernel. This was verified on HSVDS.
+The unit passes its config through a systemd credential with a `.json` suffix.
+
+`ingress.py up` permits only WG-authenticated sources to the proxy's TCP port.
+SOCKS creates ephemeral UDP sockets, so UDP is permitted by the exact service's
+cgroup socket owner, not by a broad port range. The unit's privileged pre-start
+runs only `ingress.py russia-udp` to refresh those two nft rules atomically;
+the normal ingress sync reconstructs them as well. IPv6 and private/reserved
+proxy destinations, both server management IPs and metadata networks are
+blocked after DNS resolution by Freedom final rules. Plain DNS queries received
+through this proxy use its built-in DNS with HTTPS resolvers on the Russian
+host; the host's global DNS remains unchanged.
+
+Table 51828 additionally contains the connected client-pool route through
+`evg-clients`, so local proxy/diagnostic replies return to authenticated peers.
+The existing forward firewall still rejects private destinations and client-to-
+client traffic. The default in that table remains the Estonia relay with an
+unreachable fallback. No host default route or existing client peer is replaced.
+
+Windows rules prioritize Russia-selected processes over direct app/site/port
+exceptions. WFP blocks their physical-interface connections while permitting
+the TUN and loopback. Unmatched processes retain the normal Estonia route.
+The setting defaults off. UI health verifies the Russia proxy's public exit;
+it does not prove a particular guest game's process was identified. Hyper-V
+network ownership and actual BlueStacks/Mobile Legends gameplay still require
+an emulator/device test; CI exercises independently named TCP/UDP processes.
+
+Rollback: disable/stop only `evgenium-russia-exit.service`, restore the backed-up
+`ingress.py`, run its `up` operation, and remove only the added connected route
+`10.78.0.0/24` from table 51828. Do not flush the table/rules or replace the host
+routes. Existing Estonia clients and the public websites must remain working.

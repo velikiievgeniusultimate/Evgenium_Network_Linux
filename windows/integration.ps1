@@ -6,7 +6,7 @@ $sig=Get-AuthenticodeSignature (Join-Path $package 'wintun.dll');if($sig.Status 
 # Xray -test only builds configuration: no routes/firewall/adapter activation.
 [Reflection.Assembly]::LoadFile((Join-Path $package 'Evgenium.exe')) | Out-Null
 . (Join-Path $PSScriptRoot 'Evgenium.ps1') -Command selftest -ExecutableDirectory $package
-$config=@{schema=1;owner=$script:Sid;private_key='AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';profile=@{schema=1;public_key='AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=';endpoint='195.209.211.163:51820';address='10.78.0.2/32';mtu=1280};policy=@{applications=@();networks=@();ports=@();dns=@();disabled_base=@();route='auto'};lan=@()}
+$config=@{schema=1;owner=$script:Sid;private_key='AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=';profile=@{schema=1;public_key='AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=';endpoint='195.209.211.163:51820';address='10.78.0.2/32';mtu=1280};policy=@{applications=@();networks=@();ports=@();dns=@();disabled_base=@();route='auto';bluestacks_russia=$true};lan=@()}
 $core=Invoke-Engine 'render' ($config | ConvertTo-Json -Depth 10 -Compress)
 $path=Join-Path $Output 'core-test.json';[IO.File]::WriteAllText($path,$core,(New-Object Text.UTF8Encoding($false)))
 $p=Start-Process (Join-Path $package 'xray.exe') -ArgumentList 'run','-test','-config',('"'+$path+'"') -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $Output 'core-validate.log') -RedirectStandardError (Join-Path $Output 'core-validate-error.log')

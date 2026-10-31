@@ -16,6 +16,32 @@ TABLE = 'evg_wg_clients'
 NS_TABLE = 'evg_wg_entry'
 NS = 'evg-link'
 PREFIX = 'evgenium-wg-entry-'
+RUSSIA_CGROUP = 'system.slice/evgenium-russia-exit.service'
+
+
+def russia_udp_rule():
+    # Modern SOCKS uses one ephemeral UDP socket per TCP association. Permit
+    # only sockets owned by our isolated service, never an entire port range.
+    if not pathlib.Path('/sys/fs/cgroup', RUSSIA_CGROUP).exists():
+        return ''
+    return (f'iifname "{IF}" ip saddr 10.78.0.0/24 ip daddr 10.78.0.1 '
+            f'meta l4proto udp socket cgroupv2 level 2 "{RUSSIA_CGROUP}" '
+            f'counter accept comment "{PREFIX}russia-udp"')
+
+
+def russia_udp():
+    rule = russia_udp_rule()
+    if not rule:
+        raise RuntimeError('russia_service_cgroup_missing')
+    changes = ''
+    for table in [TABLE, 'firewall']:
+        rows = json.loads(run(['nft', '-ja', 'list', 'chain', 'inet', table, 'input']).stdout)
+        for row in rows['nftables']:
+            old = row.get('rule', {})
+            if old.get('comment') == PREFIX+'russia-udp':
+                changes += f'delete rule inet {table} input handle {old["handle"]}\n'
+        changes += f'insert rule inet {table} input {rule}\n'
+    nft_rules(changes)
 
 
 def run(args, check=True, **kwargs):
@@ -71,6 +97,8 @@ def up():
   iifname "{IF}" ip saddr 10.78.0.0/24 ip daddr 195.209.211.163 tcp dport {{ 80, 8443 }} counter accept
   iifname "{IF}" ip saddr 10.78.0.0/24 ip daddr 195.209.211.163 tcp dport 9444 ct original proto-dst 443 counter accept
   iifname "{IF}" ip saddr 10.78.0.0/24 ip daddr 10.78.0.1 udp dport 24588 counter accept
+  iifname "{IF}" ip saddr 10.78.0.0/24 ip daddr 10.78.0.1 tcp dport 18088 counter accept
+  {russia_udp_rule()}
   iifname "{IF}" counter drop
  }}
  chain forward {{ type filter hook forward priority -40; policy accept;
@@ -103,6 +131,8 @@ def up():
     firewall_remove()
     nft_rules(f'''insert rule inet firewall input udp dport 51820 counter accept comment "{PREFIX}input"
 insert rule inet firewall input iifname "{IF}" ip saddr 10.78.0.0/24 ip daddr 10.78.0.1 udp dport 24588 counter accept comment "{PREFIX}diagnostic"
+insert rule inet firewall input iifname "{IF}" ip saddr 10.78.0.0/24 ip daddr 10.78.0.1 tcp dport 18088 counter accept comment "{PREFIX}russia-exit"
+{('insert rule inet firewall input '+russia_udp_rule()) if russia_udp_rule() else ''}
 insert rule inet firewall input tcp dport {{ 24580, 24581 }} counter accept comment "{PREFIX}windows-carriers"
 insert rule inet firewall forward iifname "{IF}" ip saddr 10.78.0.0/24 oifname "evg-relay-host" ct state established,related,new counter accept comment "{PREFIX}out"
 insert rule inet firewall forward iifname "evg-relay-host" oifname "{IF}" ip daddr 10.78.0.0/24 ct state established,related counter accept comment "{PREFIX}in"
@@ -115,6 +145,10 @@ insert rule inet firewall forward iifname "evg-relay-host" oifname "{IF}" ip dad
     if not any(a.get('local') == '10.78.0.1' for i in present for a in i.get('addr_info', [])):
         run(['ip', 'addr', 'add', '10.78.0.1/24', 'dev', IF])
     run(['ip', 'link', 'set', IF, 'mtu', '1280', 'up'])
+    # Replies from the WG-local proxy/packet probe must return to the client,
+    # not follow the source-policy default into Estonia. Forwarded client-to-
+    # client packets remain forbidden by the private-destination firewall rule.
+    run(['ip', '-4', 'route', 'replace', '10.78.0.0/24', 'dev', IF, 'scope', 'link', 'table', '51828'])
     run(['/usr/bin/python3', '/usr/local/sbin/evgenium-token-issuer', 'sync-wireguard'])
     print('WireGuard entry ready; client forwarding limited to the Estonia relay.')
 
@@ -130,4 +164,5 @@ def down():
 if __name__ == '__main__':
     if sys.argv[1:] == ['up']: up()
     elif sys.argv[1:] == ['down']: down()
-    else: raise SystemExit('expected up|down')
+    elif sys.argv[1:] == ['russia-udp']: russia_udp()
+    else: raise SystemExit('expected up|down|russia-udp')

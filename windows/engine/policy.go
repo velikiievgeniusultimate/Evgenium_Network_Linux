@@ -12,13 +12,29 @@ import (
 )
 
 type Policy struct {
-	Applications []string `json:"applications"`
-	Networks     []string `json:"networks"`
-	Ports        []string `json:"ports"`
-	DNS          []string `json:"dns"`
-	Disabled     []string `json:"disabled_base"`
-	Route        string   `json:"route"`
+	Applications       []string `json:"applications"`
+	Networks           []string `json:"networks"`
+	Ports              []string `json:"ports"`
+	DNS                []string `json:"dns"`
+	Disabled           []string `json:"disabled_base"`
+	Route              string   `json:"route"`
+	BlueStacksRussia   bool     `json:"bluestacks_russia"`
+	RussiaApplications []string `json:"russia_applications,omitempty"`
 }
+
+// Native BlueStacks networking is hosted by these executables. Never include
+// System, svchost or generic VM services: that would reroute unrelated programs.
+var blueStacksProcesses = []string{"HD-Player.exe", "HD-Agent.exe", "BstkSVC.exe", "BlueStacks.exe", "BlueStacksHelper.exe", "HD-Proxy.exe"}
+
+func russiaApplications(p Policy) []string {
+	values := append([]string{}, p.RussiaApplications...)
+	if p.BlueStacksRussia {
+		values = append(values, blueStacksProcesses...)
+		values = append(values, installedBlueStacksApplications()...)
+	}
+	return values
+}
+
 type Profile struct {
 	Schema    int    `json:"schema"`
 	PublicKey string `json:"public_key"`
@@ -84,7 +100,7 @@ func validateConfig(c Config) error {
 	if e != nil || ip.Bits() != 32 || !netip.MustParsePrefix("10.78.0.0/24").Contains(ip.Addr()) {
 		return errors.New("invalid_device_address")
 	}
-	for cat, values := range map[string][]string{"applications": c.Policy.Applications, "networks": c.Policy.Networks, "ports": c.Policy.Ports, "dns": c.Policy.DNS} {
+	for cat, values := range map[string][]string{"applications": c.Policy.Applications, "russia_applications": c.Policy.RussiaApplications, "networks": c.Policy.Networks, "ports": c.Policy.Ports, "dns": c.Policy.DNS} {
 		if len(values) > 256 {
 			return errors.New("too_many_exceptions")
 		}
@@ -116,7 +132,7 @@ func validateException(cat, s string) error {
 		return errors.New("invalid_exception")
 	}
 	switch cat {
-	case "applications":
+	case "applications", "russia_applications":
 		if !processPattern.MatchString(s) || !strings.HasSuffix(strings.ToLower(s), ".exe") {
 			return errors.New("Укажите имя .exe или полный путь к приложению.")
 		}
@@ -193,6 +209,17 @@ func coreConfig(c Config, selected string, probeOnly bool) (map[string]any, erro
 	outbounds = append(outbounds, obj{"tag": "direct", "protocol": "freedom", "settings": obj{"finalRules": []any{obj{"action": "allow", "ip": []string{"0.0.0.0/0", "::/0"}}}}, "streamSettings": obj{"sockopt": obj{"domainStrategy": "UseIPv4"}}}, obj{"tag": "dns-out", "protocol": "dns"}, obj{"tag": "block", "protocol": "blackhole"})
 	if !probeOnly {
 		inbounds = append(inbounds, obj{"tag": "tun", "protocol": "tun", "settings": obj{"name": "EvgeniumTunnel", "mtu": 1280, "gateway": []string{"198.18.254.1/30", "fd78:6576:ff::1/126"}, "dns": []string{"198.18.254.2"}, "autoSystemRoutingTable": []string{"0.0.0.0/0", "::/0"}, "autoOutboundsInterface": "auto"}, "sniffing": obj{"enabled": true, "destOverride": []string{"http", "tls", "quic"}, "routeOnly": true}})
+	}
+	if apps := russiaApplications(c.Policy); len(apps) > 0 {
+		// This proxy is reachable only INSIDE the authenticated WG session. Both
+		// its TCP control channel and its UDP association use the VPN outbound.
+		// It has no freedom fallback and never traverses the Estonia relay.
+		outbounds = append(outbounds, obj{"tag": "russia", "protocol": "socks", "settings": obj{"servers": []any{obj{"address": "10.78.0.1", "port": 18088}}}, "streamSettings": obj{"sockopt": obj{"dialerProxy": "vpn"}}})
+		inbounds = append(inbounds, obj{"tag": "check-russia", "listen": "127.0.0.1", "port": 18558, "protocol": "socks", "settings": obj{"auth": "noauth", "udp": true}})
+		rules = append(rules, obj{"type": "field", "inboundTag": []string{"check-russia"}, "outboundTag": "russia"})
+		// Explicit Russia routing takes precedence over DNS/port/site/direct-app
+		// exceptions, including Android's own UDP DNS traffic in BlueStacks.
+		rules = append(rules, obj{"type": "field", "process": routingApplications(apps), "inboundTag": []string{"tun"}, "outboundTag": "russia"})
 	}
 	// Resolver requests use VPN even when an application has a direct exception.
 	rules = append(rules, obj{"type": "field", "inboundTag": []string{"dns-engine"}, "outboundTag": selected})

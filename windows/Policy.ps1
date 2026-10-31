@@ -1,9 +1,9 @@
 ﻿function Read-Policy {
-    $value=[pscustomobject]@{applications=@();networks=@();ports=@();dns=@();disabled_base=@();route='auto'}
+    $value=[pscustomobject]@{applications=@();networks=@();ports=@();dns=@();disabled_base=@();route='auto';bluestacks_russia=$false;russia_applications=@()}
     if (Test-Path -LiteralPath $script:PolicyPath) {
         Assert-NoReparse $script:PolicyPath
         $saved=Get-Content -LiteralPath $script:PolicyPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        foreach ($name in @('applications','networks','ports','dns','disabled_base','route')) {
+        foreach ($name in @('applications','networks','ports','dns','disabled_base','route','bluestacks_russia','russia_applications')) {
             if ($saved.PSObject.Properties[$name]) {$value.$name=$saved.$name}
         }
     }
@@ -17,7 +17,7 @@ function Save-PrivateJSON([string]$Path,$Value) {
 }
 function Normalize-Exception([string]$Category,[string]$Value) {
     $Value=$Value.Trim()
-    if ($Category -notin @('applications','networks','ports','dns')) {throw 'Неизвестная категория исключений.'}
+    if ($Category -notin @('applications','russia_applications','networks','ports','dns')) {throw 'Неизвестная категория исключений.'}
     if ($Category -eq 'networks') {
         $Value=$Value.ToLowerInvariant().TrimEnd('.')
         if ($Value -notmatch '^[\d./]+$') {
@@ -34,7 +34,8 @@ function Change-Policy([string]$Action,$Request) {
     $p=Read-Policy
     switch ($Action) {
         'add' {$v=Normalize-Exception $Request.category $Request.value;$p.($Request.category)=@(@($p.($Request.category))+$v | Select-Object -Unique)}
-        'remove' {if ($Request.category -notin @('applications','networks','ports','dns')) {throw 'Неизвестная категория.'};$p.($Request.category)=@($p.($Request.category) | Where-Object {$_ -cne $Request.value})}
+        'remove' {if ($Request.category -notin @('applications','russia_applications','networks','ports','dns')) {throw 'Неизвестная категория.'};$p.($Request.category)=@($p.($Request.category) | Where-Object {$_ -cne $Request.value})}
+        'bluestacks-russia' {$p.bluestacks_russia=[bool]$Request.enabled}
         'base' {
             if ($Request.value -notin @('networks:lan','networks:linklocal','ports:discovery','dns:stub')) {throw 'Неизвестное базовое правило.'}
             if ($Request.enabled) {$p.disabled_base=@($p.disabled_base | Where-Object {$_ -ne $Request.value})}

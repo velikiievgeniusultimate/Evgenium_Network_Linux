@@ -2,9 +2,28 @@ package main
 
 import (
 	"golang.org/x/sys/windows"
+	"os"
 	"path/filepath"
 	"strings"
 )
+
+func installedBlueStacksApplications() []string {
+	result := []string{}
+	for _, root := range []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)")} {
+		if root == "" {
+			continue
+		}
+		for _, directory := range []string{"BlueStacks_nxt", "BlueStacks"} {
+			for _, exe := range blueStacksProcesses {
+				p := filepath.Join(root, directory, exe)
+				if info, err := os.Stat(p); err == nil && !info.IsDir() {
+					result = append(result, p)
+				}
+			}
+		}
+	}
+	return result
+}
 
 // Xray compares full paths case-sensitively. Resolve the filesystem's canonical
 // name so C:\Windows\system32\curl.exe matches its real System32 process path.

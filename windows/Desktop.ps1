@@ -26,7 +26,7 @@ function Show-Gui([switch]$WidgetOnly) {
                 'repair' {$null=Connect-Vpn -Repair}
                 'token-save' {Set-Token $request.token ''; $window.SavedToken()}
                 'rename' {Rename-Device $request.name; $window.SavedName()}
-                {$_ -in @('add','remove','base','route')} {Change-Policy $action $request}
+                {$_ -in @('add','remove','base','route','bluestacks-russia')} {Change-Policy $action $request}
                 'option' {Set-Option $request.name ([bool]$request.value)}
                 'update' {$message=Update-App;if($global:EvgeniumInstallerStarted){$window.ExitApplication();return};[Windows.Forms.MessageBox]::Show(($message -join "`n"),'Evgenium')}
                 'diagnostic' {
