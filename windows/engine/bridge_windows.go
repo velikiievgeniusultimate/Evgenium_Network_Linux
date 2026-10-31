@@ -361,3 +361,16 @@ func physicalLAN() ([]string, error) {
 	sort.Strings(result)
 	return result, nil
 }
+
+func (b *packetBridge) resetAllCarriers() {
+	b.mu.Lock()
+	old := b.peers
+	b.peers = map[string]*carrier{}
+	b.mu.Unlock()
+	for _, c := range old {
+		c.udp.Close()
+		if c.tcp != nil {
+			c.tcp.Close()
+		}
+	}
+}
