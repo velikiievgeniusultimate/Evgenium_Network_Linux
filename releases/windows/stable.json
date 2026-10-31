@@ -1,11 +1,11 @@
 {
-  "schema": 1,
-  "version": "0.1.0",
-  "url": "https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-v0.1.0/Evgenium-Windows-0.1.0-x64.zip",
-  "sha256": "ec0e82cb45da08182fcfefe8a4bb0d548fdb0cce36573ef78036922798241f2e",
-  "size": 30382,
-  "release_url": "https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/tag/windows-v0.1.0",
-  "source_commit": "8a18652cbf2c3069d2788a7a5b7e30e374a0f0e8",
+  "schema": 2,
+  "version": "0.2.0",
+  "installer_url": "https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-v0.2.0/Evgenium-Windows-0.2.0-x64-Setup.exe",
+  "installer_sha256": "d2496abc29c7c8b35d30432171e03d268e0805f0d73f75b38d131f40c3424a87",
+  "installer_size": 14028032,
+  "release_url": "https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/tag/windows-v0.2.0",
+  "source_commit": "d10a8ed1a0cfb843d38d1a5d5239de64aeaa4491",
   "architecture": "x64",
-  "minimum_windows": "Windows 10 with Windows PowerShell 5.1 and curl.exe"
+  "minimum_windows": "Windows 10 1809 or Windows 11 x64; administrator account with UAC"
 }
