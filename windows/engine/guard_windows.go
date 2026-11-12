@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -301,6 +302,42 @@ func tunnelLUID() (uint64, error) {
 	r, _, _ := windows.NewLazySystemDLL("iphlpapi.dll").NewProc("ConvertInterfaceAliasToLuid").Call(uintptr(unsafe.Pointer(alias)), uintptr(unsafe.Pointer(&luid)))
 	if r != 0 {
 		return 0, windows.Errno(r)
+	}
+	return luid, nil
+}
+
+// A working SOCKS probe alone does not prove that Windows has finished installing
+// the TUN address and routes after a rapid policy reload.
+func readyTunnelLUID() (uint64, error) {
+	luid, err := tunnelLUID()
+	if err != nil {
+		return 0, err
+	}
+	iface, err := net.InterfaceByName("EvgeniumTunnel")
+	if err != nil || iface.Flags&net.FlagUp == 0 {
+		return 0, errors.New("tunnel_not_up")
+	}
+	addresses, err := iface.Addrs()
+	if err != nil {
+		return 0, err
+	}
+	addressReady := false
+	for _, a := range addresses {
+		p, e := netip.ParsePrefix(a.String())
+		if e == nil && p.Addr() == netip.MustParseAddr("198.18.254.1") {
+			addressReady = true
+		}
+	}
+	if !addressReady {
+		return 0, errors.New("tunnel_address_pending")
+	}
+	for _, ip := range [][4]byte{{1, 1, 1, 1}, {9, 9, 9, 9}} {
+		dest := windows.RawSockaddrInet4{Family: windows.AF_INET, Addr: ip}
+		var index uint32
+		r, _, _ := windows.NewLazySystemDLL("iphlpapi.dll").NewProc("GetBestInterfaceEx").Call(uintptr(unsafe.Pointer(&dest)), uintptr(unsafe.Pointer(&index)))
+		if r != 0 || index != uint32(iface.Index) {
+			return 0, errors.New("tunnel_routes_pending")
+		}
 	}
 	return luid, nil
 }

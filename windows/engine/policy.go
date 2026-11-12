@@ -60,6 +60,7 @@ type Profile struct {
 }
 type Config struct {
 	Schema      int      `json:"schema"`
+	Revision    string   `json:"revision,omitempty"`
 	Owner       string   `json:"owner"`
 	PrivateKey  string   `json:"private_key"`
 	Profile     Profile  `json:"profile"`

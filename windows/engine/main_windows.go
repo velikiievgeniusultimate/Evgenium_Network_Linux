@@ -34,17 +34,18 @@ const serviceName = "EvgeniumNetworkEngine"
 var version = "0.2.0"
 
 type Status struct {
-	Version       string `json:"version"`
-	State         string `json:"state"`
-	Message       string `json:"message"`
-	Route         string `json:"route"`
-	Protected     bool   `json:"protected"`
-	Updated       int64  `json:"updated"`
-	Restarts      int    `json:"restarts"`
-	Ranking       []Rank `json:"ranking"`
-	RankingSchema int    `json:"ranking_schema"`
-	RussiaState   string `json:"russia_state,omitempty"`
-	RussiaMessage string `json:"russia_message,omitempty"`
+	Version        string `json:"version"`
+	State          string `json:"state"`
+	Message        string `json:"message"`
+	Route          string `json:"route"`
+	Protected      bool   `json:"protected"`
+	Updated        int64  `json:"updated"`
+	Restarts       int    `json:"restarts"`
+	Ranking        []Rank `json:"ranking"`
+	RankingSchema  int    `json:"ranking_schema"`
+	ConfigRevision string `json:"config_revision,omitempty"`
+	RussiaState    string `json:"russia_state,omitempty"`
+	RussiaMessage  string `json:"russia_message,omitempty"`
 }
 
 func dataDir(sid string) string {
@@ -255,6 +256,12 @@ func (p *coreProcess) stop() {
 		case <-p.done:
 		case <-time.After(5 * time.Second):
 		}
+		for i := 0; i < 30; i++ {
+			if _, err := tunnelLUID(); err != nil {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 }
 
@@ -328,7 +335,7 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 		c.LAN[i] = p.Masked().String()
 	}
 	sort.Strings(c.LAN)
-	st := Status{State: "connecting", Message: "Включаю защиту сети…"}
+	st := Status{State: "connecting", Message: "Включаю защиту сети…", RankingSchema: 2, ConfigRevision: c.Revision}
 	var old Status
 	if b, x := os.ReadFile(filepath.Join(dataDir(e.sid), "status.json")); x == nil {
 		_ = json.Unmarshal(b, &old)
@@ -417,8 +424,8 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 				return 5 * time.Second
 			}
 			var luid uint64
-			for i := 0; i < 30; i++ {
-				if luid, err = tunnelLUID(); err == nil {
+			for i := 0; i < 180; i++ {
+				if luid, err = readyTunnelLUID(); err == nil {
 					break
 				}
 				time.Sleep(100 * time.Millisecond)
@@ -461,7 +468,8 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 				st.RussiaMessage = "Российский выход не подтверждён. Для выбранных процессов нет перехода на местный IP или Эстонию."
 			}
 		}
-		if healthy(desired) {
+		_, adapterError := readyTunnelLUID()
+		if adapterError == nil && healthy(desired) {
 			failures = 0
 			st.State = "connected"
 			st.Message = "Подключено через Эстонию. IP: 38.180.164.67."
@@ -519,6 +527,7 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 			case svc.Cmd(128):
 				if next, x := readConfig(e.sid); x == nil {
 					c = next
+					st.ConfigRevision = c.Revision
 					lastRussiaCheck = time.Time{}
 					st.RussiaState = ""
 					st.RussiaMessage = ""

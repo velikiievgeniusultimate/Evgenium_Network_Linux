@@ -164,7 +164,8 @@ function Write-EngineConfig([switch]$Repair) {
     $state=Read-State
     Validate-Profile $state.profile
     Protect-EngineDirectory
-    $config=@{schema=1;owner=$script:Sid;private_key=(Unseal $state.private_key);profile=$state.profile;policy=(Read-Policy);lan=@(Get-LAN);reset_rating=[bool]$Repair}
+    $script:ConfigRevision=[Guid]::NewGuid().ToString('N')
+    $config=@{schema=1;revision=$script:ConfigRevision;owner=$script:Sid;private_key=(Unseal $state.private_key);profile=$state.profile;policy=(Read-Policy);lan=@(Get-LAN);reset_rating=[bool]$Repair}
     # Only the engine's whitelist is serialized; enrollment metadata cannot add
     # arbitrary Xray options, executables, endpoints or routing rules.
     $config.profile=@{schema=1;public_key=$state.profile.public_key;endpoint=$state.profile.endpoint;address=$state.profile.address;mtu=$state.profile.mtu}
@@ -187,7 +188,7 @@ function Connect-Vpn([switch]$Repair) {
     $null=Invoke-Engine ('install '+$script:Sid)
     for ($i=0;$i -lt 80;$i++) {
         $status=Read-EngineStatus
-        if ($status.state -eq 'connected' -and $status.updated -ge [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-15) { return $status.message }
+        if ($status.state -eq 'connected' -and $status.config_revision -eq $script:ConfigRevision -and $status.updated -ge [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-15) { return $status.message }
         if ($status.state -eq 'error') { throw $status.message }
         if ($Command -eq 'gui' -or $Command -eq 'widget') { [EvgeniumDesktop]::PumpEvents() }
         Start-Sleep -Milliseconds 250

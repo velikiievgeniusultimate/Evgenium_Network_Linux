@@ -24,7 +24,8 @@ function Probe-Http([string[]]$More=@()){
 }
 function Exit-IP { $r=Probe-Http -More @('https://api.ipify.org');if($r.code -ne 0 -or $r.text -notmatch '^\d+\.\d+\.\d+\.\d+$'){throw 'Public IP request failed'};return $r.text }
 function Wait-Connected {
- for($i=0;$i -lt 24;$i++){$s=Read-EngineStatus;if($s.state -eq 'connected' -and $s.updated -ge [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-20){return};Start-Sleep -Seconds 2}
+ $expected=(Get-Content -LiteralPath (Join-Path $script:EngineData 'engine.json') -Raw | ConvertFrom-Json).revision
+ for($i=0;$i -lt 24;$i++){$s=Read-EngineStatus;if($s.state -eq 'connected' -and $s.config_revision -eq $expected -and $s.updated -ge [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-20){return};Start-Sleep -Seconds 2}
  $s=Read-EngineStatus;throw ('VPN never connected: '+$s.message)
 }
 function Assert-Estonia {if((Exit-IP) -ne '38.180.164.67'){throw 'Wrong full-device egress'} }
