@@ -20,9 +20,26 @@ $log=Join-Path $output 'network-e2e.log'
 function Note([string]$Text){[IO.File]::AppendAllText($log,$Text+"`n",(New-Object Text.UTF8Encoding($false)));Write-Output $Text}
 function Probe-Http([string[]]$More=@()){
  $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
- try{$text=(& curl.exe --noproxy '*' --silent --show-error --max-time 12 @More 2>$null | Out-String).Trim();return @{code=$LASTEXITCODE;text=$text}}finally{$ErrorActionPreference=$old}
+ try{$text=(& curl.exe -4 --noproxy '*' --silent --show-error --max-time 12 @More 2>$null | Out-String).Trim();return @{code=$LASTEXITCODE;text=$text}}finally{$ErrorActionPreference=$old}
 }
-function Exit-IP { $r=Probe-Http -More @('https://api.ipify.org');if($r.code -ne 0 -or $r.text -notmatch '^\d+\.\d+\.\d+\.\d+$'){throw 'Public IP request failed'};return $r.text }
+function Exit-IP([switch]$PrimaryOnly) {
+ # A single external IP service can stall while the VPN and other services work.
+ # Never ignore a valid but wrong IP: callers must still fail on any real leak.
+ $addresses=@('https://api.ipify.org')
+ if(!$PrimaryOnly){$addresses+= 'https://www.cloudflare.com/cdn-cgi/trace'}
+ for($attempt=0;$attempt -lt 2;$attempt++){
+  foreach($address in $addresses){
+   $r=Probe-Http -More @($address)
+   if($r.code -eq 0){
+    if($r.text -match '^\d+\.\d+\.\d+\.\d+$'){return $r.text}
+    if($r.text -match '(?m)^ip=(\d+\.\d+\.\d+\.\d+)\r?$'){return $Matches[1]}
+   }
+   Note ('Public IP endpoint unavailable: '+$address+' curl='+$r.code)
+  }
+  Start-Sleep -Seconds 1
+ }
+ throw 'No independent public IP endpoint replied'
+}
 function Wait-Connected {
  $expected=(Get-Content -LiteralPath (Join-Path $script:EngineData 'engine.json') -Raw | ConvertFrom-Json).revision
  for($i=0;$i -lt 24;$i++){$s=Read-EngineStatus;if($s.state -eq 'connected' -and $s.config_revision -eq $expected -and $s.updated -ge [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()-20){return};Start-Sleep -Seconds 2}
@@ -101,7 +118,7 @@ try{
  if($LASTEXITCODE -ne 0 -or $r -ne '38.180.164.67'){throw 'Disabling split egress did not restore Estonia'}
  Note 'Russia priority, physical-bind protection and disabling restores Estonia PASS.'
  Change-And-Wait 'add' ([pscustomobject]@{category='networks';value='=api.ipify.org'})
- if((Exit-IP) -ne $baseline){throw 'Domain exception failed'}
+ if((Exit-IP -PrimaryOnly) -ne $baseline){throw 'Domain exception failed'}
  Change-And-Wait 'remove' ([pscustomobject]@{category='networks';value='=api.ipify.org'});Assert-Estonia
  Note 'Domain direct exception + removal PASS.'
  $target=(Resolve-DnsName api.ipify.org -Type A | Where-Object IPAddress | Select-Object -First 1).IPAddress
