@@ -392,8 +392,14 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 			apps := routingApplications(append(append([]string{}, c.Policy.Applications...), russiaApplications(c.Policy)...))
 			sort.Strings(apps)
 			signature := strings.Join(apps, "\n")
-			if lastApplications != "" && signature != lastApplications {
-				changed = true
+			if lastApplications != "" && signature != lastApplications && !changed {
+				// Xray already matches the configured process basename. Newly
+				// discovered executable paths only change WFP physical guards;
+				// rebuilding TUN here would kill unrelated active connections.
+				luid, checkError := readyTunnelLUID()
+				if checkError != nil || updateGuard(c, luid) != nil {
+					changed = true
+				}
 			}
 			lastApplications = signature
 			if changed {

@@ -57,10 +57,10 @@ try{
  Remove-Item Env:EVG_WINDOWS_E2E_TOKEN
  # This SYSTEM task survives the runner losing its control channel.
  $action=New-ScheduledTaskAction -Execute $engine -Argument 'uninstall-all'
- $trigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(8)
+ $trigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10)
  $settings=New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
  $null=Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger -Settings $settings -User 'SYSTEM' -RunLevel Highest -Force;$armed=$true
- Note 'Independent SYSTEM rollback armed (8 minutes).'
+ Note 'Independent SYSTEM rollback armed (10 minutes).'
  $p=Start-Process $exe -ArgumentList '--command','on' -PassThru
  if(!$p.WaitForExit(35000)){$p.Kill();throw 'Packaged connect timed out'}
  if($p.ExitCode){throw ('Packaged connect failed: '+(Read-EngineStatus).message)}
@@ -103,6 +103,21 @@ try{
  $r=(& $ordinaryUdp | Out-String).Trim();if($LASTEXITCODE -ne 0 -or $r -ne '38.180.164.67'){throw 'Unrelated UDP process left Estonia'}
  $discord=Probe-Http -More @('https://discord.com/api/v10/gateway');if($discord.code -ne 0 -or $discord.text -notmatch 'gateway.discord.gg'){throw 'Discord failed during split egress'}
  Note 'BlueStacks-named fixtures: TCP/UDP Russia; unrelated TCP/UDP and Discord Estonia PASS. Real emulator/game not tested.'
+ $coreBefore=(Get-Process xray | Select-Object -First 1).Id
+ $holdListener=New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback,0);$holdListener.Start();$holdProcess=$null
+ try{
+  $holdPort=$holdListener.LocalEndpoint.Port
+  $holdProcess=Start-Process $bluePlayer -ArgumentList '--noproxy','*','--silent','--max-time','50',('http://127.0.0.1:'+$holdPort+'/') -PassThru
+  Start-Sleep -Seconds 34
+  if($holdProcess.HasExited){throw 'Named fixture did not remain alive for process discovery'}
+  if((Get-Process xray | Select-Object -First 1).Id -ne $coreBefore){throw 'Application discovery restarted the VPN core'}
+  Assert-Estonia
+  Note 'New named process discovered without restarting TUN/core PASS.'
+ }finally{
+  if($holdProcess -and !$holdProcess.HasExited){$holdProcess.Kill()}
+  $holdListener.Stop()
+ }
+
  # Conflict rules must not permit physical egress or override the Russia rule.
  Change-And-Wait 'add' ([pscustomobject]@{category='applications';value=$bluePlayer})
  Change-And-Wait 'add' ([pscustomobject]@{category='ports';value='tcp:443:out'})
