@@ -12,7 +12,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -68,7 +67,11 @@ func readConfig(sid string) (Config, error) {
 	if c.Owner != sid {
 		return c, errors.New("wrong_owner")
 	}
-	return c, validateConfig(c)
+	if e = validateConfig(c); e != nil {
+		return c, e
+	}
+	c.LAN = canonicalLAN(c.LAN)
+	return c, nil
 }
 func writeJSON(path string, v any) error {
 	b, e := json.MarshalIndent(v, "", "  ")
@@ -330,11 +333,6 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 		writeStatus(e.sid, Status{State: "error", Message: "Настройки VPN повреждены. Нажмите «Включить» для восстановления."})
 		return false, 1
 	}
-	for i, v := range c.LAN {
-		p, _ := netip.ParsePrefix(v)
-		c.LAN[i] = p.Masked().String()
-	}
-	sort.Strings(c.LAN)
 	st := Status{State: "connecting", Message: "Включаю защиту сети…", RankingSchema: 2, ConfigRevision: c.Revision}
 	var old Status
 	if b, x := os.ReadFile(filepath.Join(dataDir(e.sid), "status.json")); x == nil {

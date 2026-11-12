@@ -48,3 +48,18 @@ func TestRankingRejectsMissingDuplicateOrRemovedRoutes(t *testing.T) {
 		t.Fatal("duplicate accepted")
 	}
 }
+
+func TestReloadedHostAddressesDoNotLookLikeANetworkChange(t *testing.T) {
+	fromSettings := []string{"192.168.0.10/24", "10.20.0.8/16", "192.168.0.25/24"}
+	fromAdapter := []string{"10.20.0.0/16", "192.168.0.0/24"}
+	if !reflect.DeepEqual(canonicalLAN(fromSettings), canonicalLAN(fromAdapter)) {
+		t.Fatal("policy reload invented a network change")
+	}
+	if fromSettings[0] != "192.168.0.10/24" {
+		t.Fatal("normalization mutated saved settings")
+	}
+	changed := []string{"192.168.1.10/24", "10.20.0.8/16"}
+	if reflect.DeepEqual(canonicalLAN(fromSettings), canonicalLAN(changed)) {
+		t.Fatal("real network change hidden")
+	}
+}

@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -358,8 +357,7 @@ func physicalLAN() ([]string, error) {
 		}
 		result = append(result, p.Masked().String())
 	}
-	sort.Strings(result)
-	return result, nil
+	return canonicalLAN(result), nil
 }
 
 func (b *packetBridge) resetAllCarriers() {

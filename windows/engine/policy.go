@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -319,4 +320,21 @@ func exceptionDescription(cat, value string) string {
 		return e.Error()
 	}
 	return fmt.Sprintf("%s: %s", cat, value)
+}
+
+// PowerShell reports host/prefix; adapter discovery reports network/prefix.
+// Compare the same canonical set on both initial load and every policy reload.
+func canonicalLAN(values []string) []string {
+	seen := map[string]bool{}
+	for _, value := range values {
+		if p, e := netip.ParsePrefix(value); e == nil {
+			seen[p.Masked().String()] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
