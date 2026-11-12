@@ -33,15 +33,6 @@ const serviceName = "EvgeniumNetworkEngine"
 
 var version = "0.2.0"
 
-type Rank struct {
-	ID     string  `json:"id"`
-	Label  string  `json:"label"`
-	Mbps   float64 `json:"download_mbps"`
-	RTT    int64   `json:"rtt_ms"`
-	Losses int     `json:"losses"`
-	Good   bool    `json:"good"`
-	Error  string  `json:"error,omitempty"`
-}
 type Status struct {
 	Version       string `json:"version"`
 	State         string `json:"state"`
@@ -51,6 +42,7 @@ type Status struct {
 	Updated       int64  `json:"updated"`
 	Restarts      int    `json:"restarts"`
 	Ranking       []Rank `json:"ranking"`
+	RankingSchema int    `json:"ranking_schema"`
 	RussiaState   string `json:"russia_state,omitempty"`
 	RussiaMessage string `json:"russia_message,omitempty"`
 }
@@ -196,11 +188,6 @@ func probeAll(previous []Rank) []Rank {
 			_ = currentBridge.route(t.ID)
 		}
 		r := probe(t)
-		for _, p := range previous {
-			if p.ID == r.ID {
-				r.Losses = p.Losses
-			}
-		}
 		result = append(result, r)
 	}
 	sort.SliceStable(result, func(i, j int) bool {
@@ -210,36 +197,6 @@ func probeAll(previous []Rank) []Rank {
 		return result[i].Mbps > result[j].Mbps
 	})
 	return result
-}
-func choose(c Config, ranks []Rank) string {
-	if c.Policy.Route != "" && c.Policy.Route != "auto" {
-		return c.Policy.Route
-	}
-	for _, r := range ranks {
-		if r.Losses < 3 && r.Good {
-			return r.ID
-		}
-	}
-	return ""
-}
-
-func following(c Config, ranks []Rank, current string) string {
-	if c.Policy.Route != "" && c.Policy.Route != "auto" {
-		return c.Policy.Route
-	}
-	position := -1
-	for i, r := range ranks {
-		if r.ID == current {
-			position = i
-		}
-	}
-	for step := 1; step < len(ranks); step++ {
-		r := ranks[(position+step)%len(ranks)]
-		if r.Good && r.Losses < 3 {
-			return r.ID
-		}
-	}
-	return ""
 }
 
 type coreProcess struct {
@@ -375,7 +332,7 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 	var old Status
 	if b, x := os.ReadFile(filepath.Join(dataDir(e.sid), "status.json")); x == nil {
 		_ = json.Unmarshal(b, &old)
-		if !c.ResetRating {
+		if !c.ResetRating && old.RankingSchema == 2 && rankingCurrent(old.Ranking) {
 			st.Ranking = old.Ranking
 		}
 	}
@@ -403,10 +360,10 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 	updates <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 	var core *coreProcess
 	defer func() { core.stop() }()
-	needRank := len(st.Ranking) == 0
+	st.RankingSchema = 2
+	needRank := (c.Policy.Route == "" || c.Policy.Route == "auto") && len(st.Ranking) == 0
 	desired := choose(c, st.Ranking)
 	failures := 0
-	lastReset := time.Now()
 	lastNetworkCheck := time.Now()
 	lastRussiaCheck := time.Time{}
 	initialApps := routingApplications(append(append([]string{}, c.Policy.Applications...), russiaApplications(c.Policy)...))
@@ -440,7 +397,6 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 		}
 		if desired == "" {
 			desired = transports[0].ID
-			needRank = true
 		}
 		if core == nil {
 			lastRussiaCheck = time.Time{}
@@ -527,21 +483,10 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 			}
 			if failures >= 2 {
 				failures = 0
-				for i := range st.Ranking {
-					if st.Ranking[i].ID == desired {
-						st.Ranking[i].Losses++
-					}
-				}
 				next := following(c, st.Ranking, desired)
 				if next != "" {
 					desired = next
 					_ = currentBridge.route(desired)
-				} else if time.Since(lastReset) > 45*time.Second {
-					for i := range st.Ranking {
-						st.Ranking[i].Losses = 0
-					}
-					needRank = true
-					lastReset = time.Now()
 				}
 				// Recreate a stale WG/SOCKS session under the persistent guard.
 				// Selecting a different carrier alone can retain a dead association.
@@ -577,7 +522,7 @@ func (e *engineService) Execute(_ []string, requests <-chan svc.ChangeRequest, u
 					lastRussiaCheck = time.Time{}
 					st.RussiaState = ""
 					st.RussiaMessage = ""
-					needRank = c.ResetRating || len(st.Ranking) == 0
+					needRank = c.ResetRating || ((c.Policy.Route == "" || c.Policy.Route == "auto") && len(st.Ranking) == 0)
 					if c.ResetRating {
 						st.Ranking = nil
 					}

@@ -139,7 +139,10 @@ try{
  # Test real alternate carriers and health-triggered fallback, not just scores.
  foreach($id in @('ru-tcp','ru-xhttp')){Change-And-Wait 'route' ([pscustomobject]@{value=$id});Assert-Estonia;Note ('Fixed route '+$id+' PASS.')}
  Change-And-Wait 'route' ([pscustomobject]@{value='auto'});Assert-Estonia
- $oldRoute=(Read-EngineStatus).route
+ $initialStatus=Read-EngineStatus
+ $savedOrder=@($initialStatus.ranking | ForEach-Object {$_.id}) -join ','
+ $oldRoute=$initialStatus.route
+ if($oldRoute -ne $initialStatus.ranking[0].id){throw 'Automatic start did not use saved leader'}
  $rule='Evgenium-CI-Drop-Selected-Carrier'
  try{
   if($oldRoute -eq 'ru-wg'){$program=$engine;$protocol='UDP';$port=51820}else{$program=Join-Path $app 'xray.exe';$protocol='TCP';$port=if($oldRoute -eq 'ru-tcp'){24580}else{24581}}
@@ -149,6 +152,11 @@ try{
   if(!$switched){throw 'Automatic carrier fallback failed'};Assert-Estonia
   Note ('Blocked '+$oldRoute+' -> automatic '+$s.route+' fallback PASS.')
  }finally{Remove-NetFirewallRule -Name $rule -ErrorAction SilentlyContinue}
+ if((@((Read-EngineStatus).ranking | ForEach-Object {$_.id}) -join ',') -ne $savedOrder){throw 'Failover changed saved route order'}
+ Change-And-Wait 'route' ([pscustomobject]@{value='auto'});Assert-Estonia
+ if((Read-EngineStatus).route -ne $oldRoute){throw 'New automatic connection did not return to leader'}
+ if((@((Read-EngineStatus).ranking | ForEach-Object {$_.id}) -join ',') -ne $savedOrder){throw 'Reconnect remeasured or changed order'}
+ Note 'Saved order survives failover; new connection returns to leader PASS.'
  # Explicit user-authorized CI diagnostic account, no real user's report.
  $report=Create-Report
  if(@($report.checks.routes | Where-Object good).Count -lt 2){throw 'Fewer than two working carriers'}

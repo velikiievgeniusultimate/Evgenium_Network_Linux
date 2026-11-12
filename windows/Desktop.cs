@@ -150,9 +150,9 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
   if(!saved&&snapshot.ContainsKey("has_token"))TokenEditing=true;ShowElement(tokenInput,TokenEditing||!saved);ShowElement(tokenHint,saved&&!TokenEditing);tokenSave.Content=saved&&!TokenEditing?"Изменить":"Подтвердить";
   if(snapshot.ContainsKey("routes")){
    string selected=TextOf(policy,"route","auto");string key=selected+json.Serialize(snapshot["routes"]);
-   if((string)route.Tag!=key){route.Items.Clear();route.Items.Add(new RouteItem{ID="auto",Label="Автоматически · рейтинг и восстановление"});foreach(var v in AsArray(snapshot["routes"])){var r=Map(v);route.Items.Add(new RouteItem{ID=TextOf(r,"id"),Label=TextOf(r,"label")});}for(int i=0;i<route.Items.Count;i++)if(((RouteItem)route.Items[i]).ID==selected)route.SelectedIndex=i;route.Tag=key;}
+   if((string)route.Tag!=key){route.Items.Clear();route.Items.Add(new RouteItem{ID="auto",Label="Автоматически · сохранённый порядок"});foreach(var v in AsArray(snapshot["routes"])){var r=Map(v);route.Items.Add(new RouteItem{ID=TextOf(r,"id"),Label=TextOf(r,"label")});}for(int i=0;i<route.Items.Count;i++)if(((RouteItem)route.Items[i]).ID==selected)route.SelectedIndex=i;route.Tag=key;}
   }
-  var lines=new List<string>();object ranking;if(engine.TryGetValue("ranking",out ranking))foreach(var v in AsArray(ranking)){var r=Map(v);lines.Add(TextOf(r,"label")+" · "+TextOf(r,"download_mbps","0")+" Мбит/с · сбоев "+TextOf(r,"losses","0")+"/3");}if(LastReport!="")lines.Add(LastReport);resultText.Text=lines.Count>0?String.Join("\n",lines.ToArray()):"После подключения здесь появятся результаты выбора маршрута.";
+  var lines=new List<string>();object ranking;if(engine.TryGetValue("ranking",out ranking))foreach(var v in AsArray(ranking)){var r=Map(v);lines.Add(TextOf(r,"label")+" · "+TextOf(r,"download_mbps","0")+" Мбит/с");}if(LastReport!="")lines.Add(LastReport);resultText.Text=lines.Count>0?String.Join("\n",lines.ToArray()):"После подключения здесь появятся результаты выбора маршрута.";
  }
  public void SetTokenEditing(string token){TokenEditing=true;if(page!=0)Navigate(0);tokenInput.Text=token;ShowElement(tokenInput,true);ShowElement(tokenHint,false);tokenSave.Content="Подтвердить";tokenInput.Focus();}
  public void SavedToken(){TokenEditing=false;if(tokenInput!=null)tokenInput.Clear();}
