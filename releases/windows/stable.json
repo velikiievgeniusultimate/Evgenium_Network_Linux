@@ -1,11 +1,11 @@
 {
   "schema": 2,
-  "version": "0.2.2",
-  "installer_url": "https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-v0.2.2/Evgenium-Windows-0.2.2-x64-Setup.exe",
-  "installer_sha256": "e3cd2f7d071bb36577854018dcb6de9d256ed0fa8002e07ff1f5b76c4053a0f5",
-  "installer_size": 14406765,
-  "release_url": "https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/tag/windows-v0.2.2",
-  "source_commit": "3950c56b2b3162a5814a46fce328e7da06a2a808",
+  "version": "0.2.3",
+  "installer_url": "https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/windows-v0.2.3/Evgenium-Windows-0.2.3-x64-Setup.exe",
+  "installer_sha256": "7fe9a908e1ca686bfdb06a2e82c982f2cf3b9df066c5adcb2f8424e7280750c3",
+  "installer_size": 14410869,
+  "release_url": "https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/tag/windows-v0.2.3",
+  "source_commit": "c6f7a6dbdeb1981fb2b17353e6927650b4b0ec0f",
   "architecture": "x64",
   "minimum_windows": "Windows 10 1809 or Windows 11 x64; administrator account with UAC"
 }
