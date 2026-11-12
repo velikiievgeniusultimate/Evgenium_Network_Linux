@@ -14,8 +14,9 @@ class Candidate(unittest.TestCase):
    new=ranking.Ranking(path,[x['id'] for x in t.CANDIDATES]);self.assertFalse(new.load())
    new.build({x:{'ok':True,'download_mbps':100 if x=='ee-evgt' else 10,'upload_mbps':100 if x=='ee-evgt' else 10} for x in new.ids})
    self.assertEqual(new.candidates()[0],'ee-evgt')
-   for _ in range(3):new.lose('ee-evgt','path_health_failed')
-   self.assertNotIn('ee-evgt',new.candidates())
+   fresh=ranking.Ranking(path,new.ids);self.assertTrue(fresh.load())
+   self.assertEqual(fresh.candidates()[0],'ee-evgt')
+   self.assertNotIn('ee-udp',fresh.candidates())
  def test_binary_download_is_pinned_and_cached(self):
   blob=b'test executable';digest=hashlib.sha256(blob).hexdigest()
   with tempfile.TemporaryDirectory() as folder,patch.object(t,'ROOT',Path(folder)),patch.object(t.platform,'machine',return_value='x86_64'),patch.object(t,'EVGT_ASSETS',{'x86_64':('amd64',digest)}),patch.object(t.urllib.request,'urlopen',return_value=io.BytesIO(blob)) as fetch:

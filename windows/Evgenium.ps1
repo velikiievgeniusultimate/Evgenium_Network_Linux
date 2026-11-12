@@ -147,7 +147,11 @@ function Read-EngineStatus {
     $path=Join-Path $script:EngineData 'status.json'
     if (Test-Path -LiteralPath $path) {
         Assert-NoReparse $path
-        try { return (Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json) } catch {}
+        try {
+            $value=Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            if (!$value.PSObject.Properties['config_revision']) {$value | Add-Member -NotePropertyName config_revision -NotePropertyValue ''}
+            return $value
+        } catch {}
     }
     return [pscustomobject]@{state='disconnected';message='VPN отключён.';ranking=@();route='';protected=$false;updated=0;restarts=0}
 }

@@ -1,39 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 package org.strongswan.android.evgenium;
-import java.util.*;
-/** A stable order is preserved until an explicit new measurement. */
+/** Compatibility facade for quality scoring; historical losses have no effect. */
 public final class RankingPolicy {
-  private final List<Integer> order = new ArrayList<>();
-  private final double[] scores;
-  private final int[] losses;
-  public RankingPolicy(double[] score, int[] loss) {
-    if (score.length != loss.length)
-      throw new IllegalArgumentException("ranking_size");
-    scores = score.clone();
-    losses = loss.clone();
-    for (int i = 0; i < scores.length; i++) {
-      if (!Double.isFinite(scores[i]) || scores[i] < 0)
-        scores[i] = 0;
-      order.add(i);
-    }
-    order.sort((a, b) -> Double.compare(scores[b], scores[a]));
+  private final int[] order;
+  public RankingPolicy(double[] scores,int[] ignoredLosses) {
+    if(scores.length!=ignoredLosses.length) throw new IllegalArgumentException("ranking_size");
+    order=ConnectionCandidates.order(scores);
   }
-  public int first() {
-    for (int i : order)
-      if (losses[i] < 3 && scores[i] > 0)
-        return i;
-    return -1;
-  }
-  public int after(int route) {
-    boolean passed = false;
-    for (int i : order) {
-      if (i == route) {
-        passed = true;
-        continue;
-      }
-      if (passed && losses[i] < 3)
-        return i;
-    }
-    return -1;
-  }
+  public int first() { return ConnectionCandidates.initial(order,-1); }
+  public int after(int route) { return ConnectionCandidates.after(order,route); }
 }

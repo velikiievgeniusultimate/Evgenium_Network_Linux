@@ -11,7 +11,7 @@ for path in (root/'overlay').rglob('*'):
  if path.is_file():target=main/path.relative_to(root/'overlay');target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(path,target)
 for path in (root/'tests').rglob('*.java'):
  target=app/'src/test/java'/path.relative_to(root/'tests');target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(path,target)
-f=app/'build.gradle';s=original(f).replace('applicationId "org.strongswan.android"','applicationId "'+package+'"').replace('minSdkVersion 21','minSdkVersion 26').replace('versionCode 96','versionCode 18').replace('versionName "2.6.2"','versionName "0.2.7-beta"');abis=os.environ.get('EVG_ANDROID_ABIS','arm64-v8a armeabi-v7a x86_64').split();assert set(abis)<= {'arm64-v8a','armeabi-v7a','x86_64'};s=s.replace("arguments '-j' + Runtime.runtime.availableProcessors()","arguments '-j4'\n                abiFilters "+', '.join(repr(x) for x in abis));s=s.replace("dependencies {", "dependencies {\n    implementation 'org.conscrypt:conscrypt-android:2.7.0'")
+f=app/'build.gradle';s=original(f).replace('applicationId "org.strongswan.android"','applicationId "'+package+'"').replace('minSdkVersion 21','minSdkVersion 26').replace('versionCode 96','versionCode 19').replace('versionName "2.6.2"','versionName "0.2.8-beta"');abis=os.environ.get('EVG_ANDROID_ABIS','arm64-v8a armeabi-v7a x86_64').split();assert set(abis)<= {'arm64-v8a','armeabi-v7a','x86_64'};s=s.replace("arguments '-j' + Runtime.runtime.availableProcessors()","arguments '-j4'\n                abiFilters "+', '.join(repr(x) for x in abis));s=s.replace("dependencies {", "dependencies {\n    implementation 'org.conscrypt:conscrypt-android:2.7.0'")
 s=s.replace('defaultConfig {', 'defaultConfig {\n        ndk { abiFilters '+', '.join(repr(x) for x in abis)+' }', 1)
 f.write_text(s)
 f=main/'jni/Android.mk';f.write_text(original(f).replace('-DHAVE_STDBOOL_H', '-DHAVE_STDBOOL_H -DHAVE_SIGWAITINFO'))
@@ -74,7 +74,7 @@ s=s.replace('VpnProfile profile = null;', '''if (VPN_SERVICE_ACTION.equals(inten
                         .setContentText("Восстанавливаю защищённое подключение")
                         .setOngoing(true).build());
                 Intent engine = new Intent(this, org.strongswan.android.evgenium.Engine.class)
-                    .putExtra("command", "connect").putExtra("route",
+                    .putExtra("command", "connect").putExtra("route-list-schema", getSharedPreferences("evgenium",0).getBoolean("simple-route-indices",false) ? 2 : 1).putExtra("route",
                         getSharedPreferences("evgenium",0).getInt("wanted-route",-1));
                 startForegroundService(engine);
                 return START_STICKY;
@@ -90,7 +90,7 @@ s=s.replace('setNextProfile(null);\n\t}\n\n\t@Override\n\tpublic void onDestroy(
 s=s.replace('new Intent(getApplicationContext(), MainActivity.class)', 'new Intent(getApplicationContext(), org.strongswan.android.evgenium.HomeActivity.class)')
 s=s.replace('new Intent(getApplicationContext(), VpnProfileControlActivity.class)', 'new Intent(getApplicationContext(), org.strongswan.android.evgenium.HomeActivity.class)')
 f.write_text(s)
-# Engine owns route retries and the three-loss budget for Evgenium profiles.
+# Engine owns ordered route retries for Evgenium profiles.
 f=main/'java/org/strongswan/android/logic/VpnStateService.java';s2=original(f)
 s2=s2.replace('mRetryTimeout = mRetryIn = mTimeoutProvider.getTimeout(error);', 'if (mProfile != null && org.strongswan.android.evgenium.Credentials.ALIAS.equals(mProfile.getUserCertificateAlias())) { resetRetryTimer(); return; }\n        mRetryTimeout = mRetryIn = mTimeoutProvider.getTimeout(error);')
 f.write_text(s2)
@@ -117,4 +117,4 @@ generated=src.parent/'strongswan-6.0.3'
 for name in ('Android.common.mk','src/libstrongswan/crypto/proposal/proposal_keywords_static.c','src/libstrongswan/crypto/proposal/proposal_keywords_static.h','src/libstrongswan/asn1/oid.c','src/libstrongswan/asn1/oid.h','src/libstrongswan/settings/settings_parser.c','src/libstrongswan/settings/settings_parser.h','src/libstrongswan/settings/settings_lexer.c','src/libstrongswan/settings/settings_lexer.h'):
  source=generated/name
  if source.exists():shutil.copyfile(source,src/name)
-print('Prepared Evgenium Android 0.2.7 beta')
+print('Prepared Evgenium Android 0.2.8 beta')

@@ -20,8 +20,8 @@ import javax.net.ssl.HttpsURLConnection;
  * displays state.
  */
 public class Engine extends Service {
-  public static final String[] IDS = {"ru-udp", "ee-udp", "ee-tls", "ee-evgt", "ee-evgt-ru"};
-  public static final String[] LABELS = {"HSVDS → Эстония", "Эстония · UDP", "Эстония · TLS",
+  public static final String[] IDS = {"ru-udp", "ee-tls", "ee-evgt", "ee-evgt-ru"};
+  public static final String[] LABELS = {"HSVDS → Эстония", "Эстония · TLS",
       "Эстония · EvgeniumTunnel", "EvgeniumTunnel · HSVDS → Эстония"};
   public static volatile String status = "Не подключено";
   public static volatile String current = "";
@@ -51,6 +51,7 @@ public class Engine extends Service {
   private final StableRoutePolicy stableRoute = new StableRoutePolicy();
   private volatile Network retryNetwork;
   private int wantedRoute = -1;
+  private boolean migratedIndicesNow;
   private final VpnStateService.VpnStateListener nativeStateListener = () -> {
     VpnStateService v = vpn;
     if (v == null || v.getState() != VpnStateService.State.CONNECTED)
@@ -70,6 +71,13 @@ public class Engine extends Service {
   public void onCreate() {
     super.onCreate();
     instance = this;
+    android.content.SharedPreferences prefs=getSharedPreferences("evgenium",0);
+    if(!prefs.getBoolean("simple-route-indices",false)) {
+      migratedIndicesNow=true;
+      int old=prefs.getInt("wanted-route",-1);
+      prefs.edit().putInt("wanted-route",ConnectionCandidates.migrateLegacyIndex(old))
+          .putBoolean("simple-route-indices",true).commit();
+    }
     // Old hints were written after a single exit probe; never promote them by migration.
     android.content.SharedPreferences.Editor migration = getSharedPreferences("evgenium", 0).edit();
     for (String key : getSharedPreferences("evgenium", 0).getAll().keySet())
@@ -100,7 +108,7 @@ public class Engine extends Service {
       if (!getSharedPreferences("evgenium", 0).getBoolean("connection-wanted", false)) {
         stopSelf(); return START_NOT_STICKY;
       }
-      i = new Intent().putExtra("command", "connect").putExtra("route",
+      i = new Intent().putExtra("command", "connect").putExtra("route-list-schema",2).putExtra("route",
           getSharedPreferences("evgenium", 0).getInt("wanted-route", -1));
     }
     if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
@@ -116,7 +124,10 @@ public class Engine extends Service {
         labWake.release();
     }
     String cmd = i.getStringExtra("command");
-    int route = i.getIntExtra("route", -1);
+    int rawRoute=i.getIntExtra("route", -1);
+    final int route=migratedIndicesNow && i.getIntExtra("route-list-schema",1)<2
+        ? ConnectionCandidates.migrateLegacyIndex(rawRoute) : rawRoute;
+    migratedIndicesNow=false;
     if ("stop".equals(cmd)) {
       connectionGuard.cancel();
       stableRoute.reset();
@@ -272,9 +283,7 @@ public class Engine extends Service {
           if (!connectionGuard.run(mine, () -> {
             if (cancel || instance != this) return;
             verified = true;
-            if (stableRoute.healthy(healthSession, stabilitySession(mine), SystemClock.elapsedRealtime()))
-              getSharedPreferences("evgenium", 0).edit()
-                  .putInt("last-stable-" + operationKind, healthSession.route).apply();
+
             set("Подключено: " + label(current));
           })) throw new InterruptedException();
           return;
@@ -300,7 +309,6 @@ public class Engine extends Service {
               noRoutes();
               return;
             }
-            lose(current);
             int next = next(current);
             record
             ("failover", current, new JSONObject(), safe(e));
@@ -359,11 +367,8 @@ public class Engine extends Service {
       }
       p.setName(LABELS[route]);
       p.setVpnType(VpnType.IKEV2_EAP_TLS);
-      p.setGateway(route == 0 ? Credentials.RU : route == 1 ? Credentials.EE : "127.0.0.1");
-      int directPort = 443;
-      if ((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
-        directPort = getSharedPreferences("evgenium", 0).getInt("lab-udp-port", 443);
-      p.setPort(route == 0 ? 24550 : route == 1 ? directPort : 24573);
+      p.setGateway(route == 0 ? Credentials.RU : "127.0.0.1");
+      p.setPort(route == 0 ? 24550 : 24573);
       p.setRemoteId(route == 0 ? Credentials.RU : Credentials.EE);
       p.setLocalId(credentials.getString("identity"));
       p.setUserCertificateAlias(Credentials.ALIAS);
@@ -460,7 +465,7 @@ public class Engine extends Service {
     UUID profile = activeProfile.getUUID();
     if (!expected.equals(profile)) return null;
     String carrier = TunnelCarrier.stabilityToken();
-    if (carrier == null || (route >= 2 && carrier.isEmpty())) return null;
+    if (carrier == null || (route >= 1 && carrier.isEmpty())) return null;
     return new StableRoutePolicy.Session(mine, v.getConnectionID(), route,
         profile.toString(), connectedNetwork, carrier);
   }
@@ -491,15 +496,12 @@ public class Engine extends Service {
       }
       return;
     }
-    ensureRanking();
-    if (explicitOrNewNetwork && best() < 0) releaseQuarantine();
-    int stable = getSharedPreferences("evgenium", 0).getInt("last-stable-" + operationKind, -1);
-    connectRanked(ConnectionCandidates.initial(candidates(), stable));
+    if(!hasRanking()) { rank(); return; }
+    connectRanked(best());
   }
   private void connectRanked(int route) throws Exception { connectRanked(route, -1); }
   private void connectRanked(int first, int exclude) throws Exception {
-    // Freeze this attempt order. Recording a loss/removing the stable hint must
-    // not reorder the iterator and skip an untried fallback, or retry a failure.
+    // Freeze this pass: try each saved route once, without changing its place.
     for (int route : ConnectionCandidates.attemptOrder(candidates(), first, exclude)) {
       if (cancel) throw new InterruptedException();
       try {
@@ -509,7 +511,6 @@ public class Engine extends Service {
         if (cancel)
           throw e;
         checkNetwork();
-        lose(IDS[route]);
         record
         ("candidate_failed", IDS[route], new JSONObject(), safe(e));
       }
@@ -519,11 +520,11 @@ public class Engine extends Service {
   }
   private void rank() throws Exception {
     JSONObject ranking =
-        new JSONObject().put("created", System.currentTimeMillis()).put("network", operationKind)
+        new JSONObject().put("schema",2).put("created", System.currentTimeMillis()).put("network", operationKind)
             .put("run_id", diagnosticRun);
     JSONArray results = new JSONArray();
     for (int i = 0; i < IDS.length && !cancel; i++) {
-      JSONObject r = new JSONObject().put("id", IDS[i]).put("losses", 0);
+      JSONObject r = new JSONObject().put("id", IDS[i]);
       long start = SystemClock.elapsedRealtime();
       try {
         connectRoute(i);
@@ -555,7 +556,7 @@ public class Engine extends Service {
           checkNetwork();
           if (!Credentials.EE.equals(ExitProbe.get(this)))
             throw benchmark;
-          r.put("score", 0.001).put("losses", 1).put("warning", "speed_test_unavailable:" + safe(benchmark));
+          r.put("score", 0.001).put("warning", "speed_test_unavailable:" + safe(benchmark));
           m = null;
         }
         if (m != null) {
@@ -564,13 +565,13 @@ public class Engine extends Service {
               load.optInt("tcp_attempts"), load.optInt("tcp_failed"));
           r.put("metrics", m).put("score", RouteQuality.score(m.getDouble("down"),
               m.getDouble("up"), m.getDouble("latency"), degraded));
-          if (degraded) r.put("losses", 1).put("warning", "network_degraded_under_load");
+          if (degraded) r.put("warning", "network_degraded_under_load");
         }
       } catch (Exception e) {
         if (cancel)
           throw e;
         checkNetwork();
-        r.put("score", 0).put("losses", 1).put("error", safe(e));
+        r.put("score", 0).put("error", safe(e));
       }
       checkNetwork();
       r.put("elapsed_ms", SystemClock.elapsedRealtime() - start);
@@ -580,16 +581,16 @@ public class Engine extends Service {
     }
     if (!cancel) {
       checkNetwork();
-      ranking.put("paths", results);
+      java.util.List<JSONObject> ordered=new java.util.ArrayList<>();
+      for(int i=0;i<results.length();i++) ordered.add(results.getJSONObject(i));
+      ordered.sort((a,b)->Double.compare(b.optDouble("score",0),a.optDouble("score",0)));
+      JSONArray sorted=new JSONArray();for(JSONObject item:ordered) sorted.put(item);
+      ranking.put("paths", sorted);
       saveRanking(ranking);
       // Explicit measurement should select its new winner, not the old hint;
       // individual measurement connections never update last-stable.
       getSharedPreferences("evgenium", 0).edit().remove("last-stable-" + operationKind).apply();
-      boolean successful = false;
-      for (int i = 0; i < results.length(); i++)
-        successful |= results.getJSONObject(i).optDouble("score", 0) > 0;
       if (wantedRoute >= 0) connectWanted();
-      else if (!successful || best() < 0) noRoutes();
       else connectRanked(best());
     }
   }
@@ -811,7 +812,9 @@ public class Engine extends Service {
   }
   private boolean hasRanking() {
     try {
-      JSONArray paths = ranking().getJSONArray("paths");
+      JSONObject stored=ranking();
+      if(stored.optInt("schema")!=2 || stored.optBoolean("provisional")) return false;
+      JSONArray paths = stored.getJSONArray("paths");
       java.util.Set<String> found = new java.util.HashSet<>();
       for (int i = 0; i < paths.length(); i++) found.add(paths.getJSONObject(i).getString("id"));
       return paths.length() == IDS.length
@@ -820,78 +823,22 @@ public class Engine extends Service {
       return false;
     }
   }
-  private void ensureRanking() throws Exception {
-    if (hasRanking()) {
-      JSONObject r = ranking();
-      JSONArray paths = r.getJSONArray("paths");
-      boolean changed = false;
-      long now = System.currentTimeMillis();
-      for (int i = 0; i < paths.length(); i++) {
-        JSONObject p = paths.getJSONObject(i);
-        int stored = p.optInt("losses", 0);
-        int effective = ConnectionCandidates.effectiveLosses(stored, p.optLong("quarantine_at", 0), now);
-        if (stored != effective) {
-          p.put("losses", effective); p.remove("quarantine_at"); changed = true;
-        }
-      }
-      if (changed) saveRanking(r);
-      return;
+  private int[] candidates() throws Exception {
+    JSONArray paths=ranking().getJSONArray("paths");
+    double[] scores=new double[IDS.length];
+    for(int i=0;i<paths.length();i++) {
+      JSONObject p=paths.getJSONObject(i);
+      int j=routeIndex(p.optString("id"));
+      if(j>=0) scores[j]=p.optDouble("score",0);
     }
-    JSONArray paths = new JSONArray();
-    for (String id : IDS) paths.put(new JSONObject().put("id", id).put("score", 0).put("losses", 0));
-    saveRanking(new JSONObject().put("created", System.currentTimeMillis()).put("network", operationKind)
-        .put("provisional", true).put("paths", paths));
-  }
-  private void releaseQuarantine() throws Exception {
-    JSONObject r = ranking();
-    JSONArray paths = r.getJSONArray("paths");
-    for (int i = 0; i < paths.length(); i++) {
-      JSONObject p = paths.getJSONObject(i);
-      p.put("losses", 0); p.remove("quarantine_at");
-    }
-    saveRanking(r);
-  }
-  private int[] candidates() throws Exception { return candidates(-1); }
-  private int[] candidates(int include) throws Exception {
-    JSONArray paths = ranking().getJSONArray("paths");
-    double[] scores = new double[IDS.length];
-    int[] losses = new int[IDS.length];
-    long now = System.currentTimeMillis();
-    for (int i = 0; i < paths.length(); i++) {
-      JSONObject p = paths.getJSONObject(i);
-      for (int j = 0; j < IDS.length; j++) if (IDS[j].equals(p.optString("id"))) {
-        scores[j] = p.optDouble("score", 0);
-        losses[j] = j == include ? 0 : ConnectionCandidates.effectiveLosses(p.optInt("losses", 0), p.optLong("quarantine_at", 0), now);
-      }
-    }
-    return ConnectionCandidates.order(scores, losses,
-        getSharedPreferences("evgenium", 0).getInt("last-stable-" + operationKind, -1));
+    return ConnectionCandidates.order(scores);
   }
   private int best() {
-    try { int[] order = candidates(); return order.length == 0 ? -1 : order[0]; }
-    catch (Exception error) { return -1; }
-  }
-  private void lose(String id) throws Exception {
-    forgetStable(id);
-    ensureRanking();
-    JSONObject r = ranking();
-    JSONArray paths = r.getJSONArray("paths");
-    long now = System.currentTimeMillis();
-    for (int i = 0; i < paths.length(); i++) {
-      JSONObject p = paths.getJSONObject(i);
-      if (id.equals(p.getString("id"))) {
-        int previous = ConnectionCandidates.effectiveLosses(p.optInt("losses", 0), p.optLong("quarantine_at", 0), now);
-        int losses = Math.min(3, previous + 1);
-        p.put("losses", losses);
-        if (losses >= 3) p.put("quarantine_at", now);
-        else p.remove("quarantine_at");
-      }
-    }
-    saveRanking(r);
+    try { return ConnectionCandidates.initial(candidates(),-1); }
+    catch(Exception error) { return -1; }
   }
   private int next(String id) throws Exception {
-    for (int route : candidates()) if (!IDS[route].equals(id)) return route;
-    return -1;
+    return ConnectionCandidates.after(candidates(),routeIndex(id));
   }
   private static final ScheduledExecutorService httpDeadlines =
       Executors.newScheduledThreadPool(2, r -> {

@@ -26,6 +26,6 @@ public class TransferHealthTest {
   assertFalse(RouteQuality.degraded(false,9,1));assertFalse(RouteQuality.degraded(false,0,0));
   double poor=RouteQuality.score(200,200,10,true),slow=RouteQuality.score(.001,.001,500,false);
   assertTrue(slow>poor);assertEquals(1,new RankingPolicy(new double[]{poor,slow},new int[]{1,0}).first());
-  assertEquals(-1,new RankingPolicy(new double[]{poor},new int[]{3}).first());
+  assertEquals(0,new RankingPolicy(new double[]{poor},new int[]{3}).first());
  }
 }

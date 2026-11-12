@@ -8,29 +8,33 @@ import tls_transport as tls
 class Ranking(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
-  self.r=r.Ranking(Path(self.tmp.name)/'ranking.json',('ru-udp','ee-udp','ee-tls'))
-  self.m={'ru-udp':{'ok':True,'download_mbps':100,'upload_mbps':10},'ee-udp':{'ok':True,'download_mbps':70,'upload_mbps':70},'ee-tls':{'ok':False}}
+  self.r=r.Ranking(Path(self.tmp.name)/'ranking.json',('ru-udp','ee-tls','ee-evgt-ru'))
+  self.m={'ru-udp':{'ok':True,'download_mbps':100,'upload_mbps':10},'ee-tls':{'ok':True,'download_mbps':70,'upload_mbps':70},'ee-evgt-ru':{'ok':False}}
   self.r.build(self.m)
- def test_bidirectional_score(self):self.assertEqual(self.r.candidates()[0],'ee-udp')
- def test_bootstrap_tries_ru_without_inventing_measurements(self):
-  self.r.bootstrap()
-  self.assertEqual(self.r.candidates(),['ru-udp','ee-udp','ee-tls'])
-  for entry in self.r.data['entries'].values():
-   self.assertEqual(entry,{'score':0,'losses':0})
-  self.assertTrue(r.Ranking(self.r.path,self.r.ids).load())
- def test_bootstrap_recovers_exhausted_routes_without_changing_ids(self):
-  for identity in self.r.ids:
-   for _ in range(3):self.r.lose(identity,'connection_failed')
-  self.assertEqual(self.r.candidates(),[])
-  self.r.bootstrap();self.assertEqual(self.r.candidates()[0],'ru-udp')
- def test_losses_persist_and_only_repair_resets(self):
-  for _ in range(3):self.r.lose('ee-udp','path_health_failed')
-  fresh=r.Ranking(self.r.path,self.r.ids);self.assertTrue(fresh.load())
-  self.assertNotIn('ee-udp',fresh.candidates());self.assertEqual(fresh.candidates()[0],'ru-udp')
-  fresh.build(self.m);self.assertEqual(fresh.candidates()[0],'ee-udp')
- def test_next_is_lower_rank(self):self.assertEqual(self.r.next_after('ee-udp'),'ru-udp')
+ def test_bidirectional_score(self):self.assertEqual(self.r.candidates()[0],'ee-tls')
+ def test_failed_measurement_remains_a_fallback(self):
+  self.assertEqual(self.r.candidates(),['ee-tls','ru-udp','ee-evgt-ru'])
+ def test_repeated_passes_and_restarts_do_not_remove_routes(self):
+  original=self.r.path.read_bytes()
+  for _ in range(20):
+   fresh=r.Ranking(self.r.path,self.r.ids);self.assertTrue(fresh.load())
+   self.assertEqual(fresh.candidates()[0],'ee-tls')
+   self.assertEqual(fresh.next_after('ee-tls'),'ru-udp')
+   self.assertEqual(fresh.next_after('ru-udp'),'ee-evgt-ru')
+   self.assertIsNone(fresh.next_after('ee-evgt-ru'))
+  self.assertEqual(self.r.path.read_bytes(),original)
+ def test_explicit_remeasurement_replaces_order(self):
+  self.r.build({k:{'ok':True,'download_mbps':10 if k=='ru-udp' else 1,'upload_mbps':10 if k=='ru-udp' else 1} for k in self.r.ids})
+  self.assertEqual(self.r.candidates()[0],'ru-udp')
+ def test_bootstrap_is_not_saved_as_a_measurement(self):
+  self.r.path.unlink();self.r.bootstrap()
+  self.assertFalse(self.r.path.exists());self.assertEqual(self.r.candidates(),list(self.r.ids))
+ def test_old_banned_ranking_requires_one_new_measurement(self):
+  self.r.data['schema']=1
+  for e in self.r.data['entries'].values():e['losses']=3
+  self.r.save();self.assertFalse(r.Ranking(self.r.path,self.r.ids).load())
  def test_bad_persistent_data_rebuilds(self):
-  for data in ([],{}, {'schema':1,'order':list(self.r.ids),'entries':dict.fromkeys(self.r.ids,None)}):
+  for data in ([],{}, {'schema':2,'order':list(self.r.ids),'entries':dict.fromkeys(self.r.ids,None)}):
    self.r.path.write_text(json.dumps(data));self.assertFalse(self.r.load())
  def test_nonfinite_rejected(self):
   self.r.data['entries']['ru-udp']['score']=float('nan');self.r.save();self.assertFalse(self.r.load())

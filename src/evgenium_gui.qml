@@ -571,6 +571,48 @@ ctx.restore()
                                 C.Label { text: "Один токен на человека — для всех его устройств."; color: root.textMuted }
                             }
                         }
+                        Card {
+                            Layout.fillWidth: true
+                            implicitHeight: routeBody.implicitHeight + 40
+                            ColumnLayout {
+                                id: routeBody
+                                anchors.fill: parent
+                                anchors.margins: 20
+                                spacing: 12
+                                C.Label { text: "Маршрут"; font.pixelSize: 17; font.bold: true; color: root.textMain }
+                                C.ComboBox {
+                                    id: routePicker
+                                    Layout.fillWidth: true
+                                    enabled: !root.busy && !root.state.connecting
+                                    property var choices: [{id:"auto",label:"Автоматически"}].concat((root.tunnel.routes || {}).choices || [])
+                                    model: choices
+                                    textRole: "label"
+                                    currentIndex: {
+                                        var selected = (root.tunnel.routes || {}).selected || "auto"
+                                        for (let i=0;i<choices.length;i++) if (choices[i].id === selected) return i
+                                        return 0
+                                    }
+                                    onActivated: root.action({action:"route",value:choices[currentIndex].id})
+                                }
+                                C.Label { text: "Автоматически: один замер, затем подключение по сохранённому порядку. Каждый новый запуск — с первого места. «Восстановить» повторяет замер."; wrapMode: Text.Wrap; Layout.fillWidth: true; color: root.textMuted }
+                                Repeater {
+                                    model: (root.tunnel.routes || {}).order || []
+                                    delegate: C.Label {
+                                        required property string modelData
+                                        required property int index
+                                        text: {
+                                            var choices = (root.tunnel.routes || {}).choices || []
+                                            var label = modelData
+                                            for (let i=0;i<choices.length;i++) if (choices[i].id === modelData) label=choices[i].label
+                                            return (index+1)+". "+label
+                                        }
+                                        Layout.fillWidth: true
+                                        wrapMode: Text.Wrap
+                                        color: root.textMuted
+                                    }
+                                }
+                            }
+                        }
                         FlatButton { label: "Отчёт для поддержки"; enabledButton: !root.busy && !root.state.connecting; onClicked: root.action({action:"report-preview"},function(reply){
                             var report=JSON.parse(reply.output);root.reportId=report.report_id;root.reportText=JSON.stringify(report,null,2);reportConsent.checked=false;supportDialog.open()
                         }) }

@@ -3,35 +3,34 @@ package org.strongswan.android.evgenium;
 import org.junit.Test;
 import static org.junit.Assert.*;
 public class ConnectionRecoveryTest {
-  @Test public void firstInstallCanTryRoutesWithoutAnySpeedScores() {
-    assertArrayEquals(new int[]{0,4,3,1,2}, ConnectionCandidates.order(new double[5], new int[5], -1));
+  @Test public void legacyManualSelectionKeepsItsTunnelIdentity() {
+    assertEquals(-1,ConnectionCandidates.migrateLegacyIndex(1));
+    assertEquals(1,ConnectionCandidates.migrateLegacyIndex(2));
+    assertEquals(2,ConnectionCandidates.migrateLegacyIndex(3));
+    assertEquals(3,ConnectionCandidates.migrateLegacyIndex(4));
+    assertEquals(0,ConnectionCandidates.migrateLegacyIndex(0));
+    assertEquals(-1,ConnectionCandidates.migrateLegacyIndex(-1));
   }
-  @Test public void lastStablePrecedesStaleSpeedScores() {
-    assertEquals(1, ConnectionCandidates.order(new double[5], new int[5], 1)[0]);
-    assertEquals(1, ConnectionCandidates.order(new double[]{0,0,0,20,5}, new int[5], 1)[0]);
-    assertEquals(3, ConnectionCandidates.order(new double[]{0,0,0,20,5}, new int[5], -1)[0]);
+  @Test public void measuredLeaderAlwaysStartsEachNewConnection() {
+    int[] order=ConnectionCandidates.order(new double[]{1,100,90,80});
+    assertEquals(1,ConnectionCandidates.initial(order,3));
+    assertEquals(1,ConnectionCandidates.initial(order,0));
   }
-  @Test public void failedOrInvalidMeasurementsStillHaveConnectionFallbacks() {
-    assertArrayEquals(new int[]{3,0,4,1,2}, ConnectionCandidates.order(
-        new double[]{Double.NaN, Double.POSITIVE_INFINITY, -2, 10, 0}, new int[5], -1));
+  @Test public void zeroAndInvalidMeasurementsRemainRetryableFallbacks() {
+    assertArrayEquals(new int[]{2,0,1,3},ConnectionCandidates.order(new double[]{Double.NaN,0,10,-1}));
   }
-  @Test public void quarantinedLeaderDoesNotHideTheRest() {
-    assertArrayEquals(new int[]{0,1,2}, ConnectionCandidates.order(
-        new double[]{10,5,1,20,30}, new int[]{0,0,0,3,3}, 4));
-    // Include current only when finding its successor after recording a loss.
-    assertEquals(0, ConnectionCandidates.after(ConnectionCandidates.order(
-        new double[]{10,5,1,20,30}, new int[]{0,0,0,0,3}, 4), 3));
-  }
-  @Test public void activeQuarantineIsBoundedAndLegacyBanIsNotPermanent() {
-    assertEquals(3, ConnectionCandidates.effectiveLosses(3, 1000, 120999));
-    assertEquals(0, ConnectionCandidates.effectiveLosses(3, 1000, 121000));
-    assertEquals(0, ConnectionCandidates.effectiveLosses(3, 0, 100));
-    assertEquals(0, ConnectionCandidates.effectiveLosses(3, 1000, 900));
-    assertEquals(2, ConnectionCandidates.effectiveLosses(2, 0, 100));
-  }
-  @Test public void allRoutesCanBeTemporarilyQuarantinedWithoutInventingSuccess() {
-    assertEquals(0, ConnectionCandidates.order(new double[]{1,2,3,4,5}, new int[]{3,3,3,3,3}, 4).length);
-    assertEquals(-1, ConnectionCandidates.after(new int[]{4,3}, 3));
+  @Test public void failoverWalksSavedOrderAndWrapsWithoutPenalties() {
+    int[] order=ConnectionCandidates.order(new double[]{10,20,30,40});
+    int route=3;
+    for(int cycle=0;cycle<10;cycle++) {
+      assertEquals(2,route=ConnectionCandidates.after(order,route));
+      assertEquals(1,route=ConnectionCandidates.after(order,route));
+      assertEquals(0,route=ConnectionCandidates.after(order,route));
+      assertEquals(3,route=ConnectionCandidates.after(order,route));
+    }
+    assertArrayEquals(new int[]{2,1,0,3},ConnectionCandidates.attemptOrder(order,2,-1));
+    assertArrayEquals(new int[]{2,1,0},ConnectionCandidates.attemptOrder(order,2,3));
+    assertEquals(-1,ConnectionCandidates.initial(new int[0],-1));
   }
   @Test public void outageRetriesHaveABoundedBackoff() {
     RecoveryPolicy p = new RecoveryPolicy(); p.start();
@@ -58,28 +57,5 @@ public class ConnectionRecoveryTest {
   @Test public void successResetsTheOutageBackoff() {
     RecoveryPolicy p = new RecoveryPolicy(); p.start(); p.failed(0); p.failed(5000);
     p.connected(); assertFalse(p.pending()); assertEquals(5000, p.failed(20000));
-  }
-  @Test public void newNetworkWithoutStableCacheTriesRuBeforeStaleDirectScores() {
-    int[] order=ConnectionCandidates.order(new double[]{1,100,90,80,10},new int[5],-1);
-    assertEquals(0,ConnectionCandidates.initial(order,-1));
-    assertEquals(4,ConnectionCandidates.initial(order,4));
-    // Explicit ranking still picks its measured winner; bootstrap applies only to connect.
-    assertEquals(1,order[0]);
-  }
-  @Test public void failedStableRouteDoesNotSkipCandidatesWhenHintIsRemoved() {
-    int[] order=ConnectionCandidates.order(new double[]{1,100,90,80,10},new int[5],4);
-    int[] attempts=ConnectionCandidates.attemptOrder(order,4,-1);
-    assertArrayEquals(new int[]{4,1,2,3,0},attempts);
-    // Removing preference/recording losses during the attempt cannot change this snapshot.
-    assertArrayEquals(new int[]{0,1,2,3,4},ConnectionCandidates.attemptOrder(
-        ConnectionCandidates.order(new double[]{1,100,90,80,10},new int[5],-1),0,-1));
-    assertArrayEquals(new int[]{0,1,2,3},ConnectionCandidates.attemptOrder(order,0,4));
-  }
-  @Test public void temporarilyQuarantinedRuIsNotForcedIntoBootstrap() {
-    int[] order=ConnectionCandidates.order(new double[5],new int[]{3,0,0,0,0},-1);
-    assertEquals(4,ConnectionCandidates.initial(order,-1));
-    assertArrayEquals(new int[]{4,3,1,2},ConnectionCandidates.attemptOrder(order,0,-1));
-    assertEquals(-1,ConnectionCandidates.initial(new int[0],-1));
-    assertEquals(0,ConnectionCandidates.attemptOrder(new int[0],-1,-1).length);
   }
 }

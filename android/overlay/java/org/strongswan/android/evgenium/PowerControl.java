@@ -11,6 +11,7 @@ final class PowerControl extends View {
   private boolean connected;
   PowerControl(Context c) {
     super(c);
+    setContentDescription("Включить VPN");
     setClickable(true);
     setFocusable(true);
     setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);

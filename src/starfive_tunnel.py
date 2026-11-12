@@ -37,7 +37,6 @@ IKE_PORT = 24550
 ENDPOINTS = (SERVER, '38.180.164.67')
 CANDIDATES = (
  {'id':'ru-udp','address':SERVER,'identity':SERVER,'port':24550,'tls':False,'label':'HSVDS → Эстония'},
- {'id':'ee-udp','address':'38.180.164.67','identity':'38.180.164.67','port':443,'tls':False,'label':'Эстония напрямую'},
  {'id':'ee-tls','address':'38.180.164.67','identity':'38.180.164.67','port':443,'tls':True,'label':'Эстония через TLS'},
  {'id':'ee-evgt','address':'38.180.164.67','identity':'38.180.164.67','port':443,'tls':False,'evgt':True,'label':'Эстония через EvgeniumTunnel'},
  {'id':'ee-evgt-ru','address':'38.180.164.67','identity':'38.180.164.67','port':443,'tls':False,'evgt':True,'transport_address':SERVER,'transport_port':24579,'label':'EvgeniumTunnel · HSVDS → Эстония'},
@@ -540,6 +539,24 @@ def stage(phase, message, progress, **fields):
         except (OSError,ValueError,TypeError):pass
 
 
+def selected_route():
+    try:value=json.loads((ROOT/'selection.json').read_text()).get('route','auto')
+    except (OSError,ValueError,AttributeError):value='auto'
+    return value if value in {'auto',*(c['id'] for c in CANDIDATES)} else 'auto'
+
+
+def select_route(value):
+    if value not in {'auto',*(c['id'] for c in CANDIDATES)}:raise ValueError('Неизвестный маршрут.')
+    write(ROOT/'selection.json',json.dumps({'route':value}))
+
+
+def route_choices():
+    ranking=rank_api.Ranking(ROOT/'ranking.json',[c['id'] for c in CANDIDATES]) if rank_api else None
+    order=ranking.candidates() if ranking and ranking.load() else []
+    return {'selected':selected_route(),'choices':[{'id':c['id'],'label':c['label']} for c in CANDIDATES],
+            'order':order,'entries':ranking.data['entries'] if order else {}}
+
+
 def status():
     data = saved()
     running = command(['systemctl', 'is-active', '--quiet', UNIT], check=False, timeout=2).returncode == 0
@@ -550,7 +567,7 @@ def status():
     token_info = token_status()
     return {'phase': 'off', 'message': ('Токен сохранён. Нажмите «Подключить».' if token_info['has_token'] else 'Введите и подтвердите токен клиента.'),
             'progress': 0, 'active': False, **public, 'running': running,
-            **token_info, **device_status(), 'isolated': False, 'full_device': True, 'guard': full_guard_active(), 'protocol': 'IKEv2 → Эстония'}
+            **token_info, **device_status(), 'routes':route_choices(), 'isolated': False, 'full_device': True, 'guard': full_guard_active(), 'protocol': 'IKEv2 → Эстония'}
 
 
 @contextlib.contextmanager
@@ -939,7 +956,7 @@ def save_token(token):
     stage('off', 'Токен сохранён. Нажмите «Подключить».', 0, active=False, metrics={})
 
 
-def connect(token='', repair=False):
+def connect(token='', repair=False, restart=False):
     ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     if token:
         save_token(token)
@@ -981,7 +998,7 @@ WantedBy=multi-user.target
     command(['systemctl', 'enable', recovery])
     command(['systemctl','reset-failed',UNIT],check=False)
     stage('starting' , 'Готовлю подключение в Эстонию.', 2, active=False, retry=0, error_code='')
-    command(['systemctl', 'restart' if repair else 'start', UNIT])
+    command(['systemctl', 'restart' if repair or restart else 'start', UNIT])
     print('VPN запускается.',flush=True)
 
 
@@ -1132,9 +1149,9 @@ def worker():
         sync_device_name()
         cleanup()
         loaded=rank.load()
-        rebuild=(ROOT/'recalibrate').exists()
-        if not rebuild and (not loaded or not rank.candidates()):
-            rank.bootstrap()
+        selected=selected_route()
+        rebuild=(ROOT/'recalibrate').exists() or (selected=='auto' and not loaded)
+        if not loaded:rank.bootstrap()
         if rebuild:
             measurements={}
             for i,candidate in enumerate(CANDIDATES):
@@ -1158,7 +1175,7 @@ def worker():
             rank.build(measurements)
             (ROOT/'recalibrate').unlink(missing_ok=True)
         candidates={x['id']:x for x in CANDIDATES}
-        current=next(iter(rank.candidates()),None)
+        current=selected if selected!='auto' else next(iter(rank.candidates()),None)
         while current and not STOP:
             candidate=candidates[current]
             try:
@@ -1208,9 +1225,8 @@ def worker():
                     offline=carrier.exists() and carrier.read_text().strip()=='0'
                 except (OSError,RuntimeError):offline=True
                 if not offline:
-                    rank.lose(current,reason)
-                    following=rank.next_after(current)
-                    current=following or next(iter(rank.candidates()),None)
+                    if selected=='auto':
+                        current=rank.next_after(current) or next(iter(rank.candidates()),None)
                 stage('repairing','Связь потеряна. Переключаю защищённый маршрут.' if not offline else 'Ожидаю восстановления физической сети.',65,
                       active=False,error_code=reason)
                 for _ in range(30 if not offline else 100):
@@ -1219,7 +1235,7 @@ def worker():
             finally:
                 stop_candidate(daemon);daemon=None
         if not STOP:
-            stage('failed','Доступные маршруты исчерпали три попытки. Нажмите «Восстановить» для нового рейтинга.',0,
+            stage('failed','Нет настроенных маршрутов.',0,
                   active=False,error_code='ranking_exhausted')
     except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired) as exc:
         if not STOP:

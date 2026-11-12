@@ -147,7 +147,12 @@ public class HomeActivity extends Activity {
           android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::navigateBack);
     route = new Spinner(this);
     String[] options = new String[Engine.LABELS.length + 1];
-    options[0] = "Автоматически по рейтингу";
+    options[0] = "Автоматически";
+    if(!getPreferences(0).getBoolean("simple-route-indices",false)) {
+      int old=getPreferences(0).getInt("selected-route",-1);
+      getPreferences(0).edit().putInt("selected-route",ConnectionCandidates.migrateLegacyIndex(old))
+          .putBoolean("simple-route-indices",true).commit();
+    }
     System.arraycopy(Engine.LABELS, 0, options, 1, Engine.LABELS.length);
     route.setAdapter(
         new ArrayAdapter<String>(this, android.R.layout.simple_spinner_dropdown_item, options));
@@ -332,12 +337,12 @@ public class HomeActivity extends Activity {
     tokenAction.setLayoutParams(actionParams);
     c.addView(tokenRow, new LinearLayout.LayoutParams(-1, dp(54)));
     title(c, "Маршрут", 18);
-    title(c, "Выбор применяется при следующем подключении. Автоматический режим быстро находит рабочий маршрут и сам восстанавливает соединение.", 13).setTextColor(MUTED);
+    title(c, "Автоматический режим один раз измеряет все маршруты. Каждое включение начинает с первого места; при сбое пробуется следующий. Маршруты не исключаются.", 13).setTextColor(MUTED);
     if (route.getParent() != null)
       ((android.view.ViewGroup) route.getParent()).removeView(route);
     c.addView(route, new LinearLayout.LayoutParams(-1, dp(54)));
-    button(c, "Обновить рейтинг маршрутов", () -> confirmTests(false));
-    button(c, "Результаты проверки маршрутов", () -> textDialog("Рейтинг маршрутов", results()));
+    button(c, "Повторить замер маршрутов", () -> confirmTests(false));
+    button(c, "Результаты проверки маршрутов", () -> textDialog("Порядок маршрутов", results()));
     title(c, "ПОМОЧЬ УЛУЧШИТЬ VPN", 12).setTextColor(MUTED);
     runDiagnostic = button(c, "Полная диагностика", () -> {
       if (Engine.working() || DiagnosticReports.sending)
@@ -405,7 +410,7 @@ public class HomeActivity extends Activity {
     }
     new AlertDialog.Builder(this)
         .setTitle(diagnostic ? "Проверить и отправить отчёт?" : "Перепроверить маршруты?")
-        .setMessage("Проверка займёт примерно 3–9 минут и обновит рейтинг. Во время переключений "
+        .setMessage("Проверка займёт примерно 2–7 минут и обновит порядок маршрутов. Во время переключений "
             + "возможны паузы связи. Расход — около 80 МБ, при повторах больше."
             + (diagnostic ? "\n\nПосле проверки автоматически отправим модель и версию Android, "
                         + "результаты скорости, DNS и пакетных проб, задержки, события VPN и "
@@ -548,7 +553,7 @@ public class HomeActivity extends Activity {
     getPreferences(0).edit().putInt("selected-route", route.getSelectedItemPosition() - 1).apply();
     startForegroundService(new Intent(this, Engine.class)
             .putExtra("command", cmd)
-            .putExtra("route", route.getSelectedItemPosition() - 1));
+            .putExtra("route-list-schema",2).putExtra("route", route.getSelectedItemPosition() - 1));
   }
   @Override
   protected void onActivityResult(int request, int result, Intent data) {
@@ -603,12 +608,8 @@ public class HomeActivity extends Activity {
             .append(java.text.DateFormat.getDateTimeInstance().format(
                 new java.util.Date(r.getLong("created"))))
             .append("\n");
-        if (r.optBoolean("provisional", false)) {
-          out.append("Быстрое подключение: скорость ещё не измерялась.\n");
-          int last = getSharedPreferences("evgenium", 0).getInt("last-stable-" + kind, -1);
-          if (last >= 0 && last < Engine.LABELS.length)
-            out.append("Последний стабильный маршрут: ").append(Engine.LABELS[last]).append("\n");
-          out.append("Подробные замеры доступны в полной диагностике.\n\n");
+        if (r.optInt("schema") != 2 || r.optBoolean("provisional", false)) {
+          out.append("При первом автоматическом подключении будет составлен новый список.\n\n");
           continue;
         }
         org.json.JSONArray paths = r.getJSONArray("paths");
@@ -622,8 +623,8 @@ public class HomeActivity extends Activity {
           org.json.JSONObject m = p.optJSONObject("metrics");
           if (m != null)
             out.append(String.format(java.util.Locale.ROOT,
-                "↓ %.1f · ↑ %.1f Мбит/с · %d мс\nРейтинг %.2f · сбоев %d/3\n", m.optDouble("down"),
-                m.optDouble("up"), m.optLong("latency"), p.optDouble("score"), p.optInt("losses")));
+                "↓ %.1f · ↑ %.1f Мбит/с · %d мс\nОценка %.2f\n", m.optDouble("down"),
+                m.optDouble("up"), m.optLong("latency"), p.optDouble("score")));
           else if (p.has("warning"))
             out.append("Подключение работает; скорость не измерена.\n");
           else
