@@ -274,6 +274,14 @@ class WindowsReportTests(EnrollmentPortalTests):
         self.reply['profile']['account']='c'*24
         self.assertEqual(self.send_report(body).status_code,409)
 
+    def test_simple_order_report_has_no_failure_budget(self):
+        body=self.report_body()
+        del body['report']['checks']['routes'][0]['losses']
+        self.assertEqual(self.send_report(body).status_code,200)
+        file=Path(self.tmp.name)/'reports'/('windows-'+'d'*32+'.json')
+        stored=json.loads(file.read_text())
+        self.assertEqual(stored['report']['checks']['routes'][0]['losses'],0)
+
     def test_report_rejects_secret_fields_and_invalid_metrics_before_auth(self):
         import copy
         for mutate in [lambda b:b['report'].update(private_key=KEY),lambda b:b['report']['counters'].update(tcp_sent=-1),lambda b:b['report']['checks']['packets']['ru-wg'][0].update(received=11),lambda b:b['report']['checks']['routes'][0].update(id='unknown')]:

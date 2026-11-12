@@ -45,7 +45,7 @@ def clean_windows(body):
         only(route, ('id', 'label', 'download_mbps', 'rtt_ms', 'losses', 'good', 'error'))
         if route.get('id') not in ROUTES or type(route.get('good')) is not bool:
             raise ValueError('route')
-        clean['routes'].append(dict(id=route['id'], good=route['good'], download_mbps=number(route['download_mbps'], 100000, False), rtt_ms=number(route['rtt_ms'], 120000), losses=number(route['losses'], 100000)))
+        clean['routes'].append(dict(id=route['id'], good=route['good'], download_mbps=number(route['download_mbps'], 100000, False), rtt_ms=number(route['rtt_ms'], 120000), losses=number(route.get('losses', 0), 100000)))
     for transfer in checks['transfers']:
         only(transfer, ('route', 'direction', 'bytes', 'elapsed_ms', 'mbps', 'ok'))
         if transfer.get('route') not in ROUTES or transfer.get('direction') != 'upload' or type(transfer.get('ok')) is not bool:

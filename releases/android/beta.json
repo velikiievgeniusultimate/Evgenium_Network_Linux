@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "version": "0.2.7-beta",
-  "version_code": 18,
+  "version": "0.2.8-beta",
+  "version_code": 19,
   "size": 33185780,
-  "sha256": "50052852ba90068e98e9759130739f97fe3f5b4c789991d1af833505d9d06215",
-  "url": "https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/android-v0.2.7-beta/Evgenium-Android-0.2.7-beta.apk",
-  "sources": "https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/android-v0.2.7-beta/Evgenium-Android-0.2.7-beta-sources.tar.gz"
+  "sha256": "741fc78722cf9a0579328148decbf2f9d1736328cbed4bf0bb3a39c9b495bb74",
+  "url": "https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/android-v0.2.8-beta/Evgenium-Android-0.2.8-beta.apk",
+  "sources": "https://github.com/velikiievgeniusultimate/Evgenium_Network_Linux/releases/download/android-v0.2.8-beta/Evgenium-Android-0.2.8-beta-sources.tar.gz"
 }
