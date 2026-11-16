@@ -20,6 +20,16 @@ class PolicyTests(unittest.TestCase):
  def test_idna_and_direction_normalization(self):
   self.assertEqual(p.normalize('networks','=пример.рф'),'=xn--e1afmkfd.xn--p1ai')
   self.assertEqual(p.normalize('ports','TCP:25565'),'tcp:25565:both')
+ def test_deadlock_relay_exception_defaults_to_udp_and_can_be_disabled(self):
+  with patch.object(p,'waydroid_network',return_value={'networks':[]}):
+   policy=p.defaults()
+   active=p.firewall(policy,[],1001)
+   policy['disabled_base'].append('networks:deadlock-sdr')
+   disabled=p.firewall(policy,[],1001)
+  rules=[line for line in active.splitlines() if line not in disabled.splitlines()]
+  self.assertEqual(len(rules),3)
+  self.assertTrue(all(' udp dport 27015-' in line for line in rules))
+  self.assertTrue(any('155.133.248.36' in line and '27015-27060' in line for line in rules))
  def test_base_switch_round_trip_does_not_erase_user_entries(self):
   with tempfile.TemporaryDirectory() as d,patch.object(p,'PATH',Path(d)/'policy.json'),patch.object(m.starfive_tunnel,'full_guard_active',return_value=False):
    p.change('add','networks','example.com');p.change('base','networks','lan',False)

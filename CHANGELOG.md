@@ -1,3 +1,7 @@
+## Linux 0.5.8 / Windows 0.2.4
+
+- Route Deadlock Steam Datagram Relay UDP directly for the IPv4 addresses and port ranges published by Valve. The rule can be disabled in the base network exceptions.
+
 ## 0.5.6 — собственная рамка окна
 
 - Компактная верхняя полоса в цветах приложения: перетаскивание, собственные кнопки «Свернуть» и «Закрыть», без кнопки разворота.

@@ -37,7 +37,7 @@ function Change-Policy([string]$Action,$Request) {
         'remove' {if ($Request.category -notin @('applications','russia_applications','networks','ports','dns')) {throw 'Неизвестная категория.'};$p.($Request.category)=@($p.($Request.category) | Where-Object {$_ -cne $Request.value})}
         'bluestacks-russia' {$p.bluestacks_russia=[bool]$Request.enabled}
         'base' {
-            if ($Request.value -notin @('networks:lan','networks:linklocal','ports:discovery','dns:stub')) {throw 'Неизвестное базовое правило.'}
+            if ($Request.value -notin @('networks:lan','networks:linklocal','networks:deadlock-sdr','ports:discovery','dns:stub')) {throw 'Неизвестное базовое правило.'}
             if ($Request.enabled) {$p.disabled_base=@($p.disabled_base | Where-Object {$_ -ne $Request.value})}
             else {$p.disabled_base=@(@($p.disabled_base)+$Request.value | Select-Object -Unique)}
         }
