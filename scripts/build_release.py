@@ -70,6 +70,18 @@ def manifest(v: str, digest: str, channel: str) -> dict:
 
 def sync_embedded_sources() -> None:
     import base64
+    policy = SRC / "network_policy.py"
+    relays = json.loads((ROOT / "windows/engine/deadlock_sdr.json").read_text())
+    # The Linux updater bundles Python sources inside vpnctl.py.
+    updated_policy, count = re.subn(
+        r"^DEADLOCK_SDR = .*?$",
+        lambda _: "DEADLOCK_SDR = " + repr(relays),
+        policy.read_text(),
+        flags=re.M,
+    )
+    if count != 1:
+        raise SystemExit("missing embedded Deadlock relay list")
+    policy.write_text(updated_policy)
     p = SRC / "vpnctl.py"
     text = p.read_text()
     for constant, filename in (("SUPPORT_REPORTS_PY_B64", "support_reports.py"), ("PATH_RANKING_PY_B64", "path_ranking.py"), ("TLS_TRANSPORT_PY_B64", "tls_transport.py"), ("STARFIVE_TUNNEL_PY_B64", "starfive_tunnel.py"), ("STANDALONE_GUI_PY_B64", "evgenium_gui.py"), ("STANDALONE_GUI_QML_B64", "evgenium_gui.qml"), ("NETWORK_POLICY_PY_B64", "network_policy.py")):

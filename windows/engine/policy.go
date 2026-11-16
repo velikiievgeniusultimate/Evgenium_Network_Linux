@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,17 @@ import (
 	"strconv"
 	"strings"
 )
+
+// Snapshot of Valve GetSDRConfig for Deadlock (app 1422450).
+//
+//go:embed deadlock_sdr.json
+var deadlockSDRData []byte
+
+type deadlockRelayGroup struct {
+	First     uint16   `json:"first"`
+	Last      uint16   `json:"last"`
+	Addresses []string `json:"addresses"`
+}
 
 type Policy struct {
 	Applications       []string `json:"applications"`
@@ -247,6 +259,20 @@ func coreConfig(c Config, selected string, probeOnly bool) (map[string]any, erro
 	rules = append(rules, obj{"type": "field", "port": "53", "outboundTag": "dns-out"})
 	if len(c.Policy.Applications) > 0 {
 		rules = append(rules, obj{"type": "field", "process": routingApplications(c.Policy.Applications), "inboundTag": []string{"tun"}, "outboundTag": "direct"})
+	}
+	if c.Policy.base("networks:deadlock-sdr") {
+		var relays struct {
+			Groups []deadlockRelayGroup `json:"groups"`
+		}
+		if err := json.Unmarshal(deadlockSDRData, &relays); err != nil {
+			return nil, fmt.Errorf("load bundled Deadlock relay list: %w", err)
+		}
+		for _, group := range relays.Groups {
+			rules = append(rules, obj{
+				"type": "field", "inboundTag": []string{"tun"}, "outboundTag": "direct",
+				"network": "udp", "ip": group.Addresses, "port": fmt.Sprintf("%d-%d", group.First, group.Last),
+			})
+		}
 	}
 	networks := []string{}
 	domains := []string{}

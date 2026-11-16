@@ -144,3 +144,32 @@ func TestRussiaExitIsOptInAndOverridesOnlySelectedProcesses(t *testing.T) {
 		t.Fatal("Unvalidated Russia process rule")
 	}
 }
+
+func TestDeadlockRelayRoutesDirectOnlyForUDP(t *testing.T) {
+	c := fixture()
+	for _, disabled := range []bool{false, true} {
+		if disabled {
+			c.Policy.Disabled = []string{"networks:deadlock-sdr"}
+		}
+		config, err := coreConfig(c, "ru-wg", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, entry := range config["routing"].(obj)["rules"].([]any) {
+			rule := entry.(obj)
+			addresses, _ := rule["ip"].([]string)
+			for _, address := range addresses {
+				if address == "155.133.248.36" {
+					found = true
+					if rule["network"] != "udp" || rule["outboundTag"] != "direct" || rule["port"] != "27015-27060" {
+						t.Fatalf("unexpected relay rule: %v", rule)
+					}
+				}
+			}
+		}
+		if found == disabled {
+			t.Fatalf("relay route present=%v while disabled=%v", found, disabled)
+		}
+	}
+}
