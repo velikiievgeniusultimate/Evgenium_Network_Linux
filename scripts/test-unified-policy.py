@@ -129,9 +129,10 @@ print(socket.inet_ntoa(data[-4:]))
   check('included application',curl(),'VPN')
   raw=run([sys.executable,'-c',"import urllib.request; print(urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://203.0.113.10:18080',timeout=4).read().decode())"]).stdout.strip()
   check('unselected application',raw,'DIRECT')
-  server=subprocess.Popen([sys.executable,'-m','http.server','18081','--bind','0.0.0.0'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  ready_server="import http.server; s=http.server.HTTPServer(('0.0.0.0',18081),http.server.SimpleHTTPRequestHandler); print('ready',flush=True); s.serve_forever()"
+  server=subprocess.Popen([sys.executable,'-u','-c',ready_server],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
   try:
-   time.sleep(.1)
+   assert server.stdout.readline().strip()=='ready','inbound test server failed to bind'
    reply=run(['ip','netns','exec',os.environ['EVG_TEST_DIRECT'],'curl','--interface','203.0.113.10','--noproxy','*','-fsS','--max-time','3','http://198.51.100.2:18081/'])
    assert '<html' in reply.stdout.lower();print('include incoming server replies DIRECT without port exception',flush=True)
   finally:server.terminate();server.wait(timeout=5)
