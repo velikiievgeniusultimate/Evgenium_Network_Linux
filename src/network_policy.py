@@ -430,6 +430,8 @@ def change(action,category='',value='',state=None):
   if action=='remove':p[category]=[x for x in p[category] if x!=value]
  else:raise ValueError('Неизвестное действие.')
  if p==old:return public()
+ if tunnel.full_guard_active() and not Path('/sys/class/net/'+tunnel.FULL_HOST).exists():
+  raise RuntimeError('VPN восстанавливается. Повторите изменение правил после подключения; прежние правила сохранены.')
  save(p)
  if tunnel.full_guard_active() and Path('/sys/class/net/'+tunnel.FULL_HOST).exists():
   try:apply()

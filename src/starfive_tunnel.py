@@ -586,7 +586,7 @@ def status():
                                         'scope', 'since', 'retry', 'error_code', 'path') if key in data}
     token_info = token_status()
     return {'phase': 'off', 'message': ('Токен сохранён. Нажмите «Подключить».' if token_info['has_token'] else 'Введите и подтвердите токен клиента.'),
-            'progress': 0, 'active': False, **public, 'running': running,
+            'progress': 0, 'active': False, **public, 'running': running, 'panic':panic_enabled(),
             **token_info, **device_status(), 'routes':route_choices(), 'isolated': False, 'full_device': policy is None or not policy.inclusive(policy.load()), 'guard': full_guard_active(), 'protocol': 'IKEv2 → Эстония'}
 
 
@@ -976,6 +976,35 @@ def save_token(token):
     stage('off', 'Токен сохранён. Нажмите «Подключить».', 0, active=False, metrics={})
 
 
+def panic_enabled():
+    try:return json.loads((ROOT/'panic.json').read_text()).get('enabled') is True
+    except (OSError,ValueError,AttributeError):return False
+
+
+def set_panic(enabled):
+    if type(enabled) is not bool:raise ValueError('panic expects a boolean')
+    write(ROOT/'panic.json',json.dumps({'enabled':enabled}))
+    if enabled:
+        connect(restart=True)
+    else:
+        command(['systemctl','disable',UNIT],check=False)
+        if command(['systemctl','is-active','--quiet',UNIT],check=False).returncode==0:
+            connect(restart=True)
+
+
+def recovery_pause(seconds):
+    # Keep SIGTERM responsive even during an indefinitely long outage.
+    for _ in range(int(seconds*10)):
+        if STOP:return
+        time.sleep(.1)
+
+
+def recovery_route(rank,current,selected,panic=False):
+    if panic or selected=='auto':
+        return rank.next_after(current) or next(iter(rank.candidates()),None)
+    return current
+
+
 def connect(token='', repair=False, restart=False):
     ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     if token:
@@ -985,10 +1014,11 @@ def connect(token='', repair=False, restart=False):
     ensure_dependencies()
     if repair:
         write(ROOT/'recalibrate', '1')
+    panic=panic_enabled()
     unit = f'''[Unit]
 Description=Evgenium full-device Estonia VPN
 After=network.target
-StartLimitIntervalSec=180
+StartLimitIntervalSec={0 if panic else 180}
 StartLimitBurst=3
 [Service]
 Type=simple
@@ -998,8 +1028,10 @@ TimeoutStopSec=20
 KillMode=mixed
 UMask=0077
 MemoryMax=256M
-Restart=on-failure
-RestartSec=3
+Restart={'always' if panic else 'on-failure'}
+RestartSec={5 if panic else 3}
+[Install]
+WantedBy=multi-user.target
 '''
     write(Path('/etc/systemd/system')/UNIT, unit)
     recovery = "evgenium-starfive-tunnel-recover.service"
@@ -1016,6 +1048,7 @@ WantedBy=multi-user.target
 """)
     command(['systemctl', 'daemon-reload'])
     command(['systemctl', 'enable', recovery])
+    if panic:command(['systemctl','enable',UNIT])
     command(['systemctl','reset-failed',UNIT],check=False)
     stage('starting' , 'Готовлю подключение в Эстонию.', 2, active=False, retry=0, error_code='')
     command(['systemctl', 'restart' if repair or restart else 'start', UNIT])
@@ -1023,6 +1056,7 @@ WantedBy=multi-user.target
 
 
 def disconnect():
+    command(['systemctl','disable',UNIT],check=False)
     command(['systemctl', 'stop', UNIT], check=False, timeout=25)
     cleanup()
     cleanup_full(release=True)
@@ -1159,6 +1193,17 @@ def worker():
     STOP=False
     signal.signal(signal.SIGTERM,lambda *_:globals().__setitem__('STOP',True))
     signal.signal(signal.SIGINT,lambda *_:globals().__setitem__('STOP',True))
+    attempts=0
+    while not STOP:
+        worker_once()
+        if STOP or not panic_enabled():return
+        attempts+=1
+        stage('repairing','Панический поиск: повторяю подготовку VPN.',5,
+              active=False,retry=attempts)
+        recovery_pause(min(30,5*attempts))
+
+
+def worker_once():
     daemon=None
     rank=rank_api.Ranking(ROOT/'ranking.json',[x['id'] for x in CANDIDATES])
     try:
@@ -1172,7 +1217,7 @@ def worker():
         selected=selected_route()
         rebuild=(ROOT/'recalibrate').exists() or (selected=='auto' and not loaded)
         if not loaded:rank.bootstrap()
-        if rebuild:
+        if rebuild and not panic_enabled():
             measurements={}
             for i,candidate in enumerate(CANDIDATES):
                 if STOP:return
@@ -1207,7 +1252,7 @@ def worker():
                       metrics=rank.data['entries'][current],since=int(time.time()),error_code='')
                 failures=0;slow=0;last_traffic=traffic_total();next_speed=time.monotonic()+600+secrets.randbelow(60)
                 while not STOP:
-                    for _ in range(50):
+                    for _ in range(20 if panic_enabled() else 50):
                         if STOP:break
                         time.sleep(.1)
                     if STOP:break
@@ -1245,13 +1290,10 @@ def worker():
                     offline=carrier.exists() and carrier.read_text().strip()=='0'
                 except (OSError,RuntimeError):offline=True
                 if not offline:
-                    if selected=='auto':
-                        current=rank.next_after(current) or next(iter(rank.candidates()),None)
+                    current=recovery_route(rank,current,selected,panic_enabled())
                 stage('repairing','Связь потеряна. Переключаю защищённый маршрут.' if not offline else 'Ожидаю восстановления физической сети.',65,
                       active=False,error_code=reason)
-                for _ in range(30 if not offline else 100):
-                    if STOP:break
-                    time.sleep(.1)
+                recovery_pause((1 if not offline else 3) if panic_enabled() else (3 if not offline else 10))
             finally:
                 stop_candidate(daemon);daemon=None
         if not STOP:

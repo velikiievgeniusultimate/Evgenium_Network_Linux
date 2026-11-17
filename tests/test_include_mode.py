@@ -64,6 +64,16 @@ class IncludeModeTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):p.change('mode',value='include')
             self.assertEqual(p.load()['mode'],'all')
 
+    def test_outage_rejects_unapplied_selection_changes_without_saving(self):
+        with tempfile.TemporaryDirectory() as td,patch.object(p,'PATH',Path(td)/'policy.json'),patch.object(m.starfive_tunnel,'full_guard_active',return_value=True):
+            p.save({**p.defaults(),'mode':'include'})
+            original=p.PATH.read_bytes()
+            exists=p.Path.exists
+            for action,cat,value in [('include-add','applications','codex'),('mode','','all')]:
+                with patch.object(p.Path,'exists',lambda path: False if str(path).startswith('/sys/class/net/') else exists(path)),self.assertRaisesRegex(RuntimeError,'прежние правила сохранены'):
+                    p.change(action,cat,value)
+                self.assertEqual(p.PATH.read_bytes(),original)
+
     def test_new_cli_only_install_defaults_to_include(self):
         with tempfile.TemporaryDirectory() as td, patch.object(p,'PATH',Path(td)/'policy.json'), patch.object(m,'read_server_ports',return_value=[]):
             p.migration({'cli_only':True})
