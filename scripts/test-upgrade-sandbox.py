@@ -60,12 +60,12 @@ def old_update():
     # Everything after exec is the shipped new manager, not this monkeypatch.
     old.main(['update'])
 
-def bootstrap():
+def bootstrap(cli_only=False):
     source=Path('/tmp/fresh');source.mkdir(exist_ok=True)
     with tarfile.open(ROOT/f'dist/vpn-manager-{VERSION}.tar.gz') as t:t.extractall(source,filter='data')
     shell=(ROOT/'install.sh').read_text()
-    block=shell.split('"${tmp}/release" <<\'PY\'\n',1)[1].split('\nPY\n',1)[0]
-    sys.argv=['-', 'fixture','/home/fixture','0','0','https://fixture.test/stable.json',str(source)]
+    block=shell.split('"${tmp}/release" "$CLI_ONLY" <<\'PY\'\n',1)[1].split('\nPY\n',1)[0]
+    sys.argv=['-', 'fixture','/home/fixture','0','0','https://fixture.test/stable.json',str(source),'1' if cli_only else '']
     exec(compile(block,'installer-bootstrap','exec'),{'__name__':'__main__'})
 
 def verify():
@@ -112,21 +112,33 @@ def inside():
     assert 'example.org' in json.loads(Path('/etc/vpn-manager/policy.json').read_text())['networks']
     print('PASS: corrupt settings repaired without losing token/key/policy')
 
-def fresh():
+def fresh(cli_only=False):
     setup(legacy=False)
-    subprocess.run([sys.executable,__file__,'--bootstrap'],check=True)
+    subprocess.run([sys.executable,__file__,'--bootstrap-cli' if cli_only else '--bootstrap'],check=True)
     subprocess.run(['/usr/local/sbin/vpnctl','internal-sync'],check=True)
     new=load('/usr/local/sbin/vpnctl')
     assert json.loads(new.INSTALL_COMPLETE.read_text())['version']==VERSION
     assert Path('/usr/local/bin/vpn').read_text()==new.WRAPPER_TEXT
-    assert Path('/home/fixture/.local/share/evgenium-network/evgenium_gui.qml').read_bytes()==base64.b64decode(new.STANDALONE_GUI_QML_B64)
-    print('PASS: fresh installation without existing settings or CLI')
+    if cli_only:
+        assert not Path('/home/fixture/.local/share/evgenium-network').exists()
+        assert json.loads(Path('/etc/vpn-manager/settings.json').read_text())['cli_only'] is True
+        assert new.policy.load()['mode']=='include'
+        subprocess.run(['/usr/local/sbin/vpnctl','include','app','add','codex'],check=True)
+        subprocess.run(['/usr/local/sbin/vpnctl','internal-after-update'],check=True)
+        assert new.policy.load()['include']['applications']==['codex']
+        assert not Path('/home/fixture/.local/share/evgenium-network').exists()
+        print('PASS: fresh CLI-only installation and update preserve include mode without GUI')
+    else:
+        assert Path('/home/fixture/.local/share/evgenium-network/evgenium_gui.qml').read_bytes()==base64.b64decode(new.STANDALONE_GUI_QML_B64)
+        print('PASS: fresh installation without existing settings or CLI')
 
 if __name__=='__main__':
     if '--old-update' in sys.argv:old_update()
     elif '--bootstrap' in sys.argv:bootstrap()
+    elif '--bootstrap-cli' in sys.argv:bootstrap(cli_only=True)
     elif '--inside' in sys.argv:inside()
     elif '--fresh' in sys.argv:fresh()
+    elif '--fresh-cli' in sys.argv:fresh(cli_only=True)
     else:
         import shutil
         if not shutil.which('bwrap'):raise SystemExit('bubblewrap required; run unit tests if unavailable')
@@ -159,3 +171,4 @@ if __name__=='__main__':
                   '--ro-bind',str(ip),str(Path(shutil.which('ip')).resolve()),'--chdir','/tmp/src',sys.executable,'/tmp/src/scripts/test-upgrade-sandbox.py','--inside']
             subprocess.run(args,check=True,timeout=120)
             subprocess.run(args[:-1]+['--fresh'],check=True,timeout=120)
+            subprocess.run(args[:-1]+['--fresh-cli'],check=True,timeout=120)

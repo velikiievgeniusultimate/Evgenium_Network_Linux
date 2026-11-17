@@ -112,8 +112,11 @@ def ensure_dependencies():
         args = ['pacman','-S','--needed','--noconfirm','strongswan','iproute2','nftables','curl','openssl','ca-certificates','conntrack-tools']
     elif shutil.which('dnf'):
         args = ['dnf','install','-y','--setopt=install_weak_deps=False','strongswan','iproute','nftables','curl','openssl','ca-certificates','conntrack-tools']
+    elif shutil.which('apt-get'):
+        command(['apt-get','update'],timeout=300)
+        args = ['apt-get','install','-y','--no-install-recommends','charon-systemd','strongswan-swanctl','libstrongswan-standard-plugins','libcharon-extra-plugins','iproute2','nftables','curl','openssl','ca-certificates','conntrack']
     else:
-        raise RuntimeError('Автоматическая установка клиента поддерживает Arch и Fedora.')
+        raise RuntimeError('Автоматическая установка клиента поддерживает Arch, Fedora и Debian/Ubuntu.')
     command(args, timeout=300)
     if not charon_binary() or not all(shutil.which(p) for p in ('swanctl','conntrack')):
         raise RuntimeError('Пакет strongSwan не предоставил необходимые программы.')
@@ -381,6 +384,7 @@ def recover_system_dns():
         if STOP:return False
         time.sleep(.3)
     if not full_state().exists():return False
+    if policy is not None and policy.inclusive(policy.load()):return False
     # Switch only the resolver file we own; never stop another VPN or resolver.
     stage('repairing','Переключаю неисправный системный DNS на защищённый резерв.',90,active=False,error_code='system_dns_failed')
     use_resolver_file()
@@ -405,6 +409,27 @@ WantedBy=multi-user.target
     write(Path('/etc/systemd/system/evgenium-starfive-full-guard.service'),guard_unit)
     command(['systemctl','daemon-reload'])
     command(['systemctl','enable','evgenium-starfive-full-guard.service'])
+
+
+def configure_system_dns():
+    if not full_state().exists():return
+    data=json.loads(full_state().read_text())
+    if policy is not None and policy.inclusive(policy.load()):
+        restore_resolver_file(data)
+        if data.get('dns_mode')=='resolved_link':
+            command(['resolvectl','revert',FULL_HOST],check=False)
+        data['dns_mode']='direct'
+        write(full_state(),json.dumps(data))
+        return
+    if shutil.which('resolvectl') and command(['systemctl','is-active','--quiet','systemd-resolved'],check=False).returncode == 0:
+        data['dns_mode']='resolved_link'
+        write(full_state(),json.dumps(data))
+        command(['resolvectl','dns',FULL_HOST,'172.29.247.2'])
+        command(['resolvectl','domain',FULL_HOST,'~.'])
+        command(['resolvectl','default-route',FULL_HOST,'yes'])
+        command(['resolvectl','flush-caches'],check=False)
+    else:
+        use_resolver_file()
 
 
 def activate_full(address):
@@ -436,23 +461,17 @@ def activate_full(address):
     # This command stops only this manager's previous Xray mode and removes its guard.
     command(['/usr/local/sbin/vpnctl','internal-starfive-pause-main'],timeout=40)
     command(['ip','route','replace','unreachable','default','metric','32760','table',FULL_TABLE])
-    command(['ip','route','replace','default','via','172.29.247.2','dev',FULL_HOST,'metric','10','table',FULL_TABLE])
+    # Inclusion mode never installs an interim full-device VPN route, even
+    # during reconnect. The classifier retains its TUN default or fails closed.
+    if policy is None or not policy.inclusive(policy.load()):
+        command(['ip','route','replace','default','via','172.29.247.2','dev',FULL_HOST,'metric','10','table',FULL_TABLE])
     command(['ip','rule','del','priority','80','lookup',FULL_TABLE],check=False)
     for rule in (['priority','79','to',CLIENT+'/32','lookup','main'],
                  ['priority','79','iif',FULL_HOST,'lookup','main']):
         command(['ip','rule','del',*rule],check=False)
         command(['ip','rule','add',*rule])
     command(['ip','rule','add','priority','80','lookup',FULL_TABLE])
-    data=json.loads(full_state().read_text())
-    if shutil.which('resolvectl') and command(['systemctl','is-active','--quiet','systemd-resolved'],check=False).returncode == 0:
-        data['dns_mode']='resolved_link'
-        write(full_state(),json.dumps(data))
-        command(['resolvectl','dns',FULL_HOST,'172.29.247.2'])
-        command(['resolvectl','domain',FULL_HOST,'~.'])
-        command(['resolvectl','default-route',FULL_HOST,'yes'])
-        command(['resolvectl','flush-caches'],check=False)
-    else:
-        use_resolver_file()
+    configure_system_dns()
     clear_dns_mappings(previous_vpn=True)
     retire_previous_connections(old_addresses)
     if policy is not None:
@@ -475,12 +494,13 @@ def cleanup_full(release=False):
         try:DNS_PROCESS.wait(timeout=3)
         except subprocess.TimeoutExpired:DNS_PROCESS.kill();DNS_PROCESS.wait()
     DNS_PROCESS=None
-    if policy is not None:
+    keep_direct = not release and policy is not None and policy.inclusive(policy.load())
+    if policy is not None and not keep_direct:
         policy.stop(release=release)
     if not full_state().exists():
         return
     data=json.loads(full_state().read_text())
-    command(['ip','route','del','default','metric','10','table',FULL_TABLE],check=False)
+    if not keep_direct:command(['ip','route','del','default','metric','10','table',FULL_TABLE],check=False)
     command(['ip','link','del',FULL_HOST],check=False)
     # On failure: retain routing, DNS and the persistent guard until explicit disconnect.
     if not release:
@@ -566,8 +586,8 @@ def status():
                                         'scope', 'since', 'retry', 'error_code', 'path') if key in data}
     token_info = token_status()
     return {'phase': 'off', 'message': ('Токен сохранён. Нажмите «Подключить».' if token_info['has_token'] else 'Введите и подтвердите токен клиента.'),
-            'progress': 0, 'active': False, **public, 'running': running,
-            **token_info, **device_status(), 'routes':route_choices(), 'isolated': False, 'full_device': True, 'guard': full_guard_active(), 'protocol': 'IKEv2 → Эстония'}
+            'progress': 0, 'active': False, **public, 'running': running, 'panic':panic_enabled(),
+            **token_info, **device_status(), 'routes':route_choices(), 'isolated': False, 'full_device': policy is None or not policy.inclusive(policy.load()), 'guard': full_guard_active(), 'protocol': 'IKEv2 → Эстония'}
 
 
 @contextlib.contextmanager
@@ -956,6 +976,35 @@ def save_token(token):
     stage('off', 'Токен сохранён. Нажмите «Подключить».', 0, active=False, metrics={})
 
 
+def panic_enabled():
+    try:return json.loads((ROOT/'panic.json').read_text()).get('enabled') is True
+    except (OSError,ValueError,AttributeError):return False
+
+
+def set_panic(enabled):
+    if type(enabled) is not bool:raise ValueError('panic expects a boolean')
+    write(ROOT/'panic.json',json.dumps({'enabled':enabled}))
+    if enabled:
+        connect(restart=True)
+    else:
+        command(['systemctl','disable',UNIT],check=False)
+        if command(['systemctl','is-active','--quiet',UNIT],check=False).returncode==0:
+            connect(restart=True)
+
+
+def recovery_pause(seconds):
+    # Keep SIGTERM responsive even during an indefinitely long outage.
+    for _ in range(int(seconds*10)):
+        if STOP:return
+        time.sleep(.1)
+
+
+def recovery_route(rank,current,selected,panic=False):
+    if panic or selected=='auto':
+        return rank.next_after(current) or next(iter(rank.candidates()),None)
+    return current
+
+
 def connect(token='', repair=False, restart=False):
     ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     if token:
@@ -965,10 +1014,11 @@ def connect(token='', repair=False, restart=False):
     ensure_dependencies()
     if repair:
         write(ROOT/'recalibrate', '1')
+    panic=panic_enabled()
     unit = f'''[Unit]
 Description=Evgenium full-device Estonia VPN
 After=network.target
-StartLimitIntervalSec=180
+StartLimitIntervalSec={0 if panic else 180}
 StartLimitBurst=3
 [Service]
 Type=simple
@@ -978,8 +1028,10 @@ TimeoutStopSec=20
 KillMode=mixed
 UMask=0077
 MemoryMax=256M
-Restart=on-failure
-RestartSec=3
+Restart={'always' if panic else 'on-failure'}
+RestartSec={5 if panic else 3}
+[Install]
+WantedBy=multi-user.target
 '''
     write(Path('/etc/systemd/system')/UNIT, unit)
     recovery = "evgenium-starfive-tunnel-recover.service"
@@ -996,6 +1048,7 @@ WantedBy=multi-user.target
 """)
     command(['systemctl', 'daemon-reload'])
     command(['systemctl', 'enable', recovery])
+    if panic:command(['systemctl','enable',UNIT])
     command(['systemctl','reset-failed',UNIT],check=False)
     stage('starting' , 'Готовлю подключение в Эстонию.', 2, active=False, retry=0, error_code='')
     command(['systemctl', 'restart' if repair or restart else 'start', UNIT])
@@ -1003,6 +1056,7 @@ WantedBy=multi-user.target
 
 
 def disconnect():
+    command(['systemctl','disable',UNIT],check=False)
     command(['systemctl', 'stop', UNIT], check=False, timeout=25)
     cleanup()
     cleanup_full(release=True)
@@ -1139,11 +1193,22 @@ def worker():
     STOP=False
     signal.signal(signal.SIGTERM,lambda *_:globals().__setitem__('STOP',True))
     signal.signal(signal.SIGINT,lambda *_:globals().__setitem__('STOP',True))
+    attempts=0
+    while not STOP:
+        worker_once()
+        if STOP or not panic_enabled():return
+        attempts+=1
+        stage('repairing','Панический поиск: повторяю подготовку VPN.',5,
+              active=False,retry=attempts)
+        recovery_pause(min(30,5*attempts))
+
+
+def worker_once():
     daemon=None
     rank=rank_api.Ranking(ROOT/'ranking.json',[x['id'] for x in CANDIDATES])
     try:
         cleanup();refresh_retained_guard()
-        stage('prepare','Готовлю защищённые маршруты.',5,active=False,metrics={},error_code='',scope='full-device')
+        stage('prepare','Готовлю защищённые маршруты.',5,active=False,metrics={},error_code='',scope='selected' if policy is not None and policy.inclusive(policy.load()) else 'full-device')
         setup_network()
         identity,_=enroll()
         sync_device_name()
@@ -1152,7 +1217,7 @@ def worker():
         selected=selected_route()
         rebuild=(ROOT/'recalibrate').exists() or (selected=='auto' and not loaded)
         if not loaded:rank.bootstrap()
-        if rebuild:
+        if rebuild and not panic_enabled():
             measurements={}
             for i,candidate in enumerate(CANDIDATES):
                 if STOP:return
@@ -1187,7 +1252,7 @@ def worker():
                       metrics=rank.data['entries'][current],since=int(time.time()),error_code='')
                 failures=0;slow=0;last_traffic=traffic_total();next_speed=time.monotonic()+600+secrets.randbelow(60)
                 while not STOP:
-                    for _ in range(50):
+                    for _ in range(20 if panic_enabled() else 50):
                         if STOP:break
                         time.sleep(.1)
                     if STOP:break
@@ -1225,13 +1290,10 @@ def worker():
                     offline=carrier.exists() and carrier.read_text().strip()=='0'
                 except (OSError,RuntimeError):offline=True
                 if not offline:
-                    if selected=='auto':
-                        current=rank.next_after(current) or next(iter(rank.candidates()),None)
+                    current=recovery_route(rank,current,selected,panic_enabled())
                 stage('repairing','Связь потеряна. Переключаю защищённый маршрут.' if not offline else 'Ожидаю восстановления физической сети.',65,
                       active=False,error_code=reason)
-                for _ in range(30 if not offline else 100):
-                    if STOP:break
-                    time.sleep(.1)
+                recovery_pause((1 if not offline else 3) if panic_enabled() else (3 if not offline else 10))
             finally:
                 stop_candidate(daemon);daemon=None
         if not STOP:
