@@ -24,17 +24,33 @@ DIRECT_NETWORKS="${VPN_HOME}/DIRECT networks.txt"
 command -v sudo >/dev/null 2>&1 || die "Не найден sudo."
 command -v curl >/dev/null 2>&1 || die "Не найден curl. Он нужен, чтобы получить установщик и stable manifest."
 
+CLI_ONLY=""
+LOCAL_RELEASE=""
+for arg in "$@"; do
+    case "$arg" in
+        --cli-only) CLI_ONLY=1 ;;
+        --repair|--reinstall) ;;
+        --help|-h)
+            echo "Установка: bash install.sh [--cli-only] [--repair|--reinstall] [--release-file=ARCHIVE]"
+            echo "--cli-only: без Qt, GUI и виджета; требуется на Debian/RISC-V."
+            exit 0 ;;
+        --release-file=*) LOCAL_RELEASE="${arg#*=}" ;;
+        *) die "Неизвестный параметр: $arg" ;;
+    esac
+done
 DISTRO=""
 if [[ -f /etc/arch-release ]]; then
     DISTRO="arch"
 elif [[ -r /etc/os-release ]]; then
     # shellcheck disable=SC1091
     . /etc/os-release
-    if [[ "${ID:-}" == "fedora" ]]; then
-        DISTRO="fedora"
-    fi
+    case "${ID:-}" in
+        fedora) DISTRO="fedora" ;;
+        debian|ubuntu) DISTRO="debian" ;;
+    esac
 fi
-[[ -n "$DISTRO" ]] || die "Автоустановщик поддерживает Arch Linux и Fedora Linux."
+[[ -n "$DISTRO" ]] || die "Автоустановщик поддерживает Arch, Fedora и Debian/Ubuntu (CLI)."
+[[ "$DISTRO" != debian || -n "$CLI_ONLY" ]] || die "На Debian/Ubuntu используйте --cli-only."
 
 find_python() {
     if command -v python3 >/dev/null 2>&1; then
@@ -45,18 +61,6 @@ find_python() {
         return 1
     fi
 }
-
-# Recovery always downloads the current release. Never execute the installed
-# manager: it may be too old, missing, or only partially upgraded.
-case "${1:-}" in
-    ""|--repair|--reinstall) ;;
-    --help|-h)
-        echo "Установка/восстановление: bash install.sh [--repair|--reinstall]"
-        echo "Заново устанавливает CLI, GUI и зависимости; сохраняет токен, ключи и исключения."
-        exit 0 ;;
-    *) die "Неизвестный параметр: $1" ;;
-esac
-[[ $# -le 1 ]] || die "Слишком много параметров."
 
 # BEGIN ARCH DEPENDENCY INSTALL
 arch_install_dependencies() (
@@ -96,7 +100,8 @@ sudo -v
 say "Проверяю зависимости..."
 if [[ "$DISTRO" == "arch" ]]; then
     command -v pacman >/dev/null 2>&1 || die "Arch обнаружен, но pacman не найден."
-    packages=(python curl nftables iproute2 ca-certificates qt6-declarative strongswan openssl conntrack-tools)
+    packages=(python curl nftables iproute2 ca-certificates strongswan openssl conntrack-tools)
+    [[ -n "$CLI_ONLY" ]] || packages+=(qt6-declarative)
     missing=()
     for p in "${packages[@]}"; do
         pacman -Q "$p" >/dev/null 2>&1 || missing+=("$p")
@@ -107,6 +112,13 @@ if [[ "$DISTRO" == "arch" ]]; then
     else
         ok "Зависимости Arch уже установлены."
     fi
+elif [[ "$DISTRO" == "debian" ]]; then
+    command -v apt-get >/dev/null 2>&1 || die "Не найден apt-get."
+    sudo apt-get update
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        python3 curl nftables iproute2 ca-certificates passwd charon-systemd \
+        strongswan-swanctl libstrongswan-standard-plugins libcharon-extra-plugins \
+        openssl conntrack
 else
     command -v dnf >/dev/null 2>&1 || die "Fedora обнаружена, но dnf не найден."
     command -v rpm >/dev/null 2>&1 || die "Fedora обнаружена, но rpm не найден."
@@ -137,7 +149,7 @@ else
         fi
     done
 
-    if [[ -z "$QML_RUNTIME" ]]; then
+    if [[ -z "$QML_RUNTIME" && -z "$CLI_ONLY" ]]; then
         QT_DECL_VERSION="$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}' qt6-qtdeclarative 2>/dev/null || true)"
         [[ -n "$QT_DECL_VERSION" ]] || die "Fedora KDE не содержит qt6-qtdeclarative; не могу подобрать совместимый QML runner."
         QT_DECL_DEVEL="qt6-qtdeclarative-devel-${QT_DECL_VERSION}"
@@ -161,7 +173,7 @@ for candidate in /usr/bin/qml6 /usr/bin/qml-qt6 /usr/lib/qt6/bin/qml /usr/lib64/
         break
     fi
 done
-[[ -n "$QML_RUNTIME" ]] || warn "Qt 6 QML runner пока не найден; VPN CLI установится, но GUI не запустится до установки Qt QML runtime."
+[[ -n "$CLI_ONLY" || -n "$QML_RUNTIME" ]] || warn "Qt 6 QML runner пока не найден; VPN CLI установится, но GUI не запустится до установки Qt QML runtime."
 
 mkdir -p "${CONFIG_DIR}"
 chmod 700 "${VPN_HOME}" "${CONFIG_DIR}"
@@ -200,6 +212,23 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+if [[ -n "$LOCAL_RELEASE" ]]; then
+    LOCAL_RELEASE="$(realpath -- "$LOCAL_RELEASE")"
+    [[ -f "$LOCAL_RELEASE" && -f "${LOCAL_RELEASE}.sha256" ]] || die "Нужны локальный архив и его .sha256."
+    cp -- "$LOCAL_RELEASE" "${tmp}/release.tar.gz"
+    EXPECTED_SHA="$(awk 'NR==1 {print $1}' "${LOCAL_RELEASE}.sha256")"
+    [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{64}$ ]] || die "Некорректная SHA-256 локального архива."
+    VERSION="$("$PYTHON_BIN" - "${tmp}/release.tar.gz" <<'PYVERSION'
+import sys,tarfile,re
+with tarfile.open(sys.argv[1],'r:gz') as tf:
+    member=tf.getmember('VERSION')
+    if not member.isfile() or member.size>64:raise SystemExit('bad VERSION')
+    version=tf.extractfile(member).read().decode().strip()
+    if not re.fullmatch(r'[0-9A-Za-z._+-]+',version):raise SystemExit('bad VERSION')
+    print(version)
+PYVERSION
+)"
+else
 say "Получаю stable manifest из GitHub..."
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
     "${MANIFEST_URL}" -o "${tmp}/stable.json"
@@ -238,6 +267,7 @@ say "Скачиваю VPN Manager ${VERSION}..."
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
     "${RELEASE_URL}" -o "${tmp}/release.tar.gz"
 
+fi
 GOT_SHA="$(sha256sum "${tmp}/release.tar.gz" | awk '{print $1}')"
 [[ "$GOT_SHA" == "$EXPECTED_SHA" ]] || die "SHA-256 релиза не совпал. Установка остановлена."
 ok "SHA-256 релиза подтверждён."
@@ -269,9 +299,9 @@ ok "Compile + self-test прошли."
 # The staged files are new, but user data stays in place. Keep a private backup
 # before repairing settings or pointers; never remove the currently running release.
 say "Сохраняю пользовательские данные и устанавливаю свежие файлы..."
-sudo "$PYTHON_BIN" - "$OWNER_USER" "$OWNER_HOME" "$XRAY_UID" "$XRAY_GID" "$MANIFEST_URL" "${tmp}/release" <<'PY'
+sudo "$PYTHON_BIN" - "$OWNER_USER" "$OWNER_HOME" "$XRAY_UID" "$XRAY_GID" "$MANIFEST_URL" "${tmp}/release" "$CLI_ONLY" <<'PY'
 import fcntl, json, os, pathlib, pwd, shutil, sys, tarfile, tempfile, time
-user, home, uid, gid, manifest, source = sys.argv[1:]
+user, home, uid, gid, manifest, source, cli_only = sys.argv[1:]
 root = pathlib.Path('/opt/vpn-manager')
 settings = pathlib.Path('/etc/vpn-manager/settings.json')
 runtime = pathlib.Path('/run/vpn-manager')
@@ -312,6 +342,8 @@ for key, value in {'schema':2, 'engine':'token-ipsec', 'owner_user':user, 'owner
                    'direct_networks':home+'/Vpn/DIRECT networks.txt', 'direct_apps':home+'/Vpn/DIRECT apps.txt'}.items():
     data.setdefault(key, value)
 data.update(xray_uid=int(uid), xray_gid=int(gid), manager_manifest_url=manifest)
+if cli_only:data['cli_only']=True
+else:data.setdefault('cli_only',False)
 fd, name = tempfile.mkstemp(prefix='.settings-', dir=settings.parent)
 with os.fdopen(fd, 'w') as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
@@ -347,7 +379,7 @@ else
     warn "visudo не найден; sudoers установлен без отдельной syntax-check."
 fi
 
-say "Устанавливаю systemd unit, GUI и команду vpn..."
+say "Устанавливаю systemd unit и команду vpn..."
 if ! sudo /usr/local/sbin/vpnctl internal-sync; then
     die "Завершение установки прервано. Данные сохранены. Повторите эту команду с --repair; не удаляйте папки вручную."
 fi
@@ -365,6 +397,10 @@ say "Проверяю установленную версию..."
 sudo /usr/local/sbin/vpnctl version
 
 ok "${APP_NAME} ${VERSION} установлен/восстановлен на ${DISTRO}."
+if [[ -n "$CLI_ONLY" ]]; then
+    echo "CLI готов: vpn token save; vpn mode include; vpn include app add codex; vpn on"
+    exit 0
+fi
 echo "Закройте старое окно Evgenium Network и откройте приложение заново."
 echo
 echo "Команда: vpn"

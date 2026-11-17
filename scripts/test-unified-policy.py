@@ -111,6 +111,39 @@ print(socket.inet_ntoa(data[-4:]))
   with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as c:
    c.settimeout(2);c.sendto(b'local-dns',('127.0.0.53',53));check('loopback stub',c.recv(1024).decode(),'local-dns')
   # Stopping the classifier must remove the usable default, leaving unreachable.
+  # Inclusion mode changes only the chosen flows. Same destination, distinct
+  # applications/domains: exercise the real classifier rather than JSON shape.
+  sample=p.defaults();sample['mode']='include';apply(sample)
+  check('include empty default',curl(),'DIRECT')
+  check('include ordinary DNS',dns('1.1.1.1'),'203.0.113.11')
+  sample['include']['networks']=['example.test'];apply(sample)
+  check('included domain',curl('example.test',resolve='example.test:18080:203.0.113.10'),'VPN')
+  check('unselected domain',curl('other.test',resolve='other.test:18080:203.0.113.10'),'DIRECT')
+  sample['include']['dns']=['1.1.1.1'];apply(sample)
+  check('included DNS server',dns('1.1.1.1'),'203.0.113.12')
+  sample=p.defaults();sample['mode']='include';sample['include']['networks']=['203.0.113.10/32'];apply(sample)
+  check('included IP',curl(),'VPN')
+  sample=p.defaults();sample['mode']='include';sample['include']['ports']=['tcp:18080:out'];apply(sample)
+  check('included port',curl(),'VPN')
+  sample=p.defaults();sample['mode']='include';sample['include']['applications']=['/usr/bin/curl'];apply(sample)
+  check('included application',curl(),'VPN')
+  raw=run([sys.executable,'-c',"import urllib.request; print(urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://203.0.113.10:18080',timeout=4).read().decode())"]).stdout.strip()
+  check('unselected application',raw,'DIRECT')
+  server=subprocess.Popen([sys.executable,'-m','http.server','18081','--bind','0.0.0.0'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  try:
+   time.sleep(.1)
+   reply=run(['ip','netns','exec',os.environ['EVG_TEST_DIRECT'],'curl','--interface','203.0.113.10','--noproxy','*','-fsS','--max-time','3','http://198.51.100.2:18081/'])
+   assert '<html' in reply.stdout.lower();print('include incoming server replies DIRECT without port exception',flush=True)
+  finally:server.terminate();server.wait(timeout=5)
+  # Losing the VPN route must not turn the selected application into DIRECT;
+  # the classifier's independent DIRECT sockets remain usable.
+  run(['ip','route','del','default','metric','10','table',p.VPN_TABLE])
+  try:curl()
+  except subprocess.CalledProcessError:print('included application blocked on VPN outage',flush=True)
+  else:raise AssertionError('VPN outage leaked selected application')
+  raw=run([sys.executable,'-c',"import urllib.request; print(urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://203.0.113.10:18080',timeout=4).read().decode())"]).stdout.strip()
+  check('unselected application survives VPN outage',raw,'DIRECT')
+  apply(base)
   engine.terminate();engine.wait(timeout=5);engine=None
   try:curl()
   except subprocess.CalledProcessError:print('engine loss: protected traffic blocked',flush=True)

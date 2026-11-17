@@ -1,3 +1,11 @@
+## Linux 0.6.0 — RISC-V CLI и включительный VPN
+
+- Добавлена установка `--cli-only` для Debian/Ubuntu, включая riscv64; Qt и GUI не устанавливаются и не добавляются при обновлении CLI.
+- Используется официальный Xray linux-riscv64 с SHA-256; EvgeniumTunnel riscv64 уже присутствует в закреплённом релизе.
+- `vpn mode include` и независимые `vpn include app|site|port|dns` направляют через VPN только выбранные исходящие соединения. Остальное, системный DNS и ответы входящих серверов остаются DIRECT.
+- При потере VPN выбранное блокируется, а DIRECT сохраняется; прежний режим `all` и его списки сохранены. Обновление не включает VPN автоматически.
+- Добавлены проверки реальных пакетов, обрыва VPN, входящих ответов и обновления CLI без GUI, а также локальная установка проверенного архива через `--release-file`.
+
 ## Linux 0.5.8 / Windows 0.2.4
 
 - Route Deadlock Steam Datagram Relay UDP directly for the IPv4 addresses and port ranges published by Valve. The rule can be disabled in the base network exceptions.

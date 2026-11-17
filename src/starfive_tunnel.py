@@ -112,8 +112,11 @@ def ensure_dependencies():
         args = ['pacman','-S','--needed','--noconfirm','strongswan','iproute2','nftables','curl','openssl','ca-certificates','conntrack-tools']
     elif shutil.which('dnf'):
         args = ['dnf','install','-y','--setopt=install_weak_deps=False','strongswan','iproute','nftables','curl','openssl','ca-certificates','conntrack-tools']
+    elif shutil.which('apt-get'):
+        command(['apt-get','update'],timeout=300)
+        args = ['apt-get','install','-y','--no-install-recommends','charon-systemd','strongswan-swanctl','libstrongswan-standard-plugins','libcharon-extra-plugins','iproute2','nftables','curl','openssl','ca-certificates','conntrack']
     else:
-        raise RuntimeError('Автоматическая установка клиента поддерживает Arch и Fedora.')
+        raise RuntimeError('Автоматическая установка клиента поддерживает Arch, Fedora и Debian/Ubuntu.')
     command(args, timeout=300)
     if not charon_binary() or not all(shutil.which(p) for p in ('swanctl','conntrack')):
         raise RuntimeError('Пакет strongSwan не предоставил необходимые программы.')
@@ -381,6 +384,7 @@ def recover_system_dns():
         if STOP:return False
         time.sleep(.3)
     if not full_state().exists():return False
+    if policy is not None and policy.inclusive(policy.load()):return False
     # Switch only the resolver file we own; never stop another VPN or resolver.
     stage('repairing','Переключаю неисправный системный DNS на защищённый резерв.',90,active=False,error_code='system_dns_failed')
     use_resolver_file()
@@ -405,6 +409,27 @@ WantedBy=multi-user.target
     write(Path('/etc/systemd/system/evgenium-starfive-full-guard.service'),guard_unit)
     command(['systemctl','daemon-reload'])
     command(['systemctl','enable','evgenium-starfive-full-guard.service'])
+
+
+def configure_system_dns():
+    if not full_state().exists():return
+    data=json.loads(full_state().read_text())
+    if policy is not None and policy.inclusive(policy.load()):
+        restore_resolver_file(data)
+        if data.get('dns_mode')=='resolved_link':
+            command(['resolvectl','revert',FULL_HOST],check=False)
+        data['dns_mode']='direct'
+        write(full_state(),json.dumps(data))
+        return
+    if shutil.which('resolvectl') and command(['systemctl','is-active','--quiet','systemd-resolved'],check=False).returncode == 0:
+        data['dns_mode']='resolved_link'
+        write(full_state(),json.dumps(data))
+        command(['resolvectl','dns',FULL_HOST,'172.29.247.2'])
+        command(['resolvectl','domain',FULL_HOST,'~.'])
+        command(['resolvectl','default-route',FULL_HOST,'yes'])
+        command(['resolvectl','flush-caches'],check=False)
+    else:
+        use_resolver_file()
 
 
 def activate_full(address):
@@ -436,23 +461,17 @@ def activate_full(address):
     # This command stops only this manager's previous Xray mode and removes its guard.
     command(['/usr/local/sbin/vpnctl','internal-starfive-pause-main'],timeout=40)
     command(['ip','route','replace','unreachable','default','metric','32760','table',FULL_TABLE])
-    command(['ip','route','replace','default','via','172.29.247.2','dev',FULL_HOST,'metric','10','table',FULL_TABLE])
+    # Inclusion mode never installs an interim full-device VPN route, even
+    # during reconnect. The classifier retains its TUN default or fails closed.
+    if policy is None or not policy.inclusive(policy.load()):
+        command(['ip','route','replace','default','via','172.29.247.2','dev',FULL_HOST,'metric','10','table',FULL_TABLE])
     command(['ip','rule','del','priority','80','lookup',FULL_TABLE],check=False)
     for rule in (['priority','79','to',CLIENT+'/32','lookup','main'],
                  ['priority','79','iif',FULL_HOST,'lookup','main']):
         command(['ip','rule','del',*rule],check=False)
         command(['ip','rule','add',*rule])
     command(['ip','rule','add','priority','80','lookup',FULL_TABLE])
-    data=json.loads(full_state().read_text())
-    if shutil.which('resolvectl') and command(['systemctl','is-active','--quiet','systemd-resolved'],check=False).returncode == 0:
-        data['dns_mode']='resolved_link'
-        write(full_state(),json.dumps(data))
-        command(['resolvectl','dns',FULL_HOST,'172.29.247.2'])
-        command(['resolvectl','domain',FULL_HOST,'~.'])
-        command(['resolvectl','default-route',FULL_HOST,'yes'])
-        command(['resolvectl','flush-caches'],check=False)
-    else:
-        use_resolver_file()
+    configure_system_dns()
     clear_dns_mappings(previous_vpn=True)
     retire_previous_connections(old_addresses)
     if policy is not None:
@@ -475,12 +494,13 @@ def cleanup_full(release=False):
         try:DNS_PROCESS.wait(timeout=3)
         except subprocess.TimeoutExpired:DNS_PROCESS.kill();DNS_PROCESS.wait()
     DNS_PROCESS=None
-    if policy is not None:
+    keep_direct = not release and policy is not None and policy.inclusive(policy.load())
+    if policy is not None and not keep_direct:
         policy.stop(release=release)
     if not full_state().exists():
         return
     data=json.loads(full_state().read_text())
-    command(['ip','route','del','default','metric','10','table',FULL_TABLE],check=False)
+    if not keep_direct:command(['ip','route','del','default','metric','10','table',FULL_TABLE],check=False)
     command(['ip','link','del',FULL_HOST],check=False)
     # On failure: retain routing, DNS and the persistent guard until explicit disconnect.
     if not release:
@@ -567,7 +587,7 @@ def status():
     token_info = token_status()
     return {'phase': 'off', 'message': ('Токен сохранён. Нажмите «Подключить».' if token_info['has_token'] else 'Введите и подтвердите токен клиента.'),
             'progress': 0, 'active': False, **public, 'running': running,
-            **token_info, **device_status(), 'routes':route_choices(), 'isolated': False, 'full_device': True, 'guard': full_guard_active(), 'protocol': 'IKEv2 → Эстония'}
+            **token_info, **device_status(), 'routes':route_choices(), 'isolated': False, 'full_device': policy is None or not policy.inclusive(policy.load()), 'guard': full_guard_active(), 'protocol': 'IKEv2 → Эстония'}
 
 
 @contextlib.contextmanager
@@ -1143,7 +1163,7 @@ def worker():
     rank=rank_api.Ranking(ROOT/'ranking.json',[x['id'] for x in CANDIDATES])
     try:
         cleanup();refresh_retained_guard()
-        stage('prepare','Готовлю защищённые маршруты.',5,active=False,metrics={},error_code='',scope='full-device')
+        stage('prepare','Готовлю защищённые маршруты.',5,active=False,metrics={},error_code='',scope='selected' if policy is not None and policy.inclusive(policy.load()) else 'full-device')
         setup_network()
         identity,_=enroll()
         sync_device_name()
