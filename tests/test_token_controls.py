@@ -16,7 +16,7 @@ def load(name, source):
     return mod
 
 
-tunnel = load('token_controls_tunnel', 'src/starfive_tunnel.py')
+tunnel = load('token_controls_tunnel', 'src/vpn_tunnel.py')
 vpn = load('token_controls_vpn', 'src/vpnctl.py')
 TOKEN = 'EVN1-' + 'a' * 43
 OTHER = 'EVN1-' + 'b' * 43

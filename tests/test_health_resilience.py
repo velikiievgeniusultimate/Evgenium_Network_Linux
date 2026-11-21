@@ -2,7 +2,7 @@ import sys,unittest,subprocess
 from pathlib import Path
 from unittest.mock import Mock,patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
-import starfive_tunnel as t
+import vpn_tunnel as t
 class HealthResilience(unittest.TestCase):
  def setUp(self):t._egress_preferred=0
  def response(self,body,code=0):return subprocess.CompletedProcess([],code,body,'')

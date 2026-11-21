@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import contextlib
+import importlib.util
 import hashlib
 import json
 import os
@@ -9,13 +9,12 @@ import re
 import shutil
 import subprocess
 import sys
-import tarfile
+from types import SimpleNamespace
 import tempfile
 
 SETTINGS = pathlib.Path("/etc/vpn-manager/settings.json")
 RELEASES = pathlib.Path("/opt/vpn-manager/releases")
 CURRENT = pathlib.Path("/opt/vpn-manager/current")
-PREVIOUS = pathlib.Path("/opt/vpn-manager/previous")
 
 def die(msg):
     print("ERROR:", msg, file=sys.stderr)
@@ -33,25 +32,6 @@ def save_settings(data):
     os.chmod(tmp, 0o600)
     os.replace(tmp, SETTINGS)
 
-def safe_extract(path, dest):
-    allowed = {"vpnctl.py", "vpnadmin.py", "VERSION"}
-    with tarfile.open(path, "r:gz") as tf:
-        members = tf.getmembers()
-        names = {m.name for m in members}
-        if names != allowed:
-            die(f"archive members: {sorted(names)}, expected {sorted(allowed)}")
-        for m in members:
-            pp = pathlib.PurePosixPath(m.name)
-            if not m.isfile() or pp.is_absolute() or ".." in pp.parts:
-                die("unsafe archive")
-        tf.extractall(dest)
-    ver = (dest / "VERSION").read_text().strip()
-    if not re.fullmatch(r"[0-9A-Za-z._+-]+", ver):
-        die("bad VERSION")
-    os.chmod(dest / "vpnctl.py", 0o755)
-    os.chmod(dest / "vpnadmin.py", 0o755)
-    return ver
-
 def local_update(path):
     path = pathlib.Path(path).resolve()
     sha = pathlib.Path(str(path) + ".sha256")
@@ -63,45 +43,27 @@ def local_update(path):
     expected = sha.read_text().split()[0].strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", expected):
         die("bad sha256 file")
-    got = hashlib.sha256(path.read_bytes()).hexdigest()
+    archive = path.read_bytes()
+    got = hashlib.sha256(archive).hexdigest()
     if got != expected:
         die(f"SHA-256 mismatch: expected {expected}, got {got}")
 
-    with tempfile.TemporaryDirectory(dir="/opt/vpn-manager/releases") as td:
-        unpack = pathlib.Path(td) / "unpack"
-        unpack.mkdir()
-        version = safe_extract(path, unpack)
-        cp = subprocess.run(
-            [sys.executable, str(unpack / "vpnctl.py"), "--self-test"],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        if cp.returncode:
-            die("self-test failed:\n" + cp.stderr + cp.stdout)
-
-        dest = RELEASES / version
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(unpack, dest)
-
-    old = pathlib.Path(os.path.realpath(CURRENT)) if CURRENT.exists() else None
-    PREVIOUS.unlink(missing_ok=True)
-    if old and old.exists():
-        PREVIOUS.symlink_to(old)
-
-    newlink = pathlib.Path("/opt/vpn-manager/.current.new")
-    newlink.unlink(missing_ok=True)
-    newlink.symlink_to(dest)
-    os.replace(newlink, CURRENT)
-
-    for target, src in (
-        ("/usr/local/sbin/vpnctl", CURRENT / "vpnctl.py"),
-        ("/usr/local/sbin/vpn-manager-admin", CURRENT / "vpnadmin.py"),
-    ):
-        tmp = target + ".new"
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp)
-        os.symlink(src, tmp)
-        os.replace(tmp, target)
+    current_manager = CURRENT / "vpnctl.py"
+    spec = importlib.util.spec_from_file_location("installed_vpn_manager", current_manager)
+    manager = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(manager)
+    with manager.operation_guard(SimpleNamespace(cmd="admin-local"), load_settings()):
+        with tempfile.TemporaryDirectory(dir=RELEASES) as td:
+            unpack = pathlib.Path(td) / "unpack"
+            unpack.mkdir()
+            verified = pathlib.Path(td) / "release.tar.gz"
+            verified.write_bytes(archive)
+            version = manager.safe_extract_manager(verified, unpack)
+            result = subprocess.run([sys.executable, str(unpack / "vpnctl.py"), "--self-test"],
+                                    text=True, capture_output=True)
+            if result.returncode:
+                die("self-test failed: " + result.stderr + result.stdout)
+            manager.install_manager_release(unpack, version)
 
     subprocess.run(
         ["/usr/local/sbin/vpnctl", "internal-after-update"],

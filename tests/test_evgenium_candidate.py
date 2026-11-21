@@ -2,7 +2,7 @@ import hashlib,io,json,tempfile,unittest,sys
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
-import starfive_tunnel as t
+import vpn_tunnel as t
 import path_ranking as ranking
 import support_reports as reports
 

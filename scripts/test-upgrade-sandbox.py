@@ -30,7 +30,8 @@ def setup(legacy=True):
     Path('/etc/group').write_text('fixture:x:0:\n')
     Path('/opt/vpn-manager/bin/xray').write_text('#!/bin/sh\necho Xray 26.7.28\n')
     Path('/opt/vpn-manager/bin/xray').chmod(0o755)
-    private=Path('/etc/vpn-manager/starfive-tunnel');private.mkdir(mode=0o700,exist_ok=True)
+    private=Path('/etc/vpn-manager') / ('starfive-tunnel' if legacy else 'tunnel')
+    private.mkdir(mode=0o700,exist_ok=True)
     binary_name=json.loads((ROOT/'fixture-evgt.json').read_text())['name']
     (private/binary_name).write_bytes((ROOT/'fixture-evgt').read_bytes());(private/binary_name).chmod(0o700)
     if not legacy:return
@@ -89,7 +90,8 @@ def inside():
     subprocess.run([sys.executable,__file__,'--old-update'],check=True)
     verify();print('PASS: original 0.2.7 updater -> new CLI/GUI, migrated exceptions')
     # A partial 0.4.x install with a broken CLI and stale GUI. Preserve credentials.
-    private=Path('/etc/vpn-manager/starfive-tunnel');private.mkdir(exist_ok=True)
+    private=Path('/etc/vpn-manager/tunnel')
+    assert private.is_dir() and not Path('/etc/vpn-manager/starfive-tunnel').exists()
     (private/'token').write_text('EVN1-'+'a'*43)
     (private/'device.key').write_text('private-key-fixture')
     before={p.name:p.read_bytes() for p in private.iterdir() if p.is_file()}
@@ -102,7 +104,7 @@ def inside():
     for name,contents in before.items():assert (private/name).read_bytes()==contents
     backups=list(Path('/var/lib/vpn-manager/backups').glob('*.tar.gz'));assert backups
     assert backups[0].stat().st_mode&0o777==0o600
-    with tarfile.open(backups[0]) as t:assert t.extractfile('etc/vpn-manager/starfive-tunnel/token').read()==before['token']
+    with tarfile.open(backups[0]) as t:assert t.extractfile('etc/vpn-manager/tunnel/token').read()==before['token']
     print('PASS: independent reinstall repairs broken CLI, keeps token/key/policy, creates private backup')
     Path('/etc/vpn-manager/settings.json').write_text('{broken')
     subprocess.run([sys.executable,__file__,'--bootstrap'],check=True)
@@ -141,21 +143,24 @@ if __name__=='__main__':
                 shutil.copy2(ROOT/name,target)
             # Download and verify the pinned dependency before entering offline namespaces.
             manager=load(ROOT/'src/vpnctl.py')
-            manager.starfive_tunnel.ROOT=fake/'transport-cache'
+            manager.vpn_tunnel.ROOT=fake/'transport-cache'
             supplied=os.environ.get('EVG_TEST_TUNNEL')
             if supplied:
-                manager.starfive_tunnel.ROOT.mkdir()
-                target=manager.starfive_tunnel.ROOT/('evgenium-tunnel-'+manager.starfive_tunnel.EVGT_VERSION)
+                manager.vpn_tunnel.ROOT.mkdir()
+                target=manager.vpn_tunnel.ROOT/('evgenium-tunnel-'+manager.vpn_tunnel.EVGT_VERSION)
                 shutil.copy2(supplied,target)
-            binary=manager.starfive_tunnel.ensure_evgt_binary()
+            binary=manager.vpn_tunnel.ensure_evgt_binary()
             shutil.copy2(binary,snapshot/'fixture-evgt')
             (snapshot/'fixture-evgt.json').write_text(json.dumps({'name':binary.name}))
-            stub=fake/'systemctl';stub.write_text('#!/bin/sh\ncase "$*" in *is-active*) exit 3;; esac\nexit 0\n');stub.chmod(0o755)
+            stub=fake/'systemctl';stub.write_text('#!/bin/sh\ncase "$1" in is-active) exit 3;; show) echo inactive;; esac\nexit 0\n');stub.chmod(0o755)
             ip=fake/'ip';ip.write_text('#!/bin/sh\nexit 1\n');ip.chmod(0o755)
+            nft=fake/'nft';nft.write_text('#!/bin/sh\nif [ "$*" = "-j list tables" ]; then echo \'{"nftables":[]}\'; exit 0; fi\nexit 1\n');nft.chmod(0o755)
             args=['bwrap','--die-with-parent','--unshare-all','--uid','0','--gid','0','--ro-bind','/','/',
-                  '--tmpfs','/etc','--tmpfs','/var','--tmpfs','/run','--tmpfs','/opt','--tmpfs','/home',
+                  '--tmpfs','/etc','--tmpfs','/var','--tmpfs','/run','--tmpfs','/opt','--tmpfs','/home','--tmpfs','/sys',
                   '--tmpfs','/tmp','--tmpfs','/usr/local','--proc','/proc','--dev','/dev',
                   '--ro-bind',str(snapshot),'/tmp/src','--ro-bind',str(stub),'/usr/bin/systemctl',
-                  '--ro-bind',str(ip),str(Path(shutil.which('ip')).resolve()),'--chdir','/tmp/src',sys.executable,'/tmp/src/scripts/test-upgrade-sandbox.py','--inside']
+                  '--ro-bind',str(ip),str(Path(shutil.which('ip')).resolve()),
+                  '--ro-bind',str(nft),str(Path(shutil.which('nft')).resolve()),
+                  '--chdir','/tmp/src',sys.executable,'/tmp/src/scripts/test-upgrade-sandbox.py','--inside']
             subprocess.run(args,check=True,timeout=120)
             subprocess.run(args[:-1]+['--fresh'],check=True,timeout=120)

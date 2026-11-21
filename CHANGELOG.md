@@ -1,3 +1,8 @@
+## Linux 0.5.9
+
+- Исправлены предупреждения systemd при чтении трёх файлов служб VPN. Клиент создаёт их с правами `0644` и при обновлении исправляет права на ранее созданных штатных файлах. Токены, приватные ключи и сохранённые правила фильтрации записываются с правами `0600`.
+- Локальные службы теперь называются `evgenium-vpn.service`, `evgenium-vpn-recovery.service` и `evgenium-vpn-killswitch.service`. Новое расположение токена и сертификатов — `/etc/vpn-manager/tunnel`. Отключённый клиент переносит их при обновлении. Если соединение открыто или действует защита после обрыва, перенос происходит при обычном отключении VPN. Команды, настройки маршрутов и токен сохраняются.
+
 ## Linux 0.5.8 / Windows 0.2.4
 
 - Route Deadlock Steam Datagram Relay UDP directly for the IPv4 addresses and port ranges published by Valve. The rule can be disabled in the base network exceptions.

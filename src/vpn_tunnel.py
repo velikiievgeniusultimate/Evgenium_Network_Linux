@@ -1,5 +1,6 @@
 """Token IKEv2 client: isolated transport and guarded full-device Estonia egress."""
 import contextlib
+import errno
 import fcntl
 import hashlib
 import http.client
@@ -15,23 +16,60 @@ import socket
 import platform
 import urllib.request
 import ssl
+import stat
 import subprocess
+import tempfile
 import time
 import sys
+from typing import NamedTuple
 
-ROOT = Path('/etc/vpn-manager/starfive-tunnel')
-RUNTIME = Path('/run/evgenium-starfive-tunnel')
-STATE = Path('/var/lib/vpn-manager/starfive-tunnel.json')
-UNIT = 'evgenium-starfive-tunnel.service'
-NS = 'evn-starfive'
-HOST = 'evn-sf-host'
-PEER = 'evn-sf-peer'
+class Layout(NamedTuple):
+    root: Path
+    runtime: Path
+    state: Path
+    unit: str
+    recovery: str
+    guard: str
+    namespace: str
+    host: str
+    peer: str
+    host_table: str
+    namespace_table: str
+    guard_table: str
+    command_prefix: str
+    ike: str
+
+
+CURRENT = Layout(Path('/etc/vpn-manager/tunnel'), Path('/run/evgenium-vpn'),
+                 Path('/var/lib/vpn-manager/tunnel.json'),
+                 'evgenium-vpn.service', 'evgenium-vpn-recovery.service', 'evgenium-vpn-killswitch.service',
+                 'evn-vpn', 'evn-vpn-host', 'evn-vpn-peer', 'evgenium_vpn_host',
+                 'evgenium_vpn_namespace', 'evgenium_vpn_guard', 'internal-vpn', 'evgenium-vpn')
+# Versions through 0.5.8 used the former ingress host's name for local resources.
+LEGACY = Layout(Path('/etc/vpn-manager/starfive-tunnel'), Path('/run/evgenium-starfive-tunnel'),
+                Path('/var/lib/vpn-manager/starfive-tunnel.json'),
+                'evgenium-starfive-tunnel.service', 'evgenium-starfive-tunnel-recover.service',
+                'evgenium-starfive-full-guard.service', 'evn-starfive', 'evn-sf-host', 'evn-sf-peer',
+                'evgenium_starfive_lab_host', 'evn_starfive_guard', 'evn_starfive_full', 'internal-starfive', 'starfive')
+UNIT_DIR = Path('/etc/systemd/system')
+LAYOUT_TRANSACTION = Path('/var/lib/vpn-manager/tunnel-layout-transition')
+
+
+def use_layout(layout):
+    global LAYOUT, ROOT, RUNTIME, STATE, UNIT, RECOVERY_UNIT, GUARD_UNIT, NS, HOST, PEER, NFT, NAMESPACE_GUARD, FULL_GUARD
+    LAYOUT = layout
+    ROOT, RUNTIME, STATE = layout.root, layout.runtime, layout.state
+    UNIT, RECOVERY_UNIT, GUARD_UNIT = layout.unit, layout.recovery, layout.guard
+    NS, HOST, PEER = layout.namespace, layout.host, layout.peer
+    NFT, NAMESPACE_GUARD, FULL_GUARD = layout.host_table, layout.namespace_table, layout.guard_table
+
+
+use_layout(CURRENT)
 NETWORK = '172.29.246.0/30'
 CLIENT = '172.29.246.2'
 GATEWAY = '172.29.246.1'
 TABLE = 51824
 PRIORITY = 75
-NFT = 'evgenium_starfive_lab_host'
 SERVER = '195.209.211.163'
 IKE_PORT = 24550
 ENDPOINTS = (SERVER, '38.180.164.67')
@@ -62,7 +100,6 @@ FULL_PEER = 'evn-full-peer'
 FULL_NET = '172.29.247.0/30'
 FULL_TABLE = '51828'
 ADMIN_TABLE = '51829'
-FULL_GUARD = 'evn_starfive_full'
 def full_state():
     return ROOT/'full-network.json'
 
@@ -235,9 +272,9 @@ table netdev evn_full_wire {{
     inside(['nft','-c','-f','-'],data=rules)
     inside(['nft','-f','-'],data=rules)
     # Replace the original lab forward drop; host ingress remains constrained by full_forward.
-    inside(['nft','flush','chain','inet','evn_starfive_guard','forward'])
-    inside(['nft','add','rule','inet','evn_starfive_guard','forward','iifname',FULL_PEER,'meta','nfproto','ipv4','accept'])
-    inside(['nft','add','rule','inet','evn_starfive_guard','forward','oifname',FULL_PEER,'ipsec','in','reqid',str(REQID),'ct','state','established,related','accept'])
+    inside(['nft','flush','chain','inet',NAMESPACE_GUARD,'forward'])
+    inside(['nft','add','rule','inet',NAMESPACE_GUARD,'forward','iifname',FULL_PEER,'meta','nfproto','ipv4','accept'])
+    inside(['nft','add','rule','inet',NAMESPACE_GUARD,'forward','oifname',FULL_PEER,'ipsec','in','reqid',str(REQID),'ct','state','established,related','accept'])
 
 
 _EGRESS_PROBES = ('https://1.1.1.1/cdn-cgi/trace', 'https://api.ipify.org')
@@ -356,7 +393,7 @@ def use_resolver_file(path=Path('/etc/resolv.conf')):
     # Put only this public resolver file outside the credential directory.
     public=Path('/run/evgenium-resolv.conf')
     public.parent.mkdir(parents=True,exist_ok=True)
-    write(public,target.read_text());public.chmod(0o644)
+    write(public,target.read_text(),mode=0o644)
     temporary=path.with_name('.evgenium-resolv.new')
     temporary.unlink(missing_ok=True);temporary.symlink_to(public)
     os.replace(temporary,path)
@@ -387,9 +424,36 @@ def recover_system_dns():
     return system_dns_health()
 
 
-def persist_guard(rules):
-    # Guard persistence precedes switching. Cleanup after a crash never opens the Internet.
-    guard_unit = '''[Unit]
+TUNNEL_SERVICE = '''[Unit]
+Description=Evgenium full-device Estonia VPN
+After=network.target
+StartLimitIntervalSec=180
+StartLimitBurst=3
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/vpnctl {prefix}-tunnel
+ExecStopPost=/usr/local/sbin/vpnctl {prefix}-tunnel-cleanup
+TimeoutStopSec=20
+KillMode=mixed
+UMask=0077
+MemoryMax=256M
+Restart=on-failure
+RestartSec=3
+'''
+
+RECOVERY_SERVICE = '''[Unit]
+Description=Recover interrupted Evgenium VPN tunnel resources
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target vpn-xray.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vpnctl {prefix}-tunnel-cleanup
+[Install]
+WantedBy=multi-user.target
+'''
+
+GUARD_SERVICE = '''[Unit]
 Description=Evgenium full-device kill switch
 DefaultDependencies=no
 After=local-fs.target
@@ -397,14 +461,237 @@ Before=network-pre.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/nft -f /etc/vpn-manager/starfive-tunnel/full-guard.nft
+ExecStart={nft} -f {root}/full-guard.nft
 [Install]
 WantedBy=multi-user.target
-'''.replace('/usr/sbin/nft', shutil.which('nft'))
+'''
+
+
+UNIT_TEMPLATES = {'unit': TUNNEL_SERVICE, 'recovery': RECOVERY_SERVICE, 'guard': GUARD_SERVICE}
+
+
+def unit_text(layout, role, nft='/usr/bin/nft'):
+    template = UNIT_TEMPLATES[role]
+    if layout == LEGACY and role == 'recovery':
+        template = template.replace('interrupted Evgenium VPN tunnel', 'only interrupted Evgenium tunnel test')
+    return template.format(prefix=layout.command_prefix, root=layout.root, nft=nft)
+
+
+def known_unit(layout, role, data):
+    binaries = ('/usr/bin/nft', '/usr/sbin/nft', '/sbin/nft', shutil.which('nft'))
+    return any(data == unit_text(layout, role, nft).encode() for nft in binaries if nft)
+
+
+def has_layout(layout):
+    paths = (layout.root, layout.state, layout.runtime, *(UNIT_DIR / getattr(layout, role) for role in UNIT_TEMPLATES))
+    return any(os.path.lexists(path) for path in paths)
+
+
+def transition_layouts():
+    try:
+        direction = LAYOUT_TRANSACTION.read_text().strip()
+    except FileNotFoundError:
+        return None
+    if direction == 'upgrade':
+        return LEGACY, CURRENT
+    if direction == 'rollback':
+        return CURRENT, LEGACY
+    raise RuntimeError('Некорректная запись о переносе файлов VPN.')
+
+
+def select_installed_layout():
+    # Also works between the old updater swapping "current" and starting our finalizer.
+    pending = transition_layouts()
+    if pending:
+        source, target = pending
+        use_layout(target if target.root.is_dir() and not source.root.exists() else source)
+    else:
+        if not LEGACY.root.exists() and CURRENT.root.is_dir():
+            use_layout(CURRENT)
+        else:
+            use_layout(LEGACY if has_layout(LEGACY) else CURRENT)
+
+
+def unit_links(name):
+    for kind in ('wants', 'requires', 'upholds'):
+        yield from UNIT_DIR.glob('*.' + kind + '/' + name)
+
+
+def layout_in_use(layout, *, check_destination=False):
+    """Keep live workers and retained fail-closed configurations with their original names."""
+    if ((layout.root / 'network.json').exists() or (layout.root / 'full-network.json').exists()
+            or (Path('/run/netns') / layout.namespace).exists()
+            or (Path('/etc/netns') / layout.namespace).exists()
+            or (Path('/sys/class/net') / layout.host).exists()
+            or any(unit_links(layout.guard)) or any(unit_links(layout.unit))):
+        return True
+    if not has_layout(layout) and not check_destination:
+        return False
+    for name in (layout.unit, layout.guard, layout.recovery):
+        result = command(['systemctl', 'show', '-p', 'ActiveState', '--value', name], check=False)
+        state = result.stdout.strip()
+        if not state:
+            raise RuntimeError('Не удалось определить состояние служб VPN для обновления. Повторите vpn update.')
+        if state not in ('inactive', 'failed'):
+            return True
+    if not shutil.which('nft'):
+        return (UNIT_DIR / layout.guard).exists()
+    result = command(['nft', '-j', 'list', 'tables'], check=False)
+    if result.returncode:
+        raise RuntimeError('Не удалось проверить сохранённые правила VPN. Повторите vpn update.')
+    try:
+        tables = [record['table'] for record in json.loads(result.stdout or '{"nftables":[]}')['nftables'] if 'table' in record]
+    except (ValueError, KeyError, TypeError) as error:
+        raise RuntimeError('Не удалось прочитать список таблиц VPN для обновления.') from error
+    return any(t.get('family') == 'inet' and t.get('name') in (layout.guard_table, layout.host_table) for t in tables)
+
+
+def managed_unit(path, layout, role):
+    info = path.lstat()
+    return (stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and info.st_nlink == 1
+            and info.st_size < 4096 and known_unit(layout, role, path.read_bytes()))
+
+
+def can_move_files(source, target, resuming):
+    for old, new in ((source.root, target.root), (source.runtime, target.runtime), (source.state, target.state)):
+        if old.is_symlink() or new.is_symlink() or (old.exists() and new.exists()):
+            return False
+        if new.exists() and not resuming:
+            return False
+        for path in (old, new):
+            if not path.exists():
+                continue
+            info = path.lstat()
+            if info.st_uid != os.geteuid():
+                return False
+            if old == source.state:
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    return False
+            elif not stat.S_ISDIR(info.st_mode):
+                return False
+    for role in UNIT_TEMPLATES:
+        old = UNIT_DIR / getattr(source, role)
+        new = UNIT_DIR / getattr(target, role)
+        if any(os.path.lexists(unit.with_name(unit.name + '.d')) for unit in (old, new)):
+            return False
+        if os.path.lexists(old) and not managed_unit(old, source, role):
+            return False
+        if os.path.lexists(new) and not (resuming and managed_unit(new, target, role)):
+            return False
+        for link in unit_links(old.name):
+            replacement = link.with_name(new.name)
+            if not link.is_symlink() or link.resolve() != old:
+                return False
+            if os.path.lexists(replacement) and not (resuming and replacement.is_symlink() and replacement.resolve() == new):
+                return False
+        if not resuming and any(unit_links(new.name)):
+            return False
+    return True
+
+
+def update_generated_paths(root, source, target):
+    # These three private files are generated by this client. Identity and credential files move unchanged.
+    replacements = {
+        'strongswan.conf': [(str(source.runtime) + '/', str(target.runtime) + '/')],
+        'connection.conf': [(str(source.root) + '/', str(target.root) + '/'),
+                            ('\n ' + source.ike + ' {', '\n ' + target.ike + ' {'),
+                            ('\n   ' + source.ike + '-net {', '\n   ' + target.ike + '-net {')],
+        'full-guard.nft': [('table inet ' + source.guard_table + ' {', 'table inet ' + target.guard_table + ' {'),
+                           ('"' + source.host + '"', '"' + target.host + '"')],
+    }
+    for name, changes in replacements.items():
+        path = root / name
+        if path.is_symlink() or not path.is_file():
+            continue
+        before = path.read_text()
+        after = before
+        for old, new in changes:
+            after = after.replace(old, new)
+        if after != before:
+            write(path, after)
+
+
+def move_idle_layout(source, target):
+    """Called under the CLI operation lock. Each disk step can resume after interruption."""
+    pending = transition_layouts()
+    if pending and pending != (source, target):
+        raise RuntimeError('Уже выполняется другой перенос файлов VPN.')
+    if not pending and not has_layout(source):
+        use_layout(target)
+        return True
+    if layout_in_use(source) or layout_in_use(target, check_destination=True):
+        return False
+    if not can_move_files(source, target, bool(pending)):
+        if pending:
+            raise RuntimeError('Перенос приостановлен из-за конфликта файлов VPN.')
+        return False
+    if not pending:
+        write(LAYOUT_TRANSACTION, 'upgrade' if target == CURRENT else 'rollback')
+
+    for role in UNIT_TEMPLATES:
+        old = UNIT_DIR / getattr(source, role)
+        new = UNIT_DIR / getattr(target, role)
+        if not old.exists():
+            continue
+        if not new.exists():
+            nft = shutil.which('nft') or '/usr/sbin/nft'
+            write(new, unit_text(target, role, nft), mode=0o644)
+        for link in unit_links(old.name):
+            replacement = link.with_name(new.name)
+            if not replacement.is_symlink():
+                replacement.symlink_to(os.path.relpath(new, link.parent))
+            link.unlink()
+        old.unlink()
+    for old, new in ((source.state, target.state), (source.runtime, target.runtime), (source.root, target.root)):
+        if old.exists():
+            old.rename(new)
+    update_generated_paths(target.root, source, target)
+    command(['systemctl', 'daemon-reload'])
+    LAYOUT_TRANSACTION.unlink()
+    use_layout(target)
+    return True
+
+
+def finish_name_transition():
+    pending = transition_layouts()
+    if pending:
+        if not move_idle_layout(*pending):
+            raise RuntimeError('Перенос имён VPN ещё не завершён.')
+    elif LAYOUT == LEGACY:
+        move_idle_layout(LEGACY, CURRENT)
+
+
+def migrate_unit_modes():
+    """Make earlier generated service descriptions readable, including on idle clients."""
+    for role in UNIT_TEMPLATES:
+        name = getattr(LAYOUT, role)
+        try:
+            fd = os.open(UNIT_DIR / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError as error:
+            if error.errno in (errno.ENOENT, errno.ELOOP):
+                continue
+            raise
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600):
+                continue
+            # A local replacement may contain credentials. Only migrate our own templates.
+            if info.st_size < 4096 and known_unit(LAYOUT, role, os.read(fd, 4096)):
+                os.fchmod(fd, 0o644)
+        finally:
+            os.close(fd)
+
+
+def persist_guard(rules):
+    # Guard persistence precedes switching. Cleanup after a crash never opens the Internet.
+    nft = shutil.which('nft')
+    if not nft:
+        raise FileNotFoundError('nft')
     write(ROOT/'full-guard.nft',rules)
-    write(Path('/etc/systemd/system/evgenium-starfive-full-guard.service'),guard_unit)
+    write(UNIT_DIR / GUARD_UNIT, unit_text(LAYOUT, 'guard', nft), mode=0o644)
     command(['systemctl','daemon-reload'])
-    command(['systemctl','enable','evgenium-starfive-full-guard.service'])
+    command(['systemctl','enable',GUARD_UNIT])
 
 
 def activate_full(address):
@@ -434,7 +721,7 @@ def activate_full(address):
     command(['nft','-f','-'],data=replacement)
     persist_guard(rules)
     # This command stops only this manager's previous Xray mode and removes its guard.
-    command(['/usr/local/sbin/vpnctl','internal-starfive-pause-main'],timeout=40)
+    command(['/usr/local/sbin/vpnctl',LAYOUT.command_prefix+'-pause-main'],timeout=40)
     command(['ip','route','replace','unreachable','default','metric','32760','table',FULL_TABLE])
     command(['ip','route','replace','default','via','172.29.247.2','dev',FULL_HOST,'metric','10','table',FULL_TABLE])
     command(['ip','rule','del','priority','80','lookup',FULL_TABLE],check=False)
@@ -492,7 +779,7 @@ def cleanup_full(release=False):
     command(['ip','route','flush','table',FULL_TABLE],check=False)
     for server in ('192.168.0.163', '38.180.164.67'):
         command(['ip','rule','del','priority','79','to',server,'ipproto','tcp','dport','22','lookup',ADMIN_TABLE],check=False)
-    command(['systemctl','disable','--now','evgenium-starfive-full-guard.service'],check=False)
+    command(['systemctl','disable','--now',GUARD_UNIT],check=False)
     command(['nft','delete','table','inet',FULL_GUARD],check=False)
     clear_dns_mappings()
     clear_dns_mappings(previous_vpn=True)
@@ -514,13 +801,17 @@ def inside(args, **kwargs):
     return command(['ip', 'netns', 'exec', NS, *args], **kwargs)
 
 
-def write(path, value):
+def write(path, value, *, mode=0o600):
     path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    temporary = path.with_suffix('.new')
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as stream:
-        stream.write(value)
-    temporary.replace(path)
+    fd, temporary = tempfile.mkstemp(prefix='.' + path.name + '.', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(value)
+            stream.flush()
+            os.fchmod(fd, mode)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def saved():
@@ -797,7 +1088,7 @@ charon-systemd {{ journal {{ default = 0; ike = 1 }} }}
 ''')
     # Absolute credentials are local to this device, not shared by the account token.
     write(ROOT/'connection.conf', f'''connections {{
- starfive {{
+ {LAYOUT.ike} {{
   version = 2
   remote_addrs = {address}
   remote_port = {ACTIVE['port']}
@@ -811,7 +1102,7 @@ charon-systemd {{ journal {{ default = 0; ike = 1 }} }}
   local {{ auth = eap-tls; id = {identity}; eap_id = {identity}; certs = {ROOT}/client.pem }}
   remote {{ auth = pubkey; id = {ACTIVE['identity']}; cacerts = {ROOT}/ca.pem }}
   children {{
-   starfive-net {{
+   {LAYOUT.ike}-net {{
     local_ts = dynamic
     remote_ts = 0.0.0.0/0
     reqid = {REQID}
@@ -828,7 +1119,7 @@ secrets {{ private-client {{ file = {ROOT}/client-key.pem }} }}
     for name in ('strongswan.conf', 'connection.conf'):
         path = ROOT/name
         path.write_text(path.read_text().replace('; ', '\n').replace('{ ', '{\n').replace(' }', '\n}'))
-    rules = f'''table inet evn_starfive_guard {{
+    rules = f'''table inet {NAMESPACE_GUARD} {{
  chain output {{
   type filter hook output priority -10; policy drop;
   oifname "lo" accept
@@ -860,11 +1151,12 @@ def installed():
 
 def health():
     with namespace():
-        return tls_request(HEALTH, '/health', client=True, identity=ACTIVE['identity'], timeout=3).get('service') == 'evgenium-starfive'
+        return tls_request(HEALTH, '/health', client=True, identity=ACTIVE['identity'], timeout=3).get('service') in ('evgenium-vpn', 'evgenium-starfive')
 
 
 def download(size=1048576):
     # A bounded integrity check, not a claim to have measured the ISP's maximum rate.
+    # Protocol v1 uses this fixed seed on deployed collectors and earlier clients.
     block = hashlib.shake_256(b'evgenium-starfive-integrity-v1').digest(65536)
     expected = hashlib.sha256((block*(size//len(block)+1))[:size]).hexdigest()
     context = ssl.create_default_context(cadata=PINNED_CA)
@@ -965,37 +1257,10 @@ def connect(token='', repair=False, restart=False):
     ensure_dependencies()
     if repair:
         write(ROOT/'recalibrate', '1')
-    unit = f'''[Unit]
-Description=Evgenium full-device Estonia VPN
-After=network.target
-StartLimitIntervalSec=180
-StartLimitBurst=3
-[Service]
-Type=simple
-ExecStart=/usr/local/sbin/vpnctl internal-starfive-tunnel
-ExecStopPost=/usr/local/sbin/vpnctl internal-starfive-tunnel-cleanup
-TimeoutStopSec=20
-KillMode=mixed
-UMask=0077
-MemoryMax=256M
-Restart=on-failure
-RestartSec=3
-'''
-    write(Path('/etc/systemd/system')/UNIT, unit)
-    recovery = "evgenium-starfive-tunnel-recover.service"
-    write(Path('/etc/systemd/system')/recovery, """[Unit]
-Description=Recover only interrupted Evgenium tunnel test resources
-DefaultDependencies=no
-After=local-fs.target
-Before=network-pre.target vpn-xray.service
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/vpnctl internal-starfive-tunnel-cleanup
-[Install]
-WantedBy=multi-user.target
-""")
+    write(UNIT_DIR / UNIT, unit_text(LAYOUT, 'unit'), mode=0o644)
+    write(UNIT_DIR / RECOVERY_UNIT, unit_text(LAYOUT, 'recovery'), mode=0o644)
     command(['systemctl', 'daemon-reload'])
-    command(['systemctl', 'enable', recovery])
+    command(['systemctl', 'enable', RECOVERY_UNIT])
     command(['systemctl','reset-failed',UNIT],check=False)
     stage('starting' , 'Готовлю подключение в Эстонию.', 2, active=False, retry=0, error_code='')
     command(['systemctl', 'restart' if repair or restart else 'start', UNIT])
@@ -1086,7 +1351,7 @@ def start_candidate(candidate,identity):
     env={**os.environ,'STRONGSWAN_CONF':str(ROOT/'strongswan.conf')};env.pop('NOTIFY_SOCKET',None)
     daemon=start_daemon(env)
     try:
-        swan('--initiate','--child','starfive-net',timeout=35)
+        swan('--initiate','--child',LAYOUT.ike+'-net',timeout=35)
         if STOP:raise RuntimeError('cancelled')
         if not installed():raise RuntimeError('handshake_failed')
         prepare_data_plane(candidate['address'])

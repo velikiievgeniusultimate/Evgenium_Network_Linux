@@ -8,7 +8,7 @@ def run(args,**kw):return subprocess.run([str(x) for x in args],check=True,text=
 
 def child(directory):
  spec=importlib.util.spec_from_file_location('manager',ROOT/'src/vpnctl.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
- p=m.policy;t=m.starfive_tunnel;d=Path(directory);account=pwd.getpwnam('vpn-xray')
+ p=m.policy;t=m.vpn_tunnel;d=Path(directory);account=pwd.getpwnam('vpn-xray')
  p.PATH=d/'policy.json';p.RUN=d;t.ROOT=d/'tunnel';t.ROOT.mkdir();d.chmod(0o755)
  settings={'xray_uid':account.pw_uid,'xray_gid':account.pw_gid}
  class API:
