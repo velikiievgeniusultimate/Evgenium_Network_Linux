@@ -14,7 +14,7 @@ QML=shutil.which('qml6') or shutil.which('qml-qt6') or ('/usr/lib/qt6/bin/qml' i
 
 @unittest.skipUnless(QML, 'Qt QML runtime not installed')
 class QmlStateTests(unittest.TestCase):
-    def exercise(self, checks, shorten_watchdog=False):
+    def exercise(self, checks, shorten_watchdog=False, start_action=True):
         class Handler(http.server.BaseHTTPRequestHandler):
             posts=0
             def log_message(self,*args):pass
@@ -32,17 +32,44 @@ class QmlStateTests(unittest.TestCase):
         server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         text=(ROOT/'src/evgenium_gui.qml').read_text()
-        text=text.replace('    Component.onCompleted: {\n        refreshState()', '    Component.onCompleted: {\n        action({action:"test"})\n        refreshState()')
+        if start_action:
+            text=text.replace('    Component.onCompleted: {\n        refreshState()', '    Component.onCompleted: {\n        action({action:"test"})\n        refreshState()')
         if shorten_watchdog:text=text.replace('operation ? 780000 : 12000','operation ? 300 : 12000')
         i=text.rfind('}');text=text[:i]+checks+'\n'+text[i:]
         try:
             with tempfile.TemporaryDirectory() as td:
                 p=Path(td)/'test.qml';p.write_text(text)
-                env={**os.environ,'QT_QPA_PLATFORM':'offscreen','QT_QUICK_BACKEND':'software','QML_DISABLE_DISK_CACHE':'1'}
+                env={**os.environ,'QT_QPA_PLATFORM':'offscreen','QT_QUICK_BACKEND':'software','QML_DISABLE_DISK_CACHE':'1','QT_FORCE_STDERR_LOGGING':'1'}
                 result=subprocess.run([QML,str(p),'--',str(server.server_port),'test-token'],env=env,capture_output=True,text=True,timeout=6)
                 self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-                self.assertEqual(Handler.posts,1,'Polls must not unlock a second toggle/action')
+                self.assertNotIn('Unable to assign [undefined] to bool', result.stderr)
+                self.assertEqual(Handler.posts, int(start_action))
         finally:server.shutdown();server.server_close();thread.join(timeout=1)
+
+    def test_connection_button_follows_available_state(self):
+        self.exercise('''
+    Timer { interval: 100; running: true; onTriggered: {
+        function check(expected, label) {
+            if (connectionButton.enabledButton !== expected || connectionButton.label !== label)
+                throw new Error("Unexpected connection button: " + JSON.stringify(root.state))
+        }
+        try {
+            check(false, "Подключить")
+            root.state = {tunnel: {has_token: true}}
+            check(true, "Подключить")
+            root.state = {guard: true}
+            check(true, "Отключить")
+            root.state = {tunnel: {running: true}}
+            check(true, "Отключить")
+            root.busy = true
+            check(false, "Отключить")
+            Qt.exit(0)
+        } catch (error) {
+            console.error(error.message)
+            Qt.exit(1)
+        }
+    }}
+''', start_action=False)
 
     def test_failed_polls_do_not_unlock_action_or_erase_action_error(self):
         self.exercise('''
