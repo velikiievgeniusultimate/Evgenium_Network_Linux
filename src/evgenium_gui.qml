@@ -543,7 +543,14 @@ ctx.restore()
                                 C.Label { text: root.tunnel.message || "Введите токен клиента"; Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMuted }
                                 C.ProgressBar { Layout.fillWidth: true; visible: Boolean(root.tunnel.running) && !root.state.active; from: 0; to: 100; value: Number(root.tunnel.progress || 0) }
                                 RowLayout {
-                                    FlatButton { label: root.tunnel.running || root.state.guard ? "Отключить" : "Подключить"; primary: true; enabledButton: !root.busy && (root.tokenSaved || root.state.guard); onClicked: root.action({action: root.tunnel.running || root.state.guard ? "disconnect" : "connect"}) }
+                                    FlatButton {
+                                        id: connectionButton
+                                        readonly property bool canDisconnect: Boolean(root.tunnel.running || root.state.guard)
+                                        label: canDisconnect ? "Отключить" : "Подключить"
+                                        primary: true
+                                        enabledButton: !root.busy && (root.tokenSaved || canDisconnect)
+                                        onClicked: root.action({action: canDisconnect ? "disconnect" : "connect"})
+                                    }
                                     FlatButton { label: "Восстановить"; enabledButton: !root.busy && !root.state.connecting && root.tokenSaved; onClicked: root.action({action: "repair"}) }
                                 }
                                 C.Label { text: "Весь трафик идёт через VPN, кроме включённых исключений. При обрыве защищённые подключения блокируются."; Layout.fillWidth: true; wrapMode: Text.Wrap; color: root.textMuted }
