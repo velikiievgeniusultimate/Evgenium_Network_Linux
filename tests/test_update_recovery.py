@@ -17,8 +17,8 @@ class RecoveryTests(unittest.TestCase):
     def fixture(self,stack,folder,events):
         stack.enter_context(patch.object(m,'INSTALL_PENDING',folder/'pending'))
         stack.enter_context(patch.object(m,'INSTALL_COMPLETE',folder/'complete'))
-        for name in ('sync_system_files','cmd_gui_install','retire_legacy','core_update','ensure_gui_dependencies'):
-            stack.enter_context(patch.object(m,name,side_effect=lambda *args,n=name:events.append(n)))
+        for name in ('sync_system_files','_install_desktop_integration','retire_legacy','core_update','ensure_gui_dependencies'):
+            stack.enter_context(patch.object(m,name,side_effect=lambda *args,n=name,**kwargs:events.append(n)))
         stack.enter_context(patch.object(m,'_widget_package_dir',return_value=folder/'absent-widget'))
         stack.enter_context(patch.object(m.policy,'migration',side_effect=lambda _:events.append('migration')))
         stack.enter_context(patch.object(m.vpn_tunnel,'status',return_value={'running':False}))
@@ -36,14 +36,14 @@ class RecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'mirror unavailable'):m.finish_installation({})
             self.assertTrue((folder/'pending').exists())
             self.assertFalse((folder/'complete').exists())
-            self.assertEqual(events[:2],['sync_system_files','cmd_gui_install'])
+            self.assertEqual(events[:2],['sync_system_files','_install_desktop_integration'])
             self.assertNotIn('retire_legacy',events)
             deps.side_effect=None
             stack.enter_context(patch.object(m,'http_get',return_value=json.dumps({'version':m.MANAGER_VERSION}).encode()))
             self.assertFalse(m.manager_update_manifest({},'https://example.test/manifest'))
             self.assertFalse((folder/'pending').exists())
             self.assertEqual(json.loads((folder/'complete').read_text())['version'],m.MANAGER_VERSION)
-            self.assertEqual(events.count('cmd_gui_install'),2)
+            self.assertEqual(events.count('_install_desktop_integration'),2)
 
     def test_current_version_sync_does_not_reconnect_healthy_tunnel(self):
         with tempfile.TemporaryDirectory() as td,contextlib.ExitStack() as stack:

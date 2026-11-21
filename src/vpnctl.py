@@ -36,6 +36,7 @@ import shutil
 import socket
 
 import ssl
+import stat
 
 import subprocess
 
@@ -57,7 +58,7 @@ import zipfile
 
 from typing import NoReturn
 
-MANAGER_VERSION = "0.5.11"
+MANAGER_VERSION = "0.5.12"
 
 SAFE_XRAY_VERSION = "26.7.28"
 
@@ -1335,19 +1336,53 @@ def _widget_target_safe(settings: dict, package: pathlib.Path) -> None:
         if candidate.exists() and not candidate.is_dir():
             fail(f"Ожидалась папка Plasma-виджета: {candidate}")
 
-def _write_owner_text(path: pathlib.Path, text: str, uid: int, gid: int) -> None:
+def _write_owner_text(path: pathlib.Path, text: str, uid: int, gid: int, mode=0o644) -> None:
     fd, tmpname = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
             f.flush()
+            os.fchown(f.fileno(), uid, gid)
+            os.fchmod(f.fileno(), mode)
             os.fsync(f.fileno())
-        os.chmod(tmpname, 0o644)
-        os.chown(tmpname, uid, gid)
         os.replace(tmpname, path)
     finally:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmpname)
+
+def _registration_matches(home: pathlib.Path, path: pathlib.Path, expected: bytes, uid: int, gid: int) -> bool:
+    # The owner's home is a configured destination. Below it, never follow links
+    # while comparing these small user-controlled files with packaged metadata.
+    relative = path.relative_to(home)
+    dir_flags = os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC
+    try:
+        with contextlib.ExitStack() as opened:
+            directory = os.open(home, dir_flags)
+            opened.callback(os.close, directory)
+            for name in relative.parts[:-1]:
+                directory = os.open(name, dir_flags | os.O_NOFOLLOW, dir_fd=directory)
+                opened.callback(os.close, directory)
+            fd = os.open(relative.name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+            opened.callback(os.close, fd)
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_size != len(expected) or
+                    info.st_uid != uid or info.st_gid != gid or info.st_nlink != 1 or
+                    stat.S_IMODE(info.st_mode) != 0o644):
+                return False
+            # Reopen the pinned regular inode, not the user-controlled pathname.
+            with open(f"/proc/self/fd/{fd}", "rb", buffering=0) as current:
+                if current.read(len(expected) + 1) != expected:
+                    return False
+            after = os.stat(relative.name, dir_fd=directory, follow_symlinks=False)
+            return os.path.samestat(info, after) and info.st_ctime_ns == after.st_ctime_ns
+    except OSError:
+        return False
+
+def _install_registration(settings: dict, path: pathlib.Path, text: str, uid: int, gid: int) -> bool:
+    if _registration_matches(pathlib.Path(settings["owner_home"]), path, text.encode("utf-8"), uid, gid):
+        return False
+    _write_owner_text(path, text, uid, gid)
+    return True
 
 def _gui_package_dir(settings: dict) -> pathlib.Path:
     return pathlib.Path(str(settings["owner_home"])) / ".local" / "share" / "evgenium-network"
@@ -1367,7 +1402,7 @@ def _gui_target_safe(settings: dict, target: pathlib.Path) -> None:
     if target.is_symlink():
         fail(f"Отказываюсь изменять symlink GUI: {target}")
 
-def cmd_gui_install(settings: dict) -> None:
+def _install_gui_files(settings: dict) -> bool:
     package = _gui_package_dir(settings)
     desktop = _gui_desktop_path(settings)
     icon = _gui_icon_path(settings)
@@ -1385,19 +1420,28 @@ def cmd_gui_install(settings: dict) -> None:
 
     gui_py = base64.b64decode(STANDALONE_GUI_PY_B64).decode("utf-8")
     gui_qml = base64.b64decode(STANDALONE_GUI_QML_B64).decode("utf-8")
-    _write_owner_text(package / "evgenium_gui.py", gui_py, uid, gid)
+    _write_owner_text(package / "evgenium_gui.py", gui_py, uid, gid, mode=0o755)
     _write_owner_text(package / "evgenium_gui.qml", gui_qml, uid, gid)
-    _write_owner_text(desktop, GUI_DESKTOP_ENTRY, uid, gid)
     _write_owner_text(icon, APP_ICON_SVG, uid, gid)
-    os.chmod(package / "evgenium_gui.py", 0o755)
-    os.chmod(package / "evgenium_gui.qml", 0o644)
-    os.chmod(icon, 0o644)
-    os.chmod(desktop, 0o644)
-
-    kbuild = shutil.which("kbuildsycoca6")
-    if kbuild:
-        run([kbuild], check=False, capture=True, user=str(settings["owner_user"]))
+    changed = _install_registration(settings, desktop, GUI_DESKTOP_ENTRY, uid, gid)
     ok(f"Evgenium Network GUI установлен: {package}")
+    return changed
+
+def _install_desktop_integration(settings: dict, *, widget: bool, force_cache: bool) -> None:
+    changed = _install_gui_files(settings)
+    try:
+        if widget:
+            widget_changed = _install_widget_files(settings)
+            changed = changed or widget_changed
+    finally:
+        # A widget install can fail after the desktop entry was already published.
+        if force_cache or changed:
+            kbuild = shutil.which("kbuildsycoca6")
+            if kbuild:
+                run([kbuild], check=False, capture=True, user=str(settings["owner_user"]))
+
+def cmd_gui_install(settings: dict) -> None:
+    _install_desktop_integration(settings, widget=False, force_cache=True)
 
 def cmd_gui_remove(settings: dict) -> None:
     package = _gui_package_dir(settings)
@@ -1412,8 +1456,7 @@ def cmd_gui_remove(settings: dict) -> None:
         run([kbuild], check=False, capture=True, user=str(settings["owner_user"]))
     ok("Evgenium Network GUI удалён из профиля пользователя.")
 
-def cmd_widget_install(settings: dict) -> None:
-    cmd_gui_install(settings)
+def _install_widget_files(settings: dict) -> bool:
     package = _widget_package_dir(settings)
     _widget_target_safe(settings, package)
     uid, gid = _owner_ids(settings)
@@ -1437,15 +1480,14 @@ def cmd_widget_install(settings: dict) -> None:
             fail(f"Отказываюсь удалять symlink Plasma UI: {candidate}")
         candidate.unlink(missing_ok=True)
 
-    _write_owner_text(package / "metadata.json", PLASMOID_METADATA, uid, gid)
     _write_owner_text(ui / "main.qml", PLASMOID_MAIN_QML, uid, gid)
-
-    kbuild = shutil.which("kbuildsycoca6")
-    if kbuild:
-        run([kbuild], check=False, capture=True, user=str(settings["owner_user"]))
-
+    changed = _install_registration(settings, package / "metadata.json", PLASMOID_METADATA, uid, gid)
     ok(f"Plasma 6 виджет установлен: {package}")
     print("Шестерёнка E-VPN открывает отдельное приложение Evgenium Network.")
+    return changed
+
+def cmd_widget_install(settings: dict) -> None:
+    _install_desktop_integration(settings, widget=True, force_cache=True)
 
 def cmd_widget_remove(settings: dict) -> None:
     package = _widget_package_dir(settings)
@@ -3419,8 +3461,7 @@ def finish_installation(settings, *, reconnect=True):
   live=vpn_tunnel.layout_in_use(vpn_tunnel.LAYOUT)
   if live:sync_system_files(install_policy=False)
   else:sync_system_files()
-  cmd_gui_install(settings)
-  if _widget_package_dir(settings).exists():cmd_widget_install(settings)
+  _install_desktop_integration(settings, widget=_widget_package_dir(settings).exists(), force_cache=False)
   if live:
    # The worker may still be running the previous release. Keep its credentials,
    # firewall, policy process and resolver intact, including a retained kill switch.
