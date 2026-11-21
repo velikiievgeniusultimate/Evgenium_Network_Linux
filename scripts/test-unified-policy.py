@@ -6,6 +6,52 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def run(args,**kw):return subprocess.run([str(x) for x in args],check=True,text=True,capture_output=True,**kw)
 
+
+def check_relay_transport(tunnel):
+    peer = os.environ['EVG_TEST_DIRECT']
+    transport = os.environ['EVG_TEST_TRANSPORT']
+    relay = next(path for path in tunnel.CANDIDATES if path['id'] == 'ee-evgt-ru')
+    server, port = relay['transport_address'], relay['transport_port']
+    assert (server, port) == (tunnel.SERVER, 24579)
+    neighbor = port + 1
+
+    def inside(ns, *args):
+        return run(['ip', 'netns', 'exec', ns, *args])
+
+    # The host, both ends of this veth and the fake public server are private test namespaces.
+    run(['ip', 'link', 'add', tunnel.HOST, 'type', 'veth', 'peer', 'name', tunnel.PEER, 'netns', transport])
+    run(['ip', 'addr', 'add', tunnel.GATEWAY + '/30', 'dev', tunnel.HOST])
+    run(['ip', 'link', 'set', tunnel.HOST, 'up'])
+    inside(transport, 'ip', 'addr', 'add', tunnel.CLIENT + '/30', 'dev', tunnel.PEER)
+    inside(transport, 'ip', 'link', 'set', tunnel.PEER, 'up')
+    inside(transport, 'ip', 'route', 'add', server + '/32', 'via', tunnel.GATEWAY)
+    inside(peer, 'ip', 'addr', 'add', server + '/32', 'dev', 'lo')
+    # Match the real transport source route and the return route ahead of the VPN default.
+    run(['ip', 'route', 'add', 'default', 'via', '198.51.100.1', 'dev', 'wan', 'table', tunnel.TABLE])
+    run(['ip', 'rule', 'add', 'priority', tunnel.PRIORITY, 'from', tunnel.CLIENT + '/32',
+         'to', server + '/32', 'lookup', tunnel.TABLE])
+    run(['ip', 'rule', 'add', 'priority', '79', 'to', tunnel.CLIENT + '/32', 'lookup', 'main'])
+
+    with subprocess.Popen(['ip', 'netns', 'exec', peer, sys.executable, '-u', '-c', SERVER,
+                           'HSVDS', server, str(port), str(neighbor)], stdout=subprocess.PIPE, text=True) as listeners:
+        try:
+            assert listeners.stdout.readline().strip() == 'ready', 'fake relay listeners did not start'
+            query = ['curl', '-4', '--noproxy', '*', '-fsS', '--max-time', '3']
+            url = lambda n: f'http://{server}:{n}/'
+            assert inside(peer, *query, url(neighbor)).stdout == 'HSVDS', 'control listener unavailable'
+            query += ['--interface', tunnel.CLIENT]
+            assert inside(transport, *query, url(port)).stdout == 'HSVDS', 'production relay port unreachable'
+            try:
+                inside(transport, *query, url(neighbor))
+            except subprocess.CalledProcessError as error:
+                if error.returncode != 28:  # curl timeout, a refused or unroutable connection is a test error.
+                    raise
+            else:
+                raise AssertionError('transport reached a port outside the relay exception')
+            print('HSVDS relay accepted; neighboring TCP listener blocked', flush=True)
+        finally:
+            listeners.terminate()
+
 def child(directory):
  spec=importlib.util.spec_from_file_location('manager',ROOT/'src/vpnctl.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
  p=m.policy;t=m.vpn_tunnel;d=Path(directory);account=pwd.getpwnam('vpn-xray')
@@ -41,6 +87,7 @@ def child(directory):
   base=p.defaults();apply(base)
   # Exercise both host filters, including forwarding initially disabled.
   run(['nft','-f','-'],input=t.host_rules('wan',previous_forward=False))
+  check_relay_transport(t)
   check('default',curl(),'VPN')
   sample=p.defaults();sample['networks']=['203.0.113.10/32'];apply(sample);check('IP exception',curl(),'DIRECT')
   sample=p.defaults();sample['networks']=['example.test'];apply(sample);check('domain exception',curl('example.test',resolve='example.test:18080:203.0.113.10'),'DIRECT');check('other domain',curl('other.test',resolve='other.test:18080:203.0.113.10'),'VPN')
@@ -120,12 +167,18 @@ print(socket.inet_ntoa(data[-4:]))
   log.close()
 
 SERVER=r'''
-import http.server,sys
+import http.server,sys,threading
 class H(http.server.BaseHTTPRequestHandler):
  def do_GET(self):
   b=sys.argv[1].encode();self.send_response(200);self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b)
  def log_message(self,*a):pass
-http.server.HTTPServer(('0.0.0.0',18080),H).serve_forever()
+address = sys.argv[2] if len(sys.argv) > 2 else '0.0.0.0'
+ports = [int(arg) for arg in sys.argv[3:]] or [18080]
+servers = [http.server.HTTPServer((address, port), H) for port in ports]
+for server in servers[1:]:
+ threading.Thread(target=server.serve_forever, daemon=True).start()
+print('ready', flush=True)
+servers[0].serve_forever()
 '''
 
 DNS_SERVER=r'''
@@ -156,7 +209,7 @@ udp('1.1.1.1')
 def main():
  if len(sys.argv)>1 and sys.argv[1]=='child':return child(sys.argv[2])
  if os.geteuid()!=0:raise SystemExit('Run with sudo; the test only changes disposable namespaces.')
- suffix=uuid.uuid4().hex[:7];names=['evg-policy-'+suffix+x for x in ('h','d','v','w')];host,direct,vpn,wd=names;procs=[]
+ suffix=uuid.uuid4().hex[:7];names=['evg-policy-'+suffix+x for x in ('h','d','v','w','t')];host,direct,vpn,wd,transport=names;procs=[]
  def inside(ns,args):return run(['ip','netns','exec',ns,*args])
  try:
   for n in names:run(['ip','netns','add',n]);inside(n,['ip','link','set','lo','up'])
@@ -175,7 +228,7 @@ def main():
    procs.append(subprocess.Popen(['ip','netns','exec',n,sys.executable,'-c',DNS_SERVER,'11' if n==direct else '12'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL))
   inside(host,['ip','route','add','default','via','198.51.100.1','dev','wan'])
   with tempfile.TemporaryDirectory(prefix='evg-policy-test-') as d:
-   result=subprocess.run(['ip','netns','exec',host,sys.executable,__file__,'child',d],text=True,capture_output=True,timeout=120,env={**os.environ,'EVG_TEST_WAYDROID':wd,'EVG_TEST_DIRECT':direct})
+   result=subprocess.run(['ip','netns','exec',host,sys.executable,__file__,'child',d],text=True,capture_output=True,timeout=120,env={**os.environ,'EVG_TEST_WAYDROID':wd,'EVG_TEST_DIRECT':direct,'EVG_TEST_TRANSPORT':transport})
    print(result.stdout)
    if result.returncode:
     print(result.stderr);print((Path(d)/'engine.log').read_text()[-6000:]);raise SystemExit(result.returncode)

@@ -233,6 +233,7 @@ def firewall(p,lan,uid):
   iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr {tunnel.SERVER} udp dport {tunnel.IKE_PORT} accept
   iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr 38.180.164.67 udp dport 443 accept
   iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr 38.180.164.67 tcp dport {{ 24571, 24578 }} accept
+  iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr {tunnel.SERVER} tcp dport 24579 accept
   iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr {tunnel.SERVER} tcp dport 8443 accept
   oifname "{tunnel.HOST}" ip daddr {tunnel.CLIENT} ct state established,related accept
   iifname "waydroid0" meta nfproto ipv4 meta mark {DIRECT} accept

@@ -6,6 +6,20 @@ spec=importlib.util.spec_from_file_location('unified',ROOT/'src/vpnctl.py');m=im
 p=m.policy
 
 class PolicyTests(unittest.TestCase):
+ def test_full_device_guard_allows_the_configured_hsvds_relay_only_for_the_tunnel(self):
+  t=m.vpn_tunnel
+  relay=next(c for c in t.CANDIDATES if c['id']=='ee-evgt-ru')
+  original=t.LAYOUT
+  self.addCleanup(t.use_layout,original)
+  for layout in (t.CURRENT,t.LEGACY):
+   with self.subTest(layout=layout.unit),patch.object(p,'waydroid_network',return_value={'networks':[]}):
+    t.use_layout(layout)
+    rules=p.firewall(p.defaults(),[],1001)
+    port=relay['transport_port']
+    carrier_rules=[line.strip() for line in rules.splitlines() if str(port) in line]
+    self.assertEqual(carrier_rules,[f'iifname "{layout.host}" ip saddr {t.CLIENT} ip daddr {relay["transport_address"]} tcp dport {port} accept'])
+    self.assertIn('type filter hook forward priority -30; policy drop;',rules)
+
  def test_migration_retains_explicit_rules_and_defaults_waydroid_direct(self):
   with tempfile.TemporaryDirectory() as td,patch.object(p,'PATH',Path(td)/'policy.json'):
    root=Path(td)
