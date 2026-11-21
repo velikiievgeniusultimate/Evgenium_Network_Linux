@@ -21,8 +21,10 @@ class RecoveryTests(unittest.TestCase):
             stack.enter_context(patch.object(m,name,side_effect=lambda *args,n=name:events.append(n)))
         stack.enter_context(patch.object(m,'_widget_package_dir',return_value=folder/'absent-widget'))
         stack.enter_context(patch.object(m.policy,'migration',side_effect=lambda _:events.append('migration')))
-        stack.enter_context(patch.object(m.starfive_tunnel,'status',return_value={'running':False}))
-        stack.enter_context(patch.object(m.starfive_tunnel,'token_status',return_value={'has_token':False}))
+        stack.enter_context(patch.object(m.vpn_tunnel,'status',return_value={'running':False}))
+        stack.enter_context(patch.object(m.vpn_tunnel,'finish_name_transition'))
+        stack.enter_context(patch.object(m.vpn_tunnel,'layout_in_use',return_value=False))
+        stack.enter_context(patch.object(m.vpn_tunnel,'token_status',return_value={'has_token':False}))
         stack.enter_context(patch.object(m,'run',return_value=subprocess.CompletedProcess([],3,'','')))
         stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
         stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
@@ -30,7 +32,7 @@ class RecoveryTests(unittest.TestCase):
     def test_dependency_failure_keeps_new_entrypoints_and_retries_same_version(self):
         with tempfile.TemporaryDirectory() as td,contextlib.ExitStack() as stack:
             events=[];folder=Path(td);self.fixture(stack,folder,events)
-            deps=stack.enter_context(patch.object(m.starfive_tunnel,'ensure_dependencies',side_effect=RuntimeError('mirror unavailable')))
+            deps=stack.enter_context(patch.object(m.vpn_tunnel,'ensure_dependencies',side_effect=RuntimeError('mirror unavailable')))
             with self.assertRaisesRegex(RuntimeError,'mirror unavailable'):m.finish_installation({})
             self.assertTrue((folder/'pending').exists())
             self.assertFalse((folder/'complete').exists())
@@ -46,21 +48,21 @@ class RecoveryTests(unittest.TestCase):
     def test_current_version_sync_does_not_reconnect_healthy_tunnel(self):
         with tempfile.TemporaryDirectory() as td,contextlib.ExitStack() as stack:
             self.fixture(stack,Path(td),[])
-            stack.enter_context(patch.object(m.starfive_tunnel,'ensure_dependencies'))
-            stack.enter_context(patch.object(m.starfive_tunnel,'status',return_value={'running':True}))
-            stack.enter_context(patch.object(m.starfive_tunnel,'token_status',return_value={'has_token':True}))
-            stack.enter_context(patch.object(m.starfive_tunnel,'sync_device_name'))
-            connect=stack.enter_context(patch.object(m.starfive_tunnel,'connect'))
+            stack.enter_context(patch.object(m.vpn_tunnel,'ensure_dependencies'))
+            stack.enter_context(patch.object(m.vpn_tunnel,'status',return_value={'running':True}))
+            stack.enter_context(patch.object(m.vpn_tunnel,'token_status',return_value={'has_token':True}))
+            stack.enter_context(patch.object(m.vpn_tunnel,'sync_device_name'))
+            connect=stack.enter_context(patch.object(m.vpn_tunnel,'connect'))
             m.finish_installation({},reconnect=False);connect.assert_not_called()
 
-    def test_pending_update_reconnects_and_keeps_pending_on_failure(self):
+    def test_pending_legacy_xray_upgrade_keeps_pending_on_reconnect_failure(self):
         with tempfile.TemporaryDirectory() as td,contextlib.ExitStack() as stack:
             folder=Path(td);self.fixture(stack,folder,[]);(folder/'pending').write_text('interrupted')
-            stack.enter_context(patch.object(m.starfive_tunnel,'ensure_dependencies'))
-            stack.enter_context(patch.object(m.starfive_tunnel,'status',return_value={'running':True}))
-            stack.enter_context(patch.object(m.starfive_tunnel,'token_status',return_value={'has_token':True}))
-            stack.enter_context(patch.object(m.starfive_tunnel,'sync_device_name'))
-            connect=stack.enter_context(patch.object(m.starfive_tunnel,'connect',side_effect=RuntimeError('connect failed')))
+            stack.enter_context(patch.object(m.vpn_tunnel,'ensure_dependencies'))
+            stack.enter_context(patch.object(m,'run',return_value=subprocess.CompletedProcess([],0,'','')))
+            stack.enter_context(patch.object(m.vpn_tunnel,'token_status',return_value={'has_token':True}))
+            stack.enter_context(patch.object(m.vpn_tunnel,'sync_device_name'))
+            connect=stack.enter_context(patch.object(m.vpn_tunnel,'connect',side_effect=RuntimeError('connect failed')))
             with self.assertRaises(RuntimeError):m.finish_installation({},reconnect=False)
             connect.assert_called_once_with(repair=True)
             self.assertTrue((folder/'pending').exists())

@@ -75,7 +75,7 @@ class Transport(unittest.IsolatedAsyncioTestCase):
   self.assertTrue(writer.closed)
 if __name__=='__main__':unittest.main()
 
-import starfive_tunnel as tunnel
+import vpn_tunnel as tunnel
 class Recovery(unittest.TestCase):
  def test_speed_drop_detects_upload_only_and_ignores_unavailable_measurement(self):
   baseline={'download_mbps':100,'upload_mbps':100}
