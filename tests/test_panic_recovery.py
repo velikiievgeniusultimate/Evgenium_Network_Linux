@@ -40,7 +40,7 @@ class PanicRecovery(unittest.TestCase):
   self.assertEqual(visited,order*3)
   self.assertEqual(t.recovery_route(rank,order[0],order[0],False),order[0])
  def test_manual_off_stops_and_disables_restart_after_boot(self):
-  with patch.object(t,'command') as command,patch.object(t,'cleanup'),patch.object(t,'cleanup_full'),patch.object(t,'stage'):
+  with patch.object(t,'command', return_value=Mock(returncode=0)) as command,patch.object(t,'cleanup'),patch.object(t,'cleanup_full'),patch.object(t,'stage'):
    t.disconnect()
   args=[c.args[0] for c in command.call_args_list]
   self.assertIn(['systemctl','disable',t.UNIT],args)

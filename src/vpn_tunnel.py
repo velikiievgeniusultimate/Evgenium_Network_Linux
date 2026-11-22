@@ -1206,8 +1206,41 @@ secrets {{ private-client {{ file = {ROOT}/client-key.pem }} }}
     inside(['nft', '-f', '-'], data=rules)
 
 
+def swan_command(*args):
+    return ['ip', 'netns', 'exec', NS, 'swanctl', *args, '--uri', 'unix://' + str(RUNTIME / 'charon.vici')]
+
+
 def swan(*args, timeout=15, check=True):
-    return inside(['swanctl', *args, '--uri', 'unix://'+str(RUNTIME/'charon.vici')], timeout=timeout, check=check)
+    return command(swan_command(*args), timeout=timeout, check=check)
+
+
+def initiate_ike(timeout=35):
+    # KillMode=mixed delivers SIGTERM to this worker first. Do not spend the
+    # entire handshake deadline in swanctl after the worker has been stopped.
+    if STOP:
+        raise RuntimeError('cancelled')
+    args = swan_command('--initiate', '--child', LAYOUT.ike + '-net')
+    deadline = time.monotonic() + timeout
+    request = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        while not STOP:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(args, timeout)
+            try:
+                result = request.wait(timeout=min(remaining, 0.2))
+            except subprocess.TimeoutExpired:
+                continue
+            if STOP:
+                break
+            if result:
+                raise RuntimeError('command_failed')
+            return
+        raise RuntimeError('cancelled')
+    finally:
+        # Only the synchronous request is owned here. start_candidate()
+        # owns charon, and the worker retains the guard during its cleanup.
+        stop_process(request, grace=1)
 
 
 def installed():
@@ -1370,7 +1403,13 @@ def connect(token='', repair=False, restart=False):
 
 def disconnect():
     command(['systemctl','disable',UNIT],check=False)
-    command(['systemctl', 'stop', UNIT], check=False, timeout=25)
+    stopped = command(['systemctl', 'stop', UNIT], check=False, timeout=25)
+    if stopped.returncode:
+        # A first or repeated explicit disconnect may have no tunnel unit.
+        # A failed stop of an installed worker must retain its guard.
+        state = command(['systemctl', 'show', '-p', 'LoadState', '-p', 'ActiveState', UNIT], check=False, timeout=3)
+        if state.returncode not in (0, 4) or set(state.stdout.splitlines()) != {'LoadState=not-found', 'ActiveState=inactive'}:
+            raise RuntimeError('Не удалось остановить службу VPN. Защита сохранена.')
     cleanup()
     cleanup_full(release=True)
     stage('off', 'VPN выключен.', 0, active=False)
@@ -1398,10 +1437,10 @@ def start_daemon(env):
         raise
 
 
-def stop_process(process):
+def stop_process(process, grace=5):
     if process is not None and process.poll() is None:
         process.terminate()
-        try:process.wait(timeout=5)
+        try:process.wait(timeout=grace)
         except subprocess.TimeoutExpired:process.kill();process.wait(timeout=3)
 
 
@@ -1453,7 +1492,7 @@ def start_candidate(candidate,identity):
     env={**os.environ,'STRONGSWAN_CONF':str(ROOT/'strongswan.conf')};env.pop('NOTIFY_SOCKET',None)
     daemon=start_daemon(env)
     try:
-        swan('--initiate','--child',LAYOUT.ike+'-net',timeout=35)
+        initiate_ike()
         if STOP:raise RuntimeError('cancelled')
         if not installed():raise RuntimeError('handshake_failed')
         prepare_data_plane(candidate['address'])
