@@ -257,25 +257,38 @@ def parse_exit(body, trace):
         return None
 
 
-def egress_health():
-    """Independent HTTPS providers; a verified wrong IP must never be masked by fallback."""
-    global _egress_preferred
-    for index in (_egress_preferred, 1-_egress_preferred):
+def probe_egress(run, order, proxy_args=()):
+    """Return the first verified IP, including a wrong exit, and its probe index."""
+    for index in order:
         url = _EGRESS_PROBES[index]
         try:
-            result = inside(['curl','-4','--noproxy','*','--fail','--silent','--show-error',
-                             '--connect-timeout','3','--max-time','5','--max-filesize','32768',url],timeout=7,check=False)
+            result = run(['curl','-4',*proxy_args,'--fail','--silent','--show-error',
+                          '--connect-timeout','3','--max-time','5','--max-filesize','32768',url],timeout=7,check=False)
         except (OSError,subprocess.TimeoutExpired):
             continue
         if result.returncode != 0:
             continue
         observed = parse_exit(result.stdout, index == 0)
         if observed is not None:
-            if observed != '38.180.164.67':
-                return False
-            _egress_preferred = index
-            return True
-    return False
+            return observed, index
+    return None, None
+
+
+def egress_health():
+    global _egress_preferred
+    observed, index = probe_egress(inside, (_egress_preferred, 1-_egress_preferred), ('--noproxy','*'))
+    if observed != '38.180.164.67':
+        return False
+    _egress_preferred = index
+    return True
+
+
+def selected_host_egress():
+    # Check the host classifier and VPN route with a numeric HTTPS endpoint first.
+    # SOCKS resolves the fallback hostname itself, independently of resolv.conf.
+    observed, _ = probe_egress(command, (0, 1),
+                               ('--noproxy','','--socks5-hostname','127.0.0.1:18554'))
+    return observed
 
 
 def path_healthy(daemon):
@@ -295,7 +308,11 @@ def retire_previous_connections(addresses):
 def system_dns_health(resolv_conf=Path('/etc/resolv.conf')):
     # getaddrinfo/curl may use nss-resolve over a Unix socket and miss a broken
     # UDP stub used by other applications. Exercise resolv.conf independently.
-    servers = [line.split()[1] for line in resolv_conf.read_text().splitlines()
+    try:
+        lines = resolv_conf.read_text().splitlines()
+    except (OSError, UnicodeError):
+        return False
+    servers = [line.split()[1] for line in lines
                if line.split()[:1] == ['nameserver'] and len(line.split()) >= 2][:3]
     for server in servers:
         try:
@@ -391,6 +408,20 @@ def recover_system_dns():
     return system_dns_health()
 
 
+def check_system_dns():
+    if policy is not None and policy.inclusive(policy.load()):
+        if not system_dns_health():
+            return 'Системный DNS недоступен. Приложения могут не открывать сайты по имени.'
+    elif not recover_system_dns():
+        raise RuntimeError('system_dns_failed')
+    return ''
+
+
+def connected_message(label, dns_warning):
+    message = 'Подключено: '+label+'.'
+    return message+' '+dns_warning if dns_warning else message
+
+
 def persist_guard(rules):
     # Guard persistence precedes switching. Cleanup after a crash never opens the Internet.
     guard_unit = '''[Unit]
@@ -476,15 +507,19 @@ def activate_full(address):
     retire_previous_connections(old_addresses)
     if policy is not None:
         policy.apply()
-    if not recover_system_dns():
-        raise RuntimeError('system_dns_failed')
+    dns_warning = check_system_dns()
     # Test the actual host path as well as namespace probes before announcing connected.
-    check = command(['curl','-4','--noproxy','' if policy is not None else '*','--fail','--silent','--max-time','10',*(['--socks5-hostname','127.0.0.1:18554'] if policy is not None else []),'https://api.ipify.org'],timeout=12)
-    if check.stdout.strip() != '38.180.164.67':
+    if policy is not None and policy.inclusive(policy.load()):
+        observed = selected_host_egress()
+    else:
+        check = command(['curl','-4','--noproxy','' if policy is not None else '*','--fail','--silent','--max-time','10',*(['--socks5-hostname','127.0.0.1:18554'] if policy is not None else []),'https://api.ipify.org'],timeout=12)
+        observed = check.stdout.strip()
+    if observed != '38.180.164.67':
         raise RuntimeError('host_egress_failed')
     data=json.loads(full_state().read_text())
     data['active']=True
     write(full_state(),json.dumps(data))
+    return dns_warning
 
 
 def cleanup_full(release=False):
@@ -1247,8 +1282,8 @@ def worker_once():
                 stage('handshake','Подключаю: '+candidate['label'],75,active=False,path=current)
                 daemon=start_candidate(candidate,identity)
                 stage('routing','Подключаю трафик к проверенному маршруту.',92)
-                activate_full(candidate['address'])
-                stage('connected','Подключено: '+candidate['label']+'.',100,active=True,path=current,
+                dns_warning = activate_full(candidate['address'])
+                stage('connected',connected_message(candidate['label'], dns_warning),100,active=True,path=current,
                       metrics=rank.data['entries'][current],since=int(time.time()),error_code='')
                 failures=0;slow=0;last_traffic=traffic_total();next_speed=time.monotonic()+600+secrets.randbelow(60)
                 while not STOP:
@@ -1262,7 +1297,8 @@ def worker_once():
                             stage('repairing','Перезапускаю защищённый DNS.',90,active=False,error_code='private_dns_stopped')
                             start_namespace_dns()
                         healthy=path_healthy(daemon)
-                        if healthy and not recover_system_dns():raise RuntimeError('system_dns_failed')
+                        if healthy:
+                            dns_warning = check_system_dns()
                     except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired):healthy=False
                     failures=0 if healthy else failures+1
                     if failures>=2:raise RuntimeError('path_health_failed')
@@ -1273,14 +1309,14 @@ def worker_once():
                         traffic=traffic_total()
                         if not slow and traffic-last_traffic<4194304:
                             last_traffic=traffic;next_speed=time.monotonic()+600+secrets.randbelow(60)
-                            continue
-                        last_traffic=traffic
-                        sample=speed_sample(2097152);baseline=rank.data['entries'][current]
-                        degraded=speed_degraded(sample,baseline)
-                        slow=slow+1 if degraded else 0
-                        next_speed=time.monotonic()+(20 if slow else 600+secrets.randbelow(60))
-                        if slow>=3:raise RuntimeError('confirmed_speed_drop')
-                    stage('connected','Подключено: '+candidate['label']+'.',100,active=True,path=current,error_code='')
+                        else:
+                            last_traffic=traffic
+                            sample=speed_sample(2097152);baseline=rank.data['entries'][current]
+                            degraded=speed_degraded(sample,baseline)
+                            slow=slow+1 if degraded else 0
+                            next_speed=time.monotonic()+(20 if slow else 600+secrets.randbelow(60))
+                            if slow>=3:raise RuntimeError('confirmed_speed_drop')
+                    stage('connected',connected_message(candidate['label'], dns_warning),100,active=True,path=current,error_code='')
             except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired) as exc:
                 if STOP:break
                 reason=str(exc) if re.fullmatch('[a-z_]{1,64}',str(exc)) else 'connection_failed'

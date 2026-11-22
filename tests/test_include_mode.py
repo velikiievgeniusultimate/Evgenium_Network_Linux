@@ -15,6 +15,64 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 p = m.policy
 
 class IncludeModeTests(unittest.TestCase):
+    def test_worker_stays_connected_when_direct_dns_fails_then_recovers(self):
+        tunnel = m.starfive_tunnel
+        connected = []
+
+        def capture_stage(phase, message, progress, **fields):
+            self.assertNotIn(phase, ('failed', 'repairing', 'checking'), message)
+            if phase == 'connected':
+                self.assertTrue(fields['active'])
+                connected.append(message)
+                if len(connected) == 3:
+                    tunnel.STOP = True
+
+        def command(args, **kwargs):
+            if args[0] == 'curl':
+                self.assertIn('--socks5-hostname', args)
+                self.assertEqual(args[-1], 'https://1.1.1.1/cdn-cgi/trace')
+                return subprocess.CompletedProcess(args, 0, 'ip=38.180.164.67\n', '')
+            output = '[]' if args[:2] == ['ip', '-j'] else ''
+            return subprocess.CompletedProcess(args, 0, output, '')
+
+        with tempfile.TemporaryDirectory() as td, contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(tunnel, 'ROOT', Path(td)))
+            tunnel.full_state().write_text('{"active": false, "dns_mode": "direct"}')
+            stack.enter_context(patch.object(tunnel, 'STOP', False))
+            dns_process = stack.enter_context(patch.object(tunnel, 'DNS_PROCESS'))
+            dns_process.poll.return_value = None
+            stack.enter_context(patch.object(tunnel, 'stage', side_effect=capture_stage))
+            stack.enter_context(patch.object(tunnel, 'command', side_effect=command))
+            stack.enter_context(patch.object(tunnel, 'system_dns_health', side_effect=[False, False, True]))
+            stack.enter_context(patch.object(tunnel, 'recover_system_dns', side_effect=AssertionError('changed DIRECT resolver')))
+            stack.enter_context(patch.object(p, 'load', return_value={**p.defaults(), 'mode': 'include'}))
+            stack.enter_context(patch.object(p, 'apply'))
+            stack.enter_context(patch.object(p, 'ensure_route'))
+            stack.enter_context(patch.object(tunnel.time, 'sleep'))
+            stack.enter_context(patch.object(tunnel, 'enroll', return_value=('device', None)))
+            stack.enter_context(patch.object(tunnel, 'egress_health', return_value=True))
+            stack.enter_context(patch.object(tunnel, 'path_healthy', return_value=True))
+            stack.enter_context(patch.object(tunnel, 'panic_enabled', return_value=True))
+            stack.enter_context(patch.object(tunnel, 'full_firewall', return_value=''))
+            stack.enter_context(patch.object(tunnel, 'full_guard_active', return_value=False))
+            for name in ('cleanup', 'refresh_retained_guard', 'setup_network', 'sync_device_name',
+                         'full_namespace', 'start_namespace_dns', 'persist_guard',
+                         'configure_system_dns', 'clear_dns_mappings', 'stop_candidate'):
+                stack.enter_context(patch.object(tunnel, name))
+            start = stack.enter_context(patch.object(tunnel, 'start_candidate'))
+            tunnel.worker_once()
+            start.assert_called_once()
+
+        self.assertIn('Системный DNS недоступен', connected[0])
+        self.assertIn('Системный DNS недоступен', connected[1])
+        self.assertNotIn('Системный DNS недоступен', connected[2])
+
+    def test_full_mode_still_requires_working_protected_dns(self):
+        tunnel = m.starfive_tunnel
+        with patch.object(p, 'load', return_value=p.defaults()), patch.object(tunnel, 'recover_system_dns', return_value=False):
+            with self.assertRaisesRegex(RuntimeError, 'system_dns_failed'):
+                tunnel.check_system_dns()
+
     def test_old_policy_keeps_full_vpn_and_separate_empty_include_list(self):
         with tempfile.TemporaryDirectory() as td, patch.object(p, 'PATH', Path(td)/'policy.json'):
             p.PATH.write_text(json.dumps({'schema':1, 'applications':['firefox']}))
