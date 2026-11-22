@@ -58,3 +58,55 @@ jobs:
           sudo python3 scripts/test-dns-transition.py
           sudo python3 scripts/test-local-dns-guard.py
           sudo python3 scripts/test-relay-reconnect-route.py
+
+  publish-linux:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Publish the tested stable Linux package when the version changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet HEAD^1 HEAD -- VERSION; then exit 0; fi
+          version=$(cat VERSION)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tag="v$version"
+          archive="vpn-manager-$version.tar.gz"
+          (cd dist && sha256sum --check "$archive.sha256")
+          digest=$(sha256sum "dist/$archive" | cut -d' ' -f1)
+          url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/dist/$archive"
+          jq -e --arg v "$version" --arg h "$digest" --arg url "$url" \
+            '.channel == "stable" and .version == $v and .sha256 == $h and .url == $url' update/stable.json
+          notes="$RUNNER_TEMP/linux-release.md"
+          awk '/^## / { if (++n == 2) exit; next } n == 1' CHANGELOG.md > "$notes"
+          test -s "$notes"
+          title=$(sed -n '1s/^## //p' CHANGELOG.md)
+          [[ "$title" == "Linux $version" || "$title" == "Linux $version "* ]]
+
+          existing=$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" | tail -n 1 | cut -f1)
+          [[ -z "$existing" || "$existing" == "$GITHUB_SHA" ]]
+          if info=$(gh release view "$tag" --json isDraft,targetCommitish); then
+            draft=$(jq -r '.isDraft' <<< "$info")
+            if [[ "$draft" == true ]]; then
+              [[ "$(jq -r '.targetCommitish' <<< "$info")" == "$GITHUB_SHA" ]]
+            fi
+          else
+            gh release create "$tag" --target "$GITHUB_SHA" --draft --title "$title" --notes-file "$notes"
+            draft=true
+          fi
+          if [[ "$draft" == true ]]; then
+            gh release upload "$tag" "dist/$archive" "dist/$archive.sha256" --clobber
+          fi
+          verify=$(mktemp -d)
+          gh release download "$tag" --pattern "$archive" --pattern "$archive.sha256" --dir "$verify"
+          cmp "dist/$archive" "$verify/$archive"
+          cmp "dist/$archive.sha256" "$verify/$archive.sha256"
+          if [[ "$draft" == true ]]; then gh release edit "$tag" --draft=false; fi
