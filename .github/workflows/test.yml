@@ -39,14 +39,18 @@ jobs:
         run: python3 scripts/test-token-upgrade.py
       - name: Fetch and verify pinned local routing engine
         run: |
-          python - <<'PY'
-          import importlib.util,hashlib,zipfile,io,pathlib
-          spec=importlib.util.spec_from_file_location('manager','src/vpnctl.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-          name,url,digest,dgst=m.github_xray_asset();blob=m.http_get(url)
-          if digest is None and dgst:digest=m.parse_checksum_text(m.http_get(dgst))
-          assert digest and hashlib.sha256(blob).hexdigest()==digest
-          with zipfile.ZipFile(io.BytesIO(blob)) as z:pathlib.Path('/tmp/evg-policy-xray').write_bytes(z.read('xray'))
-          pathlib.Path('/tmp/evg-policy-xray').chmod(0o755)
+          # This job runs on x86_64. Use the official asset directly so shared
+          # runner IPs do not depend on the unauthenticated GitHub API quota.
+          archive="$RUNNER_TEMP/Xray-linux-64.zip"
+          curl --fail --location --retry 3 --max-time 90 --silent --show-error \
+            https://github.com/XTLS/Xray-core/releases/download/v26.7.28/Xray-linux-64.zip -o "$archive"
+          printf '%s  %s\n' 8195d909f1109b8f3d99eefe401a3c451d7bf4af71f24d3815420f77e5dd2a40 "$archive" | sha256sum -c
+          python - "$archive" <<'PY'
+          import pathlib, sys, zipfile
+          binary = pathlib.Path('/tmp/evg-policy-xray')
+          with zipfile.ZipFile(sys.argv[1]) as package:
+              binary.write_bytes(package.read('xray'))
+          binary.chmod(0o755)
           PY
       - name: Real isolated routing and fail-closed tests
         run: |

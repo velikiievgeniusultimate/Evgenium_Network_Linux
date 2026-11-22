@@ -5,7 +5,7 @@ import importlib.util,json,subprocess,time,socket,ssl,http.client,hashlib,re
 root=Path(__file__).resolve().parents[1]
 if (root/'VERSION').read_text().strip() != '0.3.1':
  raise SystemExit('This LAN experiment requires the 0.3.1 checkout and its separate test tunnel.')
-spec=importlib.util.spec_from_file_location('tunnel',root/'src/starfive_tunnel.py');t=importlib.util.module_from_spec(spec);spec.loader.exec_module(t)
+spec=importlib.util.spec_from_file_location('tunnel',root/'src/vpn_tunnel.py');t=importlib.util.module_from_spec(spec);spec.loader.exec_module(t)
 before=json.loads(Path('/var/lib/vpn-manager/experimental-working-network.json').read_text());checks=[]
 def record(name,ok,**metrics):
  checks.append({'test':name,'ok':bool(ok),**metrics});print(name,'PASS'if ok else'FAIL',flush=True)

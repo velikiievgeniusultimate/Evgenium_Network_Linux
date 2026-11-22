@@ -56,17 +56,17 @@ def setup(legacy=True):
     return data
 
 def old_update():
-    old=load('/opt/vpn-manager/releases/0.2.7/vpnctl.py')
+    old=load('/opt/vpn-manager/current/vpnctl.py')
     old.http_get=lambda url,*args: (ROOT/'update/stable.json').read_bytes() if url.endswith('stable.json') else (ROOT/f'dist/vpn-manager-{VERSION}.tar.gz').read_bytes()
     # Everything after exec is the shipped new manager, not this monkeypatch.
     old.main(['update'])
 
-def bootstrap():
+def bootstrap(cli_only=False):
     source=Path('/tmp/fresh');source.mkdir(exist_ok=True)
     with tarfile.open(ROOT/f'dist/vpn-manager-{VERSION}.tar.gz') as t:t.extractall(source,filter='data')
     shell=(ROOT/'install.sh').read_text()
-    block=shell.split('"${tmp}/release" <<\'PY\'\n',1)[1].split('\nPY\n',1)[0]
-    sys.argv=['-', 'fixture','/home/fixture','0','0','https://fixture.test/stable.json',str(source)]
+    block=shell.split('"${tmp}/release" "$CLI_ONLY" <<\'PY\'\n',1)[1].split('\nPY\n',1)[0]
+    sys.argv=['-', 'fixture','/home/fixture','0','0','https://fixture.test/stable.json',str(source),'1' if cli_only else '']
     exec(compile(block,'installer-bootstrap','exec'),{'__name__':'__main__'})
 
 def verify():
@@ -114,21 +114,90 @@ def inside():
     assert 'example.org' in json.loads(Path('/etc/vpn-manager/policy.json').read_text())['networks']
     print('PASS: corrupt settings repaired without losing token/key/policy')
 
-def fresh():
+def fresh(cli_only=False):
     setup(legacy=False)
-    subprocess.run([sys.executable,__file__,'--bootstrap'],check=True)
+    subprocess.run([sys.executable,__file__,'--bootstrap-cli' if cli_only else '--bootstrap'],check=True)
     subprocess.run(['/usr/local/sbin/vpnctl','internal-sync'],check=True)
     new=load('/usr/local/sbin/vpnctl')
     assert json.loads(new.INSTALL_COMPLETE.read_text())['version']==VERSION
     assert Path('/usr/local/bin/vpn').read_text()==new.WRAPPER_TEXT
-    assert Path('/home/fixture/.local/share/evgenium-network/evgenium_gui.qml').read_bytes()==base64.b64decode(new.STANDALONE_GUI_QML_B64)
-    print('PASS: fresh installation without existing settings or CLI')
+    if cli_only:
+        assert not Path('/home/fixture/.local/share/evgenium-network').exists()
+        assert json.loads(Path('/etc/vpn-manager/settings.json').read_text())['cli_only'] is True
+        assert new.policy.load()['mode']=='include'
+        subprocess.run(['/usr/local/sbin/vpnctl','include','app','add','codex'],check=True)
+        subprocess.run(['/usr/local/sbin/vpnctl','internal-after-update'],check=True)
+        assert new.policy.load()['include']['applications']==['codex']
+        assert not Path('/home/fixture/.local/share/evgenium-network').exists()
+        print('PASS: fresh CLI-only installation and update preserve include mode without GUI')
+    else:
+        assert Path('/home/fixture/.local/share/evgenium-network/evgenium_gui.qml').read_bytes()==base64.b64decode(new.STANDALONE_GUI_QML_B64)
+        print('PASS: fresh installation without existing settings or CLI')
+
+def upgrade_token_client(version, cli_only):
+    settings=setup()
+    settings['cli_only']=cli_only
+    Path('/etc/vpn-manager/settings.json').write_text(json.dumps(settings))
+    releases=Path('/opt/vpn-manager/releases')
+    current=releases.parent/'current'
+    reference=releases/version
+    reference.mkdir()
+    with tarfile.open(ROOT/f'dist/vpn-manager-{version}.tar.gz') as package:
+        package.extractall(reference,filter='data')
+    current.unlink()
+    current.symlink_to(reference)
+    old=load(current/'vpnctl.py')
+    old.sync_system_files()
+    private=Path('/etc/vpn-manager/starfive-tunnel')
+    token='EVN1-'+'a'*43
+    old_rules=old.policy.defaults()
+    old_rules['networks']=['=fixture.invalid']
+    if cli_only:
+        old_rules['mode']='include'
+        old_rules['include']['applications']=['codex']
+        (private/'panic.json').write_text('{"enabled":true}')
+        old.starfive_tunnel.ensure_dependencies=lambda: None
+        (private/'token').write_text(token)
+        old.starfive_tunnel.connect()
+    else:
+        private.rename('/etc/vpn-manager/tunnel')
+        private=Path('/etc/vpn-manager/tunnel')
+    old.policy.save(old_rules)
+    (private/'token').write_text(token)
+    (private/'device.key').write_text('private-key-fixture')
+    subprocess.run([sys.executable,__file__,'--old-update'],check=True)
+
+    updated=load(current/'vpnctl.py')
+    assert updated.MANAGER_VERSION==VERSION
+    assert (releases.parent/'previous').resolve()==reference
+    private=Path('/etc/vpn-manager/tunnel')
+    assert (private/'token').read_text()==token
+    assert (private/'device.key').read_text()=='private-key-fixture'
+    policy=updated.policy.load()
+    assert policy['networks']==['=fixture.invalid']
+    assert policy['mode']==('include' if cli_only else 'all')
+    if cli_only:
+        assert policy['include']['applications']==['codex']
+        assert updated.vpn_tunnel.panic_enabled()
+        assert Path('/home/fixture/.local/share/evgenium-network/evgenium_gui.qml').read_text()=='STALE QML'
+        unit=Path('/etc/systemd/system/evgenium-vpn.service').read_text()
+        assert 'ExecStart=/usr/local/sbin/vpnctl internal-vpn-tunnel' in unit
+        assert 'Restart=always' in unit
+        assert not Path('/etc/vpn-manager/starfive-tunnel').exists()
+    else:
+        assert Path('/home/fixture/.local/share/evgenium-network/evgenium_gui.qml').read_bytes()==base64.b64decode(updated.STANDALONE_GUI_QML_B64)
+    assert json.loads(updated.INSTALL_COMPLETE.read_text())['version']==VERSION
+    print(f'PASS: {version} updater preserves token, policy and installation mode')
 
 if __name__=='__main__':
     if '--old-update' in sys.argv:old_update()
     elif '--bootstrap' in sys.argv:bootstrap()
+    elif '--bootstrap-cli' in sys.argv:bootstrap(cli_only=True)
     elif '--inside' in sys.argv:inside()
     elif '--fresh' in sys.argv:fresh()
+    elif '--fresh-cli' in sys.argv:fresh(cli_only=True)
+    elif '--upgrade-stable' in sys.argv:upgrade_token_client('0.5.12',cli_only=False)
+    elif '--upgrade-panic' in sys.argv:upgrade_token_client('0.6.1',cli_only=True)
     else:
         import shutil
         if not shutil.which('bwrap'):raise SystemExit('bubblewrap required; run unit tests if unavailable')
@@ -138,6 +207,7 @@ if __name__=='__main__':
             # Copy only public fixture files into the invoking user's temp dir.
             snapshot=fake/'source'
             for name in ('VERSION','install.sh','update/stable.json','dist/vpn-manager-0.2.7.tar.gz',
+                         'dist/vpn-manager-0.5.12.tar.gz','dist/vpn-manager-0.6.1.tar.gz',
                          f'dist/vpn-manager-{VERSION}.tar.gz','scripts/test-upgrade-sandbox.py'):
                 target=snapshot/name;target.parent.mkdir(parents=True,exist_ok=True)
                 shutil.copy2(ROOT/name,target)
@@ -164,3 +234,6 @@ if __name__=='__main__':
                   '--chdir','/tmp/src',sys.executable,'/tmp/src/scripts/test-upgrade-sandbox.py','--inside']
             subprocess.run(args,check=True,timeout=120)
             subprocess.run(args[:-1]+['--fresh'],check=True,timeout=120)
+            subprocess.run(args[:-1]+['--fresh-cli'],check=True,timeout=120)
+            subprocess.run(args[:-1]+['--upgrade-stable'],check=True,timeout=120)
+            subprocess.run(args[:-1]+['--upgrade-panic'],check=True,timeout=120)

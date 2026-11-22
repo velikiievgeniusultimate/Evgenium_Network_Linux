@@ -67,6 +67,16 @@ class RecoveryTests(unittest.TestCase):
             connect.assert_called_once_with(repair=True)
             self.assertTrue((folder/'pending').exists())
 
+    def test_cli_only_update_never_installs_qt_or_gui(self):
+        with tempfile.TemporaryDirectory() as td,contextlib.ExitStack() as stack:
+            events=[];self.fixture(stack,Path(td),events)
+            stack.enter_context(patch.object(m.vpn_tunnel,'ensure_dependencies'))
+            stack.enter_context(patch.object(m.vpn_tunnel,'token_status',return_value={'has_token':False}))
+            gui=stack.enter_context(patch.object(m,'_install_desktop_integration'))
+            qt=stack.enter_context(patch.object(m,'ensure_gui_dependencies'))
+            m.finish_installation({'cli_only':True})
+            gui.assert_not_called();qt.assert_not_called()
+
     def test_old_cli_only_arch_installs_qt(self):
         with patch.object(m.os,'access',side_effect=[False]*4+[True]),patch.object(m.shutil,'which',return_value='/usr/bin/pacman'),patch.object(m,'run') as run:
             m.ensure_gui_dependencies()

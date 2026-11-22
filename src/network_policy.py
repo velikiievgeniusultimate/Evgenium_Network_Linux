@@ -33,13 +33,18 @@ BASE = {
 }
 
 def defaults():
- return {'schema':1,'waydroid_direct':True,'disabled_base':[], 'applications':[], 'networks':[], 'ports':[], 'dns':[]}
+ return {'schema':1,'mode':'all','include':{c:[] for c in CATEGORIES},'waydroid_direct':True,'disabled_base':[], 'applications':[], 'networks':[], 'ports':[], 'dns':[]}
 
 def load():
  if not PATH.exists():return defaults()
  value=json.loads(PATH.read_text())
  if value.get('schema')!=1:raise RuntimeError('Неизвестная версия правил исключений.')
- return {**defaults(),**value}
+ result={**defaults(),**value}
+ if result['mode'] not in ('all','include'):raise RuntimeError('Неизвестный режим маршрутизации.')
+ result['include']={**defaults()['include'],**result['include']}
+ return result
+
+def inclusive(p):return p.get('mode','all')=='include'
 
 def save(value):
  PATH.parent.mkdir(parents=True,exist_ok=True)
@@ -86,6 +91,7 @@ def normalize(category,value):
 def migration(settings):
  if PATH.exists():return
  p=defaults(); rejected=[]
+ if settings.get('cli_only',False):p['mode']='include'
  sources={'applications':settings.get('direct_apps'),'networks':settings.get('direct_networks')}
  for category,key in sources.items():
   if key and Path(key).is_file():
@@ -153,9 +159,19 @@ def config(p):
   try:ipaddress.ip_network(value)
   except ValueError:domains.append(('full:'+value[1:]) if value.startswith('=') else 'domain:'+value)
  if domains:rules.append({'type':'field','domain':domains,'inboundTag':['tun'],'outboundTag':'direct'})
- # DNS engine requests must never inherit domain/application bypass rules.
- rules+=[{'type':'field','inboundTag':['dns-engine'],'outboundTag':'vpn'},
-         {'type':'field','inboundTag':['tun'],'outboundTag':'vpn'}]
+ # Inclusion lists are independent of the saved DIRECT exceptions.
+ if inclusive(p):
+  chosen=p['include']
+  for field,values in [('process',chosen['applications']),
+                       ('ip',[v for v in chosen['networks'] if '/' in v]),
+                       ('domain',[('full:'+v[1:]) if v.startswith('=') else 'domain:'+v for v in chosen['networks'] if '/' not in v])]:
+   if values:rules.append({'type':'field',field:values,'inboundTag':['tun'],'outboundTag':'vpn'})
+  for proto,values in ports(chosen,'out').items():
+   if values:rules.append({'type':'field','network':proto,'port':','.join(str(v) for v in sorted(values)),'inboundTag':['tun'],'outboundTag':'vpn'})
+ fallback='direct' if inclusive(p) else 'vpn'
+ # In inclusion mode system DNS is DIRECT unless a DNS server is explicitly selected.
+ rules+=[{'type':'field','inboundTag':['dns-engine'],'outboundTag':fallback},
+         {'type':'field','inboundTag':['tun'],'outboundTag':fallback}]
  return {'log':{'loglevel':'warning','access':'none'},
   'inbounds':[{'tag':'tun','protocol':'tun','settings':{'name':TUN,'mtu':1280,'gateway':['198.18.254.1/30']},
                'sniffing':{'enabled':True,'destOverride':['http','tls','quic'],'routeOnly':True}},
@@ -163,14 +179,15 @@ def config(p):
               {'tag':'check','listen':'127.0.0.1','port':CHECK_PORT,'protocol':'socks','settings':{'auth':'noauth','udp':False}}],
   'dns':{'servers':['1.1.1.1','9.9.9.9'],'queryStrategy':'UseIPv4','tag':'dns-engine','disableFallback':False},
   'outbounds':[{'tag':tag,'protocol':'freedom','settings':{'domainStrategy':'UseIPv4'},'streamSettings':{'sockopt':{'mark':mark}}} for tag,mark in [('vpn',VPN),('direct',DIRECT)]]+
-               [{'tag':'dns','protocol':'dns','settings':{'rules':[{'qType':'1,28','action':'hijack'},{'action':'direct'}]},'streamSettings':{'sockopt':{'mark':VPN}}}],
+               [{'tag':'dns','protocol':'dns','settings':{'rules':[{'qType':'1,28','action':'hijack'},{'action':'direct'}]},'streamSettings':{'sockopt':{'mark':DIRECT if inclusive(p) else VPN}}}],
   'routing':{'domainStrategy':'AsIs','rules':rules}}
 
 def nft_set(items):return '{ '+', '.join(str(x) for x in sorted(items))+' }'
 
 def firewall(p,lan,uid):
  # Route marks are set only by this privileged classifier or explicit kernel rules.
- mark=[];dns=[];forward=[];nat=['meta nfproto ipv4 meta mark '+str(DIRECT)+' oifname != "lo" masquerade']
+ mark=['ct direction reply meta mark set '+str(DIRECT)+' return'] if inclusive(p) else []
+ dns=[];forward=[];nat=['meta nfproto ipv4 meta mark '+str(DIRECT)+' oifname != "lo" masquerade']
  if enabled(p,'dns','stub'):dns.append('ip daddr 127.0.0.0/8 return')
  if p['dns']:
   dns.append(f'ip daddr {nft_set(p["dns"])} return')
@@ -180,7 +197,15 @@ def firewall(p,lan,uid):
  # Only an explicitly disabled loopback-stub rule uses the local DNS listener.
  dns+=['ip daddr 127.0.0.0/8 meta l4proto { tcp, udp } th dport 53 redirect to :'+str(DNS_PORT),
        'meta nfproto ipv4 meta l4proto { tcp, udp } th dport 53 dnat ip to 172.29.247.2']
- mark+=['meta l4proto { tcp, udp } th dport 53 meta mark set '+str(VPN)+' return']
+ if inclusive(p):
+  # Keep the system resolver configuration and route its ordinary queries DIRECT.
+  # The original destination stays intact (including SO_BINDTODEVICE resolvers).
+  dns=[]
+  if p['include']['dns']:
+   selected=nft_set(p['include']['dns'])
+   dns.insert(0,f'ip daddr {selected} return')
+   mark.append(f'ip daddr {selected} meta l4proto {{ tcp, udp }} th dport 53 meta mark set {VPN} return')
+ mark+=['meta l4proto { tcp, udp } th dport 53 meta mark set '+str(DIRECT if inclusive(p) else VPN)+' return']
  waynets=waydroid_network()['networks']
  mark.append(f'ip daddr @waydroid_networks meta mark set {DIRECT} return')
  mark.append(f'oifname "waydroid0" udp sport 67 udp dport 68 meta mark set {DIRECT} return')
@@ -364,6 +389,7 @@ def apply():
   time.sleep(.1)
  else:raise RuntimeError('Не удалось запустить обработчик исключений.')
  tunnel.command(['ip','route','replace','default','dev',TUN,'metric','10','table',tunnel.FULL_TABLE])
+ tunnel.configure_system_dns()
  tunnel.clear_dns_mappings()
  # Explicitly requested DNS exceptions need stale port-53 mappings removed too.
  for proto in ('udp','tcp'):
@@ -382,7 +408,17 @@ def stop(release=False):
 
 def change(action,category='',value='',state=None):
  old=load();p=json.loads(json.dumps(old))
- if action=='waydroid':p['waydroid_direct']=bool(state)
+ if action=='mode':
+  if value not in ('all','include'):raise ValueError('Режим: all или include.')
+  p['mode']=value
+ elif action.startswith('include-'):
+  if action not in ('include-add','include-remove') or category not in CATEGORIES:raise ValueError('Неизвестное действие списка VPN.')
+  if category=='ports' and str(value).count(':')==1:value=str(value)+':out'
+  value=normalize(category,value)
+  if category=='ports' and not value.endswith(':out'):raise ValueError('В списке VPN выбираются исходящие порты (:out); ответы серверов остаются DIRECT.')
+  if action=='include-add' and value not in p['include'][category]:p['include'][category].append(value)
+  if action=='include-remove':p['include'][category]=[x for x in p['include'][category] if x!=value]
+ elif action=='waydroid':p['waydroid_direct']=bool(state)
  elif action=='base':
   if category not in BASE or value not in {e['id'] for e in BASE[category]}:raise ValueError('Неизвестное базовое правило.')
   key=category+':'+value
@@ -395,6 +431,14 @@ def change(action,category='',value='',state=None):
   if action=='remove':p[category]=[x for x in p[category] if x!=value]
  else:raise ValueError('Неизвестное действие.')
  if p==old:return public()
+ if tunnel.full_guard_active() and not Path('/sys/class/net/'+tunnel.FULL_HOST).exists():
+  raise RuntimeError('VPN восстанавливается. Повторите изменение правил после подключения; прежние правила сохранены.')
+ if action=='mode':
+  # An update can leave the old worker running to preserve a live tunnel. A
+  # worker from before include mode would reapply full mode on its next retry.
+  main_pid=tunnel.command(['systemctl','show','-p','MainPID','--value',tunnel.UNIT],check=False).stdout.strip()
+  if main_pid.isdecimal() and main_pid!='0' and main_pid!=str(tunnel.saved().get('routing_worker_pid')):
+   raise RuntimeError('Работает туннель, запущенный до обновления. Выполните vpn repair, затем повторите смену режима.')
  save(p)
  if tunnel.full_guard_active() and Path('/sys/class/net/'+tunnel.FULL_HOST).exists():
   try:apply()

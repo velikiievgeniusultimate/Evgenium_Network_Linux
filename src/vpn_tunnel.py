@@ -149,8 +149,11 @@ def ensure_dependencies():
         args = ['pacman','-S','--needed','--noconfirm','strongswan','iproute2','nftables','curl','openssl','ca-certificates','conntrack-tools']
     elif shutil.which('dnf'):
         args = ['dnf','install','-y','--setopt=install_weak_deps=False','strongswan','iproute','nftables','curl','openssl','ca-certificates','conntrack-tools']
+    elif shutil.which('apt-get'):
+        command(['apt-get','update'],timeout=300)
+        args = ['apt-get','install','-y','--no-install-recommends','charon-systemd','strongswan-swanctl','libstrongswan-standard-plugins','libcharon-extra-plugins','iproute2','nftables','curl','openssl','ca-certificates','conntrack']
     else:
-        raise RuntimeError('Автоматическая установка клиента поддерживает Arch и Fedora.')
+        raise RuntimeError('Автоматическая установка клиента поддерживает Arch, Fedora и Debian/Ubuntu.')
     command(args, timeout=300)
     if not charon_binary() or not all(shutil.which(p) for p in ('swanctl','conntrack')):
         raise RuntimeError('Пакет strongSwan не предоставил необходимые программы.')
@@ -291,25 +294,38 @@ def parse_exit(body, trace):
         return None
 
 
-def egress_health():
-    """Independent HTTPS providers; a verified wrong IP must never be masked by fallback."""
-    global _egress_preferred
-    for index in (_egress_preferred, 1-_egress_preferred):
+def probe_egress(run, order, proxy_args=()):
+    """Return the first verified IP, including a wrong exit, and its probe index."""
+    for index in order:
         url = _EGRESS_PROBES[index]
         try:
-            result = inside(['curl','-4','--noproxy','*','--fail','--silent','--show-error',
-                             '--connect-timeout','3','--max-time','5','--max-filesize','32768',url],timeout=7,check=False)
+            result = run(['curl','-4',*proxy_args,'--fail','--silent','--show-error',
+                          '--connect-timeout','3','--max-time','5','--max-filesize','32768',url],timeout=7,check=False)
         except (OSError,subprocess.TimeoutExpired):
             continue
         if result.returncode != 0:
             continue
         observed = parse_exit(result.stdout, index == 0)
         if observed is not None:
-            if observed != '38.180.164.67':
-                return False
-            _egress_preferred = index
-            return True
-    return False
+            return observed, index
+    return None, None
+
+
+def egress_health():
+    global _egress_preferred
+    observed, index = probe_egress(inside, (_egress_preferred, 1-_egress_preferred), ('--noproxy','*'))
+    if observed != '38.180.164.67':
+        return False
+    _egress_preferred = index
+    return True
+
+
+def selected_host_egress():
+    # Check the host classifier and VPN route with a numeric HTTPS endpoint first.
+    # SOCKS resolves the fallback hostname itself, independently of resolv.conf.
+    observed, _ = probe_egress(command, (0, 1),
+                               ('--noproxy','','--socks5-hostname','127.0.0.1:18554'))
+    return observed
 
 
 def path_healthy(daemon):
@@ -329,7 +345,11 @@ def retire_previous_connections(addresses):
 def system_dns_health(resolv_conf=Path('/etc/resolv.conf')):
     # getaddrinfo/curl may use nss-resolve over a Unix socket and miss a broken
     # UDP stub used by other applications. Exercise resolv.conf independently.
-    servers = [line.split()[1] for line in resolv_conf.read_text().splitlines()
+    try:
+        lines = resolv_conf.read_text().splitlines()
+    except (OSError, UnicodeError):
+        return False
+    servers = [line.split()[1] for line in lines
                if line.split()[:1] == ['nameserver'] and len(line.split()) >= 2][:3]
     for server in servers:
         try:
@@ -418,10 +438,25 @@ def recover_system_dns():
         if STOP:return False
         time.sleep(.3)
     if not full_state().exists():return False
+    if policy is not None and policy.inclusive(policy.load()):return False
     # Switch only the resolver file we own; never stop another VPN or resolver.
     stage('repairing','Переключаю неисправный системный DNS на защищённый резерв.',90,active=False,error_code='system_dns_failed')
     use_resolver_file()
     return system_dns_health()
+
+
+def check_system_dns():
+    if policy is not None and policy.inclusive(policy.load()):
+        if not system_dns_health():
+            return 'Системный DNS недоступен. Приложения могут не открывать сайты по имени.'
+    elif not recover_system_dns():
+        raise RuntimeError('system_dns_failed')
+    return ''
+
+
+def connected_message(label, dns_warning):
+    message = 'Подключено: '+label+'.'
+    return message+' '+dns_warning if dns_warning else message
 
 
 TUNNEL_SERVICE = '''[Unit]
@@ -470,14 +505,27 @@ WantedBy=multi-user.target
 UNIT_TEMPLATES = {'unit': TUNNEL_SERVICE, 'recovery': RECOVERY_SERVICE, 'guard': GUARD_SERVICE}
 
 
-def unit_text(layout, role, nft='/usr/bin/nft'):
+BOOT_TARGET = '[Install]\nWantedBy=multi-user.target\n'
+
+
+def unit_text(layout, role, nft='/usr/bin/nft', *, panic=False):
     template = UNIT_TEMPLATES[role]
     if layout == LEGACY and role == 'recovery':
         template = template.replace('interrupted Evgenium VPN tunnel', 'only interrupted Evgenium tunnel test')
+    if panic and role == 'unit':
+        template = (template.replace('StartLimitIntervalSec=180', 'StartLimitIntervalSec=0')
+                    .replace('Restart=on-failure', 'Restart=always')
+                    .replace('RestartSec=3', 'RestartSec=5') + BOOT_TARGET)
     return template.format(prefix=layout.command_prefix, root=layout.root, nft=nft)
 
 
 def known_unit(layout, role, data):
+    if role == 'unit':
+        return data in (
+            unit_text(layout, role).encode(),
+            unit_text(layout, role, panic=True).encode(),
+            (unit_text(layout, role) + BOOT_TARGET).encode(),  # 0.6.1
+        )
     binaries = ('/usr/bin/nft', '/usr/sbin/nft', '/sbin/nft', shutil.which('nft'))
     return any(data == unit_text(layout, role, nft).encode() for nft in binaries if nft)
 
@@ -635,7 +683,8 @@ def move_idle_layout(source, target):
             continue
         if not new.exists():
             nft = shutil.which('nft') or '/usr/sbin/nft'
-            write(new, unit_text(target, role, nft), mode=0o644)
+            panic = role == 'unit' and old.read_bytes() == unit_text(source, role, panic=True).encode()
+            write(new, unit_text(target, role, nft, panic=panic), mode=0o644)
         for link in unit_links(old.name):
             replacement = link.with_name(new.name)
             if not replacement.is_symlink():
@@ -694,6 +743,27 @@ def persist_guard(rules):
     command(['systemctl','enable',GUARD_UNIT])
 
 
+def configure_system_dns():
+    if not full_state().exists():return
+    data=json.loads(full_state().read_text())
+    if policy is not None and policy.inclusive(policy.load()):
+        restore_resolver_file(data)
+        if data.get('dns_mode')=='resolved_link':
+            command(['resolvectl','revert',FULL_HOST],check=False)
+        data['dns_mode']='direct'
+        write(full_state(),json.dumps(data))
+        return
+    if shutil.which('resolvectl') and command(['systemctl','is-active','--quiet','systemd-resolved'],check=False).returncode == 0:
+        data['dns_mode']='resolved_link'
+        write(full_state(),json.dumps(data))
+        command(['resolvectl','dns',FULL_HOST,'172.29.247.2'])
+        command(['resolvectl','domain',FULL_HOST,'~.'])
+        command(['resolvectl','default-route',FULL_HOST,'yes'])
+        command(['resolvectl','flush-caches'],check=False)
+    else:
+        use_resolver_file()
+
+
 def activate_full(address):
     old_addresses = [a['local'] for link in json.loads(command(['ip','-j','-4','addr','show','scope','global']).stdout)
                      if link.get('ifname') not in (HOST,FULL_HOST)
@@ -723,36 +793,34 @@ def activate_full(address):
     # This command stops only this manager's previous Xray mode and removes its guard.
     command(['/usr/local/sbin/vpnctl',LAYOUT.command_prefix+'-pause-main'],timeout=40)
     command(['ip','route','replace','unreachable','default','metric','32760','table',FULL_TABLE])
-    command(['ip','route','replace','default','via','172.29.247.2','dev',FULL_HOST,'metric','10','table',FULL_TABLE])
+    # Inclusion mode never installs an interim full-device VPN route, even
+    # during reconnect. The classifier retains its TUN default or fails closed.
+    if policy is None or not policy.inclusive(policy.load()):
+        command(['ip','route','replace','default','via','172.29.247.2','dev',FULL_HOST,'metric','10','table',FULL_TABLE])
     command(['ip','rule','del','priority','80','lookup',FULL_TABLE],check=False)
     for rule in (['priority','79','to',CLIENT+'/32','lookup','main'],
                  ['priority','79','iif',FULL_HOST,'lookup','main']):
         command(['ip','rule','del',*rule],check=False)
         command(['ip','rule','add',*rule])
     command(['ip','rule','add','priority','80','lookup',FULL_TABLE])
-    data=json.loads(full_state().read_text())
-    if shutil.which('resolvectl') and command(['systemctl','is-active','--quiet','systemd-resolved'],check=False).returncode == 0:
-        data['dns_mode']='resolved_link'
-        write(full_state(),json.dumps(data))
-        command(['resolvectl','dns',FULL_HOST,'172.29.247.2'])
-        command(['resolvectl','domain',FULL_HOST,'~.'])
-        command(['resolvectl','default-route',FULL_HOST,'yes'])
-        command(['resolvectl','flush-caches'],check=False)
-    else:
-        use_resolver_file()
+    configure_system_dns()
     clear_dns_mappings(previous_vpn=True)
     retire_previous_connections(old_addresses)
     if policy is not None:
         policy.apply()
-    if not recover_system_dns():
-        raise RuntimeError('system_dns_failed')
+    dns_warning = check_system_dns()
     # Test the actual host path as well as namespace probes before announcing connected.
-    check = command(['curl','-4','--noproxy','' if policy is not None else '*','--fail','--silent','--max-time','10',*(['--socks5-hostname','127.0.0.1:18554'] if policy is not None else []),'https://api.ipify.org'],timeout=12)
-    if check.stdout.strip() != '38.180.164.67':
+    if policy is not None and policy.inclusive(policy.load()):
+        observed = selected_host_egress()
+    else:
+        check = command(['curl','-4','--noproxy','' if policy is not None else '*','--fail','--silent','--max-time','10',*(['--socks5-hostname','127.0.0.1:18554'] if policy is not None else []),'https://api.ipify.org'],timeout=12)
+        observed = check.stdout.strip()
+    if observed != '38.180.164.67':
         raise RuntimeError('host_egress_failed')
     data=json.loads(full_state().read_text())
     data['active']=True
     write(full_state(),json.dumps(data))
+    return dns_warning
 
 
 def cleanup_full(release=False):
@@ -762,12 +830,13 @@ def cleanup_full(release=False):
         try:DNS_PROCESS.wait(timeout=3)
         except subprocess.TimeoutExpired:DNS_PROCESS.kill();DNS_PROCESS.wait()
     DNS_PROCESS=None
-    if policy is not None:
+    keep_direct = not release and policy is not None and policy.inclusive(policy.load())
+    if policy is not None and not keep_direct:
         policy.stop(release=release)
     if not full_state().exists():
         return
     data=json.loads(full_state().read_text())
-    command(['ip','route','del','default','metric','10','table',FULL_TABLE],check=False)
+    if not keep_direct:command(['ip','route','del','default','metric','10','table',FULL_TABLE],check=False)
     command(['ip','link','del',FULL_HOST],check=False)
     # On failure: retain routing, DNS and the persistent guard until explicit disconnect.
     if not release:
@@ -857,8 +926,8 @@ def status():
                                         'scope', 'since', 'retry', 'error_code', 'path') if key in data}
     token_info = token_status()
     return {'phase': 'off', 'message': ('Токен сохранён. Нажмите «Подключить».' if token_info['has_token'] else 'Введите и подтвердите токен клиента.'),
-            'progress': 0, 'active': False, **public, 'running': running,
-            **token_info, **device_status(), 'routes':route_choices(), 'isolated': False, 'full_device': True, 'guard': full_guard_active(), 'protocol': 'IKEv2 → Эстония'}
+            'progress': 0, 'active': False, **public, 'running': running, 'panic':panic_enabled(),
+            **token_info, **device_status(), 'routes':route_choices(), 'isolated': False, 'full_device': policy is None or not policy.inclusive(policy.load()), 'guard': full_guard_active(), 'protocol': 'IKEv2 → Эстония'}
 
 
 @contextlib.contextmanager
@@ -1248,6 +1317,35 @@ def save_token(token):
     stage('off', 'Токен сохранён. Нажмите «Подключить».', 0, active=False, metrics={})
 
 
+def panic_enabled():
+    try:return json.loads((ROOT/'panic.json').read_text()).get('enabled') is True
+    except (OSError,ValueError,AttributeError):return False
+
+
+def set_panic(enabled):
+    if type(enabled) is not bool:raise ValueError('panic expects a boolean')
+    write(ROOT/'panic.json',json.dumps({'enabled':enabled}))
+    if enabled:
+        connect(restart=True)
+    else:
+        command(['systemctl','disable',UNIT],check=False)
+        if command(['systemctl','is-active','--quiet',UNIT],check=False).returncode==0:
+            connect(restart=True)
+
+
+def recovery_pause(seconds):
+    # Keep SIGTERM responsive even during an indefinitely long outage.
+    for _ in range(int(seconds*10)):
+        if STOP:return
+        time.sleep(.1)
+
+
+def recovery_route(rank,current,selected,panic=False):
+    if panic or selected=='auto':
+        return rank.next_after(current) or next(iter(rank.candidates()),None)
+    return current
+
+
 def connect(token='', repair=False, restart=False):
     ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     if token:
@@ -1257,10 +1355,13 @@ def connect(token='', repair=False, restart=False):
     ensure_dependencies()
     if repair:
         write(ROOT/'recalibrate', '1')
-    write(UNIT_DIR / UNIT, unit_text(LAYOUT, 'unit'), mode=0o644)
+    panic = panic_enabled()
+    write(UNIT_DIR / UNIT, unit_text(LAYOUT, 'unit', panic=panic), mode=0o644)
     write(UNIT_DIR / RECOVERY_UNIT, unit_text(LAYOUT, 'recovery'), mode=0o644)
     command(['systemctl', 'daemon-reload'])
     command(['systemctl', 'enable', RECOVERY_UNIT])
+    if panic:
+        command(['systemctl', 'enable', UNIT])
     command(['systemctl','reset-failed',UNIT],check=False)
     stage('starting' , 'Готовлю подключение в Эстонию.', 2, active=False, retry=0, error_code='')
     command(['systemctl', 'restart' if repair or restart else 'start', UNIT])
@@ -1268,6 +1369,7 @@ def connect(token='', repair=False, restart=False):
 
 
 def disconnect():
+    command(['systemctl','disable',UNIT],check=False)
     command(['systemctl', 'stop', UNIT], check=False, timeout=25)
     cleanup()
     cleanup_full(release=True)
@@ -1404,11 +1506,22 @@ def worker():
     STOP=False
     signal.signal(signal.SIGTERM,lambda *_:globals().__setitem__('STOP',True))
     signal.signal(signal.SIGINT,lambda *_:globals().__setitem__('STOP',True))
+    attempts=0
+    while not STOP:
+        worker_once()
+        if STOP or not panic_enabled():return
+        attempts+=1
+        stage('repairing','Панический поиск: повторяю подготовку VPN.',5,
+              active=False,retry=attempts)
+        recovery_pause(min(30,5*attempts))
+
+
+def worker_once():
     daemon=None
     rank=rank_api.Ranking(ROOT/'ranking.json',[x['id'] for x in CANDIDATES])
     try:
         cleanup();refresh_retained_guard()
-        stage('prepare','Готовлю защищённые маршруты.',5,active=False,metrics={},error_code='',scope='full-device')
+        stage('prepare','Готовлю защищённые маршруты.',5,active=False,metrics={},error_code='',scope='selected' if policy is not None and policy.inclusive(policy.load()) else 'full-device',routing_worker_pid=os.getpid())
         setup_network()
         identity,_=enroll()
         sync_device_name()
@@ -1417,7 +1530,7 @@ def worker():
         selected=selected_route()
         rebuild=(ROOT/'recalibrate').exists() or (selected=='auto' and not loaded)
         if not loaded:rank.bootstrap()
-        if rebuild:
+        if rebuild and not panic_enabled():
             measurements={}
             for i,candidate in enumerate(CANDIDATES):
                 if STOP:return
@@ -1447,12 +1560,12 @@ def worker():
                 stage('handshake','Подключаю: '+candidate['label'],75,active=False,path=current)
                 daemon=start_candidate(candidate,identity)
                 stage('routing','Подключаю трафик к проверенному маршруту.',92)
-                activate_full(candidate['address'])
-                stage('connected','Подключено: '+candidate['label']+'.',100,active=True,path=current,
+                dns_warning = activate_full(candidate['address'])
+                stage('connected',connected_message(candidate['label'], dns_warning),100,active=True,path=current,
                       metrics=rank.data['entries'][current],since=int(time.time()),error_code='')
                 failures=0;slow=0;last_traffic=traffic_total();next_speed=time.monotonic()+600+secrets.randbelow(60)
                 while not STOP:
-                    for _ in range(50):
+                    for _ in range(20 if panic_enabled() else 50):
                         if STOP:break
                         time.sleep(.1)
                     if STOP:break
@@ -1462,7 +1575,8 @@ def worker():
                             stage('repairing','Перезапускаю защищённый DNS.',90,active=False,error_code='private_dns_stopped')
                             start_namespace_dns()
                         healthy=path_healthy(daemon)
-                        if healthy and not recover_system_dns():raise RuntimeError('system_dns_failed')
+                        if healthy:
+                            dns_warning = check_system_dns()
                     except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired):healthy=False
                     failures=0 if healthy else failures+1
                     if failures>=2:raise RuntimeError('path_health_failed')
@@ -1473,14 +1587,14 @@ def worker():
                         traffic=traffic_total()
                         if not slow and traffic-last_traffic<4194304:
                             last_traffic=traffic;next_speed=time.monotonic()+600+secrets.randbelow(60)
-                            continue
-                        last_traffic=traffic
-                        sample=speed_sample(2097152);baseline=rank.data['entries'][current]
-                        degraded=speed_degraded(sample,baseline)
-                        slow=slow+1 if degraded else 0
-                        next_speed=time.monotonic()+(20 if slow else 600+secrets.randbelow(60))
-                        if slow>=3:raise RuntimeError('confirmed_speed_drop')
-                    stage('connected','Подключено: '+candidate['label']+'.',100,active=True,path=current,error_code='')
+                        else:
+                            last_traffic=traffic
+                            sample=speed_sample(2097152);baseline=rank.data['entries'][current]
+                            degraded=speed_degraded(sample,baseline)
+                            slow=slow+1 if degraded else 0
+                            next_speed=time.monotonic()+(20 if slow else 600+secrets.randbelow(60))
+                            if slow>=3:raise RuntimeError('confirmed_speed_drop')
+                    stage('connected',connected_message(candidate['label'], dns_warning),100,active=True,path=current,error_code='')
             except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired) as exc:
                 if STOP:break
                 reason=str(exc) if re.fullmatch('[a-z_]{1,64}',str(exc)) else 'connection_failed'
@@ -1490,13 +1604,10 @@ def worker():
                     offline=carrier.exists() and carrier.read_text().strip()=='0'
                 except (OSError,RuntimeError):offline=True
                 if not offline:
-                    if selected=='auto':
-                        current=rank.next_after(current) or next(iter(rank.candidates()),None)
+                    current=recovery_route(rank,current,selected,panic_enabled())
                 stage('repairing','Связь потеряна. Переключаю защищённый маршрут.' if not offline else 'Ожидаю восстановления физической сети.',65,
                       active=False,error_code=reason)
-                for _ in range(30 if not offline else 100):
-                    if STOP:break
-                    time.sleep(.1)
+                recovery_pause((1 if not offline else 3) if panic_enabled() else (3 if not offline else 10))
             finally:
                 stop_candidate(daemon);daemon=None
         if not STOP:
