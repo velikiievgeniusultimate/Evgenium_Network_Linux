@@ -15,8 +15,19 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 p = m.policy
 
 class IncludeModeTests(unittest.TestCase):
+    def test_live_worker_from_previous_release_cannot_change_modes(self):
+        tunnel = m.vpn_tunnel
+        previous_worker = subprocess.CompletedProcess([], 0, '42\n', '')
+        with tempfile.TemporaryDirectory() as td, patch.object(p, 'PATH', Path(td)/'policy.json'):
+            p.save(p.defaults())
+            with patch.object(tunnel, 'command', return_value=previous_worker), \
+                    patch.object(tunnel, 'saved', return_value={'phase': 'connected'}):
+                with self.assertRaisesRegex(RuntimeError, 'vpn repair'):
+                    p.change('mode',value='include')
+            self.assertEqual(p.load()['mode'], 'all')
+
     def test_worker_stays_connected_when_direct_dns_fails_then_recovers(self):
-        tunnel = m.starfive_tunnel
+        tunnel = m.vpn_tunnel
         connected = []
 
         def capture_stage(phase, message, progress, **fields):
@@ -68,7 +79,7 @@ class IncludeModeTests(unittest.TestCase):
         self.assertNotIn('Системный DNS недоступен', connected[2])
 
     def test_full_mode_still_requires_working_protected_dns(self):
-        tunnel = m.starfive_tunnel
+        tunnel = m.vpn_tunnel
         with patch.object(p, 'load', return_value=p.defaults()), patch.object(tunnel, 'recover_system_dns', return_value=False):
             with self.assertRaisesRegex(RuntimeError, 'system_dns_failed'):
                 tunnel.check_system_dns()
@@ -82,7 +93,7 @@ class IncludeModeTests(unittest.TestCase):
             self.assertEqual(loaded['include']['applications'], [])
 
     def test_cli_mode_and_lists_persist_without_inverting_saved_exceptions(self):
-        with tempfile.TemporaryDirectory() as td, patch.object(p, 'PATH', Path(td)/'policy.json'), patch.object(m, 'ensure_root'), patch.object(m, 'load_settings', return_value={}), patch.object(m, 'operation_guard', return_value=contextlib.nullcontext()), patch.object(m.starfive_tunnel, 'full_guard_active', return_value=False), contextlib.redirect_stdout(io.StringIO()):
+        with tempfile.TemporaryDirectory() as td, patch.object(p, 'PATH', Path(td)/'policy.json'), patch.object(m, 'ensure_root'), patch.object(m, 'load_settings', return_value={}), patch.object(m, 'operation_guard', return_value=contextlib.nullcontext()), patch.object(m.vpn_tunnel, 'full_guard_active', return_value=False), patch.object(m.vpn_tunnel,'command', return_value=subprocess.CompletedProcess([],0,'0\n','')), contextlib.redirect_stdout(io.StringIO()):
             m.main(['app','add','firefox'])
             m.main(['mode','include'])
             m.main(['include','app','add','codex'])
@@ -116,14 +127,14 @@ class IncludeModeTests(unittest.TestCase):
         self.assertIn('th dport 53 meta mark set '+str(p.DIRECT),ruleset)
 
     def test_bad_mode_or_live_failure_restores_prior_policy(self):
-        with tempfile.TemporaryDirectory() as td, patch.object(p,'PATH',Path(td)/'policy.json'), patch.object(m.starfive_tunnel,'full_guard_active',return_value=True), patch.object(p.Path,'exists',return_value=True), patch.object(p,'apply',side_effect=[RuntimeError('classifier refused'),None]):
+        with tempfile.TemporaryDirectory() as td, patch.object(p,'PATH',Path(td)/'policy.json'), patch.object(m.vpn_tunnel,'full_guard_active',return_value=True), patch.object(p.Path,'exists',return_value=True), patch.object(m.vpn_tunnel,'command', return_value=subprocess.CompletedProcess([],0,'0\n','')), patch.object(p,'apply',side_effect=[RuntimeError('classifier refused'),None]):
             p.save(p.defaults())
             with self.assertRaises(ValueError):p.change('mode',value='typo')
-            with self.assertRaises(RuntimeError):p.change('mode',value='include')
+            with self.assertRaisesRegex(RuntimeError,'classifier refused'):p.change('mode',value='include')
             self.assertEqual(p.load()['mode'],'all')
 
     def test_outage_rejects_unapplied_selection_changes_without_saving(self):
-        with tempfile.TemporaryDirectory() as td,patch.object(p,'PATH',Path(td)/'policy.json'),patch.object(m.starfive_tunnel,'full_guard_active',return_value=True):
+        with tempfile.TemporaryDirectory() as td,patch.object(p,'PATH',Path(td)/'policy.json'),patch.object(m.vpn_tunnel,'full_guard_active',return_value=True):
             p.save({**p.defaults(),'mode':'include'})
             original=p.PATH.read_bytes()
             exists=p.Path.exists
@@ -144,7 +155,7 @@ class IncludeModeTests(unittest.TestCase):
         self.assertEqual(name,asset['name']);self.assertEqual(digest,'a'*64)
 
     def test_debian_dependency_install_uses_native_packages(self):
-        t=m.starfive_tunnel
+        t=m.vpn_tunnel
         with patch.object(t,'charon_binary',side_effect=[None,'/usr/sbin/charon-systemd']),patch.object(t.shutil,'which',side_effect=lambda name:'/usr/bin/'+name if name not in ('pacman','dnf') else None),patch.object(t,'command') as command,patch.object(t,'stage'),patch.object(t,'ensure_evgt_binary'):
             t.ensure_dependencies()
         self.assertEqual(command.call_args_list[0].args[0],['apt-get','update'])
@@ -153,7 +164,7 @@ class IncludeModeTests(unittest.TestCase):
         self.assertNotIn('qt6-declarative',packages)
 
     def test_include_outage_retains_classifier_and_direct_routing(self):
-        t=m.starfive_tunnel
+        t=m.vpn_tunnel
         with tempfile.TemporaryDirectory() as td,patch.object(t,'ROOT',Path(td)),patch.object(p,'load',return_value={**p.defaults(),'mode':'include'}),patch.object(p,'stop') as stop,patch.object(t,'command') as cmd:
             t.write(t.full_state(),json.dumps({'active':True,'dns_mode':'direct'}))
             t.cleanup_full()

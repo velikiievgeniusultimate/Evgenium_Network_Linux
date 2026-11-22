@@ -6,6 +6,20 @@ spec=importlib.util.spec_from_file_location('unified',ROOT/'src/vpnctl.py');m=im
 p=m.policy
 
 class PolicyTests(unittest.TestCase):
+ def test_full_device_guard_allows_the_configured_hsvds_relay_only_for_the_tunnel(self):
+  t=m.vpn_tunnel
+  relay=next(c for c in t.CANDIDATES if c['id']=='ee-evgt-ru')
+  original=t.LAYOUT
+  self.addCleanup(t.use_layout,original)
+  for layout in (t.CURRENT,t.LEGACY):
+   with self.subTest(layout=layout.unit),patch.object(p,'waydroid_network',return_value={'networks':[]}):
+    t.use_layout(layout)
+    rules=p.firewall(p.defaults(),[],1001)
+    port=relay['transport_port']
+    carrier_rules=[line.strip() for line in rules.splitlines() if str(port) in line]
+    self.assertEqual(carrier_rules,[f'iifname "{layout.host}" ip saddr {t.CLIENT} ip daddr {relay["transport_address"]} tcp dport {port} accept'])
+    self.assertIn('type filter hook forward priority -30; policy drop;',rules)
+
  def test_migration_retains_explicit_rules_and_defaults_waydroid_direct(self):
   with tempfile.TemporaryDirectory() as td,patch.object(p,'PATH',Path(td)/'policy.json'):
    root=Path(td)
@@ -31,24 +45,24 @@ class PolicyTests(unittest.TestCase):
   self.assertTrue(all(' udp dport 27015-' in line for line in rules))
   self.assertTrue(any('155.133.248.36' in line and '27015-27060' in line for line in rules))
  def test_base_switch_round_trip_does_not_erase_user_entries(self):
-  with tempfile.TemporaryDirectory() as d,patch.object(p,'PATH',Path(d)/'policy.json'),patch.object(m.starfive_tunnel,'full_guard_active',return_value=False):
+  with tempfile.TemporaryDirectory() as d,patch.object(p,'PATH',Path(d)/'policy.json'),patch.object(m.vpn_tunnel,'full_guard_active',return_value=False):
    p.change('add','networks','example.com');p.change('base','networks','lan',False)
    self.assertFalse(p.public()['base']['networks'][0]['enabled']);self.assertEqual(p.load()['networks'],['example.com'])
    p.change('base','networks','lan',True);self.assertTrue(p.public()['base']['networks'][0]['enabled'])
  def test_failed_live_change_restores_saved_policy(self):
-  with tempfile.TemporaryDirectory() as d,patch.object(p,'PATH',Path(d)/'policy.json'),patch.object(m.starfive_tunnel,'full_guard_active',return_value=True),patch.object(p.Path,'exists',return_value=True),patch.object(p,'apply',side_effect=[RuntimeError('bad rule'),None]):
+  with tempfile.TemporaryDirectory() as d,patch.object(p,'PATH',Path(d)/'policy.json'),patch.object(m.vpn_tunnel,'full_guard_active',return_value=True),patch.object(p.Path,'exists',return_value=True),patch.object(p,'apply',side_effect=[RuntimeError('bad rule'),None]):
    p.save(p.defaults())
    with self.assertRaises(RuntimeError):p.change('add','applications','firefox')
    self.assertEqual(p.load()['applications'],[])
  def test_token_action_does_not_need_network_or_start_connection(self):
   payload=base64.urlsafe_b64encode(json.dumps({'action':'token-save','token':'EVN1-'+'a'*43}).encode()).decode()
-  with patch.object(m.starfive_tunnel,'save_token') as save,patch.object(m.starfive_tunnel,'connect') as connect:
+  with patch.object(m.vpn_tunnel,'save_token') as save,patch.object(m.vpn_tunnel,'connect') as connect:
    m.cmd_ui_action({},payload);save.assert_called_once();connect.assert_not_called()
  def test_policy_does_not_advertise_online_without_classifier(self):
-  with patch.object(m.starfive_tunnel,'status',return_value={'active':True,'guard':True}),patch.object(m,'service_active',return_value=False),patch.object(p,'public',return_value={}):
+  with patch.object(m.vpn_tunnel,'status',return_value={'active':True,'guard':True}),patch.object(m,'service_active',return_value=False),patch.object(p,'public',return_value={}):
    self.assertFalse(m.status_data()['active'])
  def test_host_egress_health_is_forced_through_vpn(self):
-  text=(ROOT/'src/starfive_tunnel.py').read_text();self.assertIn("'--socks5-hostname','127.0.0.1:18554'",text)
+  text=(ROOT/'src/vpn_tunnel.py').read_text();self.assertIn("'--socks5-hostname','127.0.0.1:18554'",text)
  def test_unknown_ui_action_rejected(self):
   payload=base64.urlsafe_b64encode(json.dumps({'action':'profile_activate','path':'/etc/shadow'}).encode()).decode()
   with self.assertRaises(m.VPNError):m.cmd_ui_action({},payload)

@@ -19,7 +19,7 @@ def run(*args, **kw):
     return result
 
 def inside():
-    spec = importlib.util.spec_from_file_location('tunnel', ROOT/'src/starfive_tunnel.py')
+    spec = importlib.util.spec_from_file_location('tunnel', ROOT/'src/vpn_tunnel.py')
     tunnel = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tunnel)
     run('ip', 'link', 'add', tunnel.FULL_HOST, 'type', 'dummy')

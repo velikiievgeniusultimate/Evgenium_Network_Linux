@@ -258,6 +258,7 @@ def firewall(p,lan,uid):
   iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr {tunnel.SERVER} udp dport {tunnel.IKE_PORT} accept
   iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr 38.180.164.67 udp dport 443 accept
   iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr 38.180.164.67 tcp dport {{ 24571, 24578 }} accept
+  iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr {tunnel.SERVER} tcp dport 24579 accept
   iifname "{tunnel.HOST}" ip saddr {tunnel.CLIENT} ip daddr {tunnel.SERVER} tcp dport 8443 accept
   oifname "{tunnel.HOST}" ip daddr {tunnel.CLIENT} ct state established,related accept
   iifname "waydroid0" meta nfproto ipv4 meta mark {DIRECT} accept
@@ -432,6 +433,12 @@ def change(action,category='',value='',state=None):
  if p==old:return public()
  if tunnel.full_guard_active() and not Path('/sys/class/net/'+tunnel.FULL_HOST).exists():
   raise RuntimeError('VPN восстанавливается. Повторите изменение правил после подключения; прежние правила сохранены.')
+ if action=='mode':
+  # An update can leave the old worker running to preserve a live tunnel. A
+  # worker from before include mode would reapply full mode on its next retry.
+  main_pid=tunnel.command(['systemctl','show','-p','MainPID','--value',tunnel.UNIT],check=False).stdout.strip()
+  if main_pid.isdecimal() and main_pid!='0' and main_pid!=str(tunnel.saved().get('routing_worker_pid')):
+   raise RuntimeError('Работает туннель, запущенный до обновления. Выполните vpn repair, затем повторите смену режима.')
  save(p)
  if tunnel.full_guard_active() and Path('/sys/class/net/'+tunnel.FULL_HOST).exists():
   try:apply()

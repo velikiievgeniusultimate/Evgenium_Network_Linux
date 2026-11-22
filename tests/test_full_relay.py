@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
-spec=importlib.util.spec_from_file_location('full_tunnel',ROOT/'src/starfive_tunnel.py')
+spec=importlib.util.spec_from_file_location('full_tunnel',ROOT/'src/vpn_tunnel.py')
 t=importlib.util.module_from_spec(spec);spec.loader.exec_module(t)
 
 class FullRelayTests(unittest.TestCase):

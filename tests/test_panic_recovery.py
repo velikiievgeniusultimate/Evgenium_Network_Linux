@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
-import starfive_tunnel as t
+import vpn_tunnel as t
 import path_ranking
 
 class PanicRecovery(unittest.TestCase):
@@ -48,11 +48,12 @@ class PanicRecovery(unittest.TestCase):
  def test_panic_service_has_no_restart_limit_and_boot_activation(self):
   (self.root/'panic.json').write_text('{"enabled":true}')
   writes={}
-  with patch.object(t,'write',side_effect=lambda p,s:writes.update({str(p):s})),patch.object(t,'command') as command,patch.object(t,'ensure_dependencies'),patch.object(t,'token_status',return_value={'has_token':True}),patch.object(t,'stage'):
+  with patch.object(t,'write',side_effect=lambda p,s,**kwargs:writes.update({str(p):s})),patch.object(t,'command') as command,patch.object(t,'ensure_dependencies'),patch.object(t,'token_status',return_value={'has_token':True}),patch.object(t,'stage'):
    t.connect()
   unit=writes['/etc/systemd/system/'+t.UNIT]
   self.assertIn('StartLimitIntervalSec=0',unit);self.assertIn('Restart=always',unit)
   self.assertIn('WantedBy=multi-user.target',unit)
+  self.assertTrue(t.known_unit(t.LAYOUT,'unit',unit.encode()))
   self.assertIn(['systemctl','enable',t.UNIT],[c.args[0] for c in command.call_args_list])
  def test_stop_interrupts_recovery_wait(self):
   t.STOP=True

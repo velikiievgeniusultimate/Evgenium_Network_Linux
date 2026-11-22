@@ -1,7 +1,8 @@
 import hashlib,json,socket,time
 from pathlib import Path
 import importlib.util
-spec=importlib.util.spec_from_file_location('tunnel',Path(__file__).resolve().parents[1]/'src/starfive_tunnel.py');t=importlib.util.module_from_spec(spec);spec.loader.exec_module(t)
+spec=importlib.util.spec_from_file_location('tunnel',Path(__file__).resolve().parents[1]/'src/vpn_tunnel.py');t=importlib.util.module_from_spec(spec);spec.loader.exec_module(t)
+t.select_installed_layout()
 block=hashlib.shake_256(b'evgenium-raw-transfer-v1').digest(65536);results=[]
 with t.namespace():
  for op,size in [('download',16*1024*1024),('upload',8*1024*1024)]:

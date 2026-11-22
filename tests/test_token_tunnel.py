@@ -15,7 +15,7 @@ def load(name, path):
     return module
 
 issuer = load('issuer', ROOT/'server/token_issuer.py')
-tunnel = load('tunnel', ROOT/'src/starfive_tunnel.py')
+tunnel = load('tunnel', ROOT/'src/vpn_tunnel.py')
 gui = load('gui', ROOT/'src/evgenium_gui.py')
 collector = load('collector', ROOT/'server/diagnostic_collector.py')
 

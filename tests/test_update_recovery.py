@@ -17,12 +17,14 @@ class RecoveryTests(unittest.TestCase):
     def fixture(self,stack,folder,events):
         stack.enter_context(patch.object(m,'INSTALL_PENDING',folder/'pending'))
         stack.enter_context(patch.object(m,'INSTALL_COMPLETE',folder/'complete'))
-        for name in ('sync_system_files','cmd_gui_install','retire_legacy','core_update','ensure_gui_dependencies'):
-            stack.enter_context(patch.object(m,name,side_effect=lambda *args,n=name:events.append(n)))
+        for name in ('sync_system_files','_install_desktop_integration','retire_legacy','core_update','ensure_gui_dependencies'):
+            stack.enter_context(patch.object(m,name,side_effect=lambda *args,n=name,**kwargs:events.append(n)))
         stack.enter_context(patch.object(m,'_widget_package_dir',return_value=folder/'absent-widget'))
         stack.enter_context(patch.object(m.policy,'migration',side_effect=lambda _:events.append('migration')))
-        stack.enter_context(patch.object(m.starfive_tunnel,'status',return_value={'running':False}))
-        stack.enter_context(patch.object(m.starfive_tunnel,'token_status',return_value={'has_token':False}))
+        stack.enter_context(patch.object(m.vpn_tunnel,'status',return_value={'running':False}))
+        stack.enter_context(patch.object(m.vpn_tunnel,'finish_name_transition'))
+        stack.enter_context(patch.object(m.vpn_tunnel,'layout_in_use',return_value=False))
+        stack.enter_context(patch.object(m.vpn_tunnel,'token_status',return_value={'has_token':False}))
         stack.enter_context(patch.object(m,'run',return_value=subprocess.CompletedProcess([],3,'','')))
         stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
         stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
@@ -30,37 +32,37 @@ class RecoveryTests(unittest.TestCase):
     def test_dependency_failure_keeps_new_entrypoints_and_retries_same_version(self):
         with tempfile.TemporaryDirectory() as td,contextlib.ExitStack() as stack:
             events=[];folder=Path(td);self.fixture(stack,folder,events)
-            deps=stack.enter_context(patch.object(m.starfive_tunnel,'ensure_dependencies',side_effect=RuntimeError('mirror unavailable')))
+            deps=stack.enter_context(patch.object(m.vpn_tunnel,'ensure_dependencies',side_effect=RuntimeError('mirror unavailable')))
             with self.assertRaisesRegex(RuntimeError,'mirror unavailable'):m.finish_installation({})
             self.assertTrue((folder/'pending').exists())
             self.assertFalse((folder/'complete').exists())
-            self.assertEqual(events[:2],['sync_system_files','cmd_gui_install'])
+            self.assertEqual(events[:2],['sync_system_files','_install_desktop_integration'])
             self.assertNotIn('retire_legacy',events)
             deps.side_effect=None
             stack.enter_context(patch.object(m,'http_get',return_value=json.dumps({'version':m.MANAGER_VERSION}).encode()))
             self.assertFalse(m.manager_update_manifest({},'https://example.test/manifest'))
             self.assertFalse((folder/'pending').exists())
             self.assertEqual(json.loads((folder/'complete').read_text())['version'],m.MANAGER_VERSION)
-            self.assertEqual(events.count('cmd_gui_install'),2)
+            self.assertEqual(events.count('_install_desktop_integration'),2)
 
     def test_current_version_sync_does_not_reconnect_healthy_tunnel(self):
         with tempfile.TemporaryDirectory() as td,contextlib.ExitStack() as stack:
             self.fixture(stack,Path(td),[])
-            stack.enter_context(patch.object(m.starfive_tunnel,'ensure_dependencies'))
-            stack.enter_context(patch.object(m.starfive_tunnel,'status',return_value={'running':True}))
-            stack.enter_context(patch.object(m.starfive_tunnel,'token_status',return_value={'has_token':True}))
-            stack.enter_context(patch.object(m.starfive_tunnel,'sync_device_name'))
-            connect=stack.enter_context(patch.object(m.starfive_tunnel,'connect'))
+            stack.enter_context(patch.object(m.vpn_tunnel,'ensure_dependencies'))
+            stack.enter_context(patch.object(m.vpn_tunnel,'status',return_value={'running':True}))
+            stack.enter_context(patch.object(m.vpn_tunnel,'token_status',return_value={'has_token':True}))
+            stack.enter_context(patch.object(m.vpn_tunnel,'sync_device_name'))
+            connect=stack.enter_context(patch.object(m.vpn_tunnel,'connect'))
             m.finish_installation({},reconnect=False);connect.assert_not_called()
 
-    def test_pending_update_reconnects_and_keeps_pending_on_failure(self):
+    def test_pending_legacy_xray_upgrade_keeps_pending_on_reconnect_failure(self):
         with tempfile.TemporaryDirectory() as td,contextlib.ExitStack() as stack:
             folder=Path(td);self.fixture(stack,folder,[]);(folder/'pending').write_text('interrupted')
-            stack.enter_context(patch.object(m.starfive_tunnel,'ensure_dependencies'))
-            stack.enter_context(patch.object(m.starfive_tunnel,'status',return_value={'running':True}))
-            stack.enter_context(patch.object(m.starfive_tunnel,'token_status',return_value={'has_token':True}))
-            stack.enter_context(patch.object(m.starfive_tunnel,'sync_device_name'))
-            connect=stack.enter_context(patch.object(m.starfive_tunnel,'connect',side_effect=RuntimeError('connect failed')))
+            stack.enter_context(patch.object(m.vpn_tunnel,'ensure_dependencies'))
+            stack.enter_context(patch.object(m,'run',return_value=subprocess.CompletedProcess([],0,'','')))
+            stack.enter_context(patch.object(m.vpn_tunnel,'token_status',return_value={'has_token':True}))
+            stack.enter_context(patch.object(m.vpn_tunnel,'sync_device_name'))
+            connect=stack.enter_context(patch.object(m.vpn_tunnel,'connect',side_effect=RuntimeError('connect failed')))
             with self.assertRaises(RuntimeError):m.finish_installation({},reconnect=False)
             connect.assert_called_once_with(repair=True)
             self.assertTrue((folder/'pending').exists())
@@ -68,9 +70,9 @@ class RecoveryTests(unittest.TestCase):
     def test_cli_only_update_never_installs_qt_or_gui(self):
         with tempfile.TemporaryDirectory() as td,contextlib.ExitStack() as stack:
             events=[];self.fixture(stack,Path(td),events)
-            stack.enter_context(patch.object(m.starfive_tunnel,'ensure_dependencies'))
-            stack.enter_context(patch.object(m.starfive_tunnel,'token_status',return_value={'has_token':False}))
-            gui=stack.enter_context(patch.object(m,'cmd_gui_install'))
+            stack.enter_context(patch.object(m.vpn_tunnel,'ensure_dependencies'))
+            stack.enter_context(patch.object(m.vpn_tunnel,'token_status',return_value={'has_token':False}))
+            gui=stack.enter_context(patch.object(m,'_install_desktop_integration'))
             qt=stack.enter_context(patch.object(m,'ensure_gui_dependencies'))
             m.finish_installation({'cli_only':True})
             gui.assert_not_called();qt.assert_not_called()

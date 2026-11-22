@@ -2,7 +2,7 @@ import contextlib,sys,tempfile,unittest,json
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).parents[1]/'src'))
-import starfive_tunnel as t
+import vpn_tunnel as t
 import path_ranking
 class SimpleRoutes(unittest.TestCase):
  def test_manual_choice_is_validated_and_migrates_removed_route_to_auto(self):

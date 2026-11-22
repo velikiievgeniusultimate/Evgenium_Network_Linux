@@ -35,6 +35,8 @@ jobs:
           /usr/lib/qt6/bin/qmllint --unqualified info src/evgenium_gui.qml
       - name: Legacy upgrade and independent repair in disposable filesystem
         run: sudo python3 scripts/test-upgrade-sandbox.py
+      - name: Token-client upgrades, retained protection and rollback
+        run: python3 scripts/test-token-upgrade.py
       - name: Fetch and verify pinned local routing engine
         run: |
           python - <<'PY'

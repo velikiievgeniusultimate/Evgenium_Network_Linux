@@ -51,7 +51,7 @@ class WaydroidNetworkTests(unittest.TestCase):
                 self.assertFalse((Path(td)/'waydroid-network.json').exists())
 
     def test_secondary_filter_preserves_unrelated_forwarding_block(self):
-        rules=m.starfive_tunnel.host_rules('eth0',previous_forward=False)
+        rules=m.vpn_tunnel.host_rules('eth0',previous_forward=False)
         self.assertIn('oifname "waydroid0" meta nfproto ipv4 ct state established,related accept',rules)
         self.assertIn('meta nfproto ipv4 drop',rules)
         self.assertNotIn('flush ruleset',rules)

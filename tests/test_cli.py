@@ -8,7 +8,7 @@ m=module('cli',ROOT/'src/vpnctl.py');gui=module('gui_bridge',ROOT/'src/evgenium_
 class GuiCliIntegrationTests(unittest.TestCase):
  def test_real_gui_encoder_is_accepted_by_privileged_decoder(self):
   for action,method in [('connect','connect'),('repair','connect'),('disconnect','disconnect')]:
-   with self.subTest(action=action),patch.object(m.starfive_tunnel,method) as called:
+   with self.subTest(action=action),patch.object(m.vpn_tunnel,method) as called:
     payload=gui.encode_ui_payload({'action':action})
     with patch.object(m.sys,'stdin',io.StringIO(payload)):m.cmd_ui_action({},'-')
     called.assert_called_once()
