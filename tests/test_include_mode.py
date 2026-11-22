@@ -21,6 +21,7 @@ class IncludeModeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, patch.object(p, 'PATH', Path(td)/'policy.json'):
             p.save(p.defaults())
             with patch.object(tunnel, 'command', return_value=previous_worker), \
+                    patch.object(tunnel, 'full_guard_active', return_value=False), \
                     patch.object(tunnel, 'saved', return_value={'phase': 'connected'}):
                 with self.assertRaisesRegex(RuntimeError, 'vpn repair'):
                     p.change('mode',value='include')
