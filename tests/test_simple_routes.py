@@ -27,7 +27,7 @@ class SimpleRoutes(unittest.TestCase):
    for name in ['cleanup','refresh_retained_guard','setup_network','sync_device_name','stop_candidate','stage']:
     stack.enter_context(patch.object(t,name))
    stack.enter_context(patch.object(t,'enroll',return_value=('device-test','test')))
-   stack.enter_context(patch.object(t,'physical_route',return_value={'dev':'evg-test-absent'}))
+   stack.enter_context(patch.object(t,'uplink_ready',return_value=True))
    stack.enter_context(patch.object(t,'start_candidate',side_effect=fail))
    stack.enter_context(patch.object(t.time,'sleep'))
    stack.enter_context(patch.object(t.signal,'signal'))
