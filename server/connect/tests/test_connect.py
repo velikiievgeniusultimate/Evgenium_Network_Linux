@@ -248,9 +248,6 @@ vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
         self.assertIn('passed', output)
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 class WindowsReportTests(EnrollmentPortalTests):
     def report_body(self):
         report = dict(schema=1, event='support_bundle', system='windows', manager='0.2.0', report_id='d'*32, time=1793400000, os_build=26300,
@@ -294,3 +291,28 @@ class WindowsReportTests(EnrollmentPortalTests):
         self.reply={'ok':False,'error':'invalid_token_or_device'}
         self.assertEqual(self.send_report().status_code,401)
         self.assertFalse((Path(self.tmp.name)/'reports').exists())
+
+    def test_full_windows_support_report_and_partial_network_failure(self):
+        body = self.report_body()
+        report = body['report']
+        report.update(schema=2, network_status='timeout', local={
+            'temp': dict(kind='local', status='ok', step='done', elapsed_ms=21, read_only=False, cleanup_ok=True),
+            'shell_desktop': dict(status='timeout', elapsed_ms=7010),
+            'settings': dict(mapped_disks=1, smb_checked=1, smb_reachable=0, lan_subnets=1,
+                             smb_running=True, proxy=False, proxy_pac=False, defender_cfa=-1),
+        })
+        report['checks']['transfers'].append(dict(route='ru-wg', direction='upload', bytes=262144,
+                                                elapsed_ms=10000, mbps=0, ok=False, error='timeout'))
+        report['checks']['services'].append(dict(service='telegram_web', ok=True, http_status=200, elapsed_ms=250))
+        self.assertEqual(self.send_report(body).status_code, 200)
+        file = Path(self.tmp.name) / 'reports' / ('windows-' + 'd'*32 + '.json')
+        stored = json.loads(file.read_text())['report']
+        self.assertEqual(stored['network_status'], 'timeout')
+        self.assertEqual(stored['local']['settings']['defender_cfa'], -1)
+        self.assertEqual(stored['local']['shell_desktop']['status'], 'timeout')
+        report['local']['temp']['path'] = r'C:\Private\Documents'
+        self.assertEqual(self.send_report(body).status_code, 400)
+
+
+if __name__ == '__main__':
+    unittest.main()

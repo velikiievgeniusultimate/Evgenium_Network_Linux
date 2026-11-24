@@ -1,7 +1,7 @@
 name: Windows client
 on:
   push:
-    paths: ['windows/**', '.github/workflows/windows.yml']
+    paths: ['windows/**', '.github/workflows/windows.yml', 'server/connect/windows_reports.py']
   workflow_dispatch:
 permissions:
   contents: read
@@ -33,6 +33,10 @@ jobs:
           & .\windows\build.ps1 -Output "$env:RUNNER_TEMP\evgenium-windows"
           $version=(Get-Content .\windows\VERSION -Raw).Trim()
           & .\windows\test.ps1 -Package "$env:RUNNER_TEMP\evgenium-windows\Evgenium-Windows-$version-x64"
+      - name: Test support file operations and Windows Shell
+        shell: powershell
+        run: |
+          & .\windows\support-checks-test.ps1 | Tee-Object "$env:RUNNER_TEMP\evgenium-windows\support-checks.log"
       - name: Test real non-administrator ACL and settings
         shell: powershell
         run: |

@@ -13,6 +13,7 @@ $p=Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NOREST
 [Reflection.Assembly]::LoadFile((Join-Path $output ('Evgenium-Windows-'+$version+'-x64/Evgenium.exe'))) | Out-Null
 . (Join-Path $PSScriptRoot 'Evgenium.ps1') -Command selftest -ExecutableDirectory $app
 . (Join-Path $PSScriptRoot 'Policy.ps1')
+. (Join-Path $PSScriptRoot 'SupportChecks.ps1')
 . (Join-Path $PSScriptRoot 'Reports.ps1')
 if(!(Is-Admin)){throw 'Administrator required for disposable E2E'}
 $task='Evgenium-CI-Emergency-Disconnect';$armed=$false;$off=$false
@@ -191,7 +192,8 @@ try{
  if((@((Read-EngineStatus).ranking | ForEach-Object {$_.id}) -join ',') -ne $savedOrder){throw 'Reconnect remeasured or changed order'}
  Note 'Saved order survives failover; new connection returns to leader PASS.'
  # Explicit user-authorized CI diagnostic account, no real user's report.
- $report=Create-Report
+ $report=Create-Report -Full
+ if($report.schema -ne 2 -or $report.local.temp.status -ne 'ok'){throw 'Full report missing real file checks'}
  if(@($report.checks.routes | Where-Object good).Count -lt 2){throw 'Fewer than two working carriers'}
  foreach($route in $report.checks.routes){Note ('Carrier: '+$route.id+' good='+$route.good+' Mbps='+$route.download_mbps)}
  $id=Send-Report $report;Note ('UDP/DNS/service diagnostic upload acknowledged: '+$id)

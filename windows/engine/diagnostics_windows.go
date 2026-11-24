@@ -33,6 +33,8 @@ type TransferProbe struct {
 	Millis    int64   `json:"elapsed_ms"`
 	Mbps      float64 `json:"mbps"`
 	OK        bool    `json:"ok"`
+	HTTP      int     `json:"http_status,omitempty"`
+	Error     string  `json:"error,omitempty"`
 }
 
 func udpRelay(port int) (net.Conn, *net.UDPConn, *net.UDPAddr, error) {
@@ -140,7 +142,7 @@ func udpPackets(port int) []PacketProbe {
 	return result
 }
 func serviceProbes(port int) []ServiceProbe {
-	targets := [][2]string{{"dns_https", "https://www.cloudflare.com/cdn-cgi/trace"}, {"discord_api", "https://discord.com/api/v10/gateway"}, {"discord_cdn", "https://cdn.discordapp.com/"}, {"vk", "https://vk.com/"}, {"github", "https://github.com/"}}
+	targets := [][2]string{{"dns_https", "https://www.cloudflare.com/cdn-cgi/trace"}, {"discord_api", "https://discord.com/api/v10/gateway"}, {"discord_cdn", "https://cdn.discordapp.com/"}, {"vk", "https://vk.com/"}, {"github", "https://github.com/"}, {"telegram_web", "https://web.telegram.org/"}, {"adobe", "https://www.adobe.com/"}}
 	result := []ServiceProbe{}
 	for _, target := range targets {
 		start := time.Now()
@@ -170,8 +172,14 @@ func uploadProbe(id string) TransferProbe {
 	start := time.Now()
 	response, e := client.Post("https://speed.cloudflare.com/__up", "application/octet-stream", bytes.NewReader(data))
 	r.Millis = time.Since(start).Milliseconds()
-	if e == nil {
+	if e != nil {
+		r.Error = sanitizedError(e)
+	} else {
+		r.HTTP = response.StatusCode
 		r.OK = response.StatusCode >= 200 && response.StatusCode < 300
+		if !r.OK {
+			r.Error = "http"
+		}
 		io.Copy(io.Discard, io.LimitReader(response.Body, 2048))
 		response.Body.Close()
 	}

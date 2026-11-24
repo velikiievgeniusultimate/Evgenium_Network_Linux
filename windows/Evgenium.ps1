@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 $global:EvgeniumExitCode = 0
-$script:Version = '0.2.4'
+$script:Version = '0.2.5'
 $global:EvgeniumInstallerStarted = $false
 $script:Api = 'https://connect.velikiievgenius.com'
 $script:Manifest = 'https://raw.githubusercontent.com/velikiievgeniusultimate/Evgenium_Network_Linux/main/releases/windows/stable.json'
@@ -281,7 +281,7 @@ function Start-VerifiedInstaller($Manifest) {
     try {
         $null=Invoke-WebRequest -UseBasicParsing -Uri $Manifest.installer_url -OutFile $installer -TimeoutSec 180
         Assert-Installer $installer $Manifest
-        $null=Start-Process -FilePath $installer -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS' -PassThru
+        $null=Start-Process -FilePath $installer -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART' -PassThru
         $started=$true; $global:EvgeniumInstallerStarted=$true
     } finally { if (!$started -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force } }
 }
