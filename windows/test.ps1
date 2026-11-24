@@ -22,4 +22,9 @@ try{
  $key=Invoke-Engine 'keygen' | ConvertFrom-Json;if(!(Check-Key $key.private_key) -or !(Check-Key $key.public_key)){throw 'Key generation'};if((Invoke-Engine 'pubkey' $key.private_key) -cne $key.public_key){throw 'Key pipe roundtrip'};$key=$null
  foreach($pair in @(@('applications',"bad.exe`nmalicious"),@('networks','0.0.0.0/0'),@('networks','https://example.com/x'),@('ports','udp:53:out'),@('dns','127.0.0.1'))){Reject{Normalize-Exception $pair[0] $pair[1]}}
 }finally{Remove-Item -LiteralPath $temp -Recurse -Force}
+$worker=[EvgeniumProcess]::Run((Join-Path $Package 'Evgenium.exe'),'--command support-check-temp','',12000)
+if($worker.ExitCode -ne 0 -or !$worker.Output){throw "Packaged support worker failed (exit=$($worker.ExitCode), bytes=$($worker.Output.Length))"}
+$probe=$worker.Output | ConvertFrom-Json
+if($probe.status -ne 'ok' -or !$probe.cleanup_ok){throw "Packaged support file test failed: $($probe | ConvertTo-Json -Compress)"}
+Write-Output 'Packaged support worker returned a successful local file probe: PASS'
 Write-Output 'GUI package, strict update validation, DPAPI, ACL, private key pipes and safe uninstall traversal: PASS'

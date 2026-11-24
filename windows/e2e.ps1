@@ -193,7 +193,7 @@ try{
  Note 'Saved order survives failover; new connection returns to leader PASS.'
  # Explicit user-authorized CI diagnostic account, no real user's report.
  $report=Create-Report -Full
- if($report.schema -ne 2 -or $report.local.temp.status -ne 'ok'){throw 'Full report missing real file checks'}
+ if($report.schema -ne 2 -or $report.local.temp.status -ne 'ok'){throw ('Full report missing real file checks: schema='+$report.schema+' temp='+($report.local.temp | ConvertTo-Json -Compress))}
  if(@($report.checks.routes | Where-Object good).Count -lt 2){throw 'Fewer than two working carriers'}
  foreach($route in $report.checks.routes){Note ('Carrier: '+$route.id+' good='+$route.good+' Mbps='+$route.download_mbps)}
  $id=Send-Report $report;Note ('UDP/DNS/service diagnostic upload acknowledged: '+$id)
