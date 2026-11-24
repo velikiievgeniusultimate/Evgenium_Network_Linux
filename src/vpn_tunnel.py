@@ -946,7 +946,8 @@ def namespace():
 def physical_route():
     routes = json.loads(command(['ip', '-j', '-4', 'route', 'show', 'table', 'main', 'default']).stdout)
     candidates = [r for r in routes if r.get('gateway') and r.get('dev') and
-                  not r['dev'].startswith(('tun', 'xray', 'wg', 'evn-'))]
+                  not r['dev'].startswith(('tun', 'xray', 'wg', 'evn-')) and
+                  'linkdown' not in r.get('flags', ())]
     if not candidates:
         raise RuntimeError('no_physical_route')
     route = min(candidates, key=lambda r: r.get('metric', 0))
@@ -1373,6 +1374,42 @@ def recovery_pause(seconds):
         time.sleep(.1)
 
 
+def suspend_offset():
+    # CLOCK_BOOTTIME includes time spent asleep; CLOCK_MONOTONIC does not.
+    return time.clock_gettime(time.CLOCK_BOOTTIME) - time.monotonic()
+
+
+def suspended_since(offset):
+    return suspend_offset() - offset >= .5
+
+
+def uplink_ready():
+    try:
+        route = physical_route()
+        carrier = Path('/sys/class/net') / route['dev'] / 'carrier'
+        return carrier.read_text().strip() == '1'
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return False
+
+
+def wait_for_uplink():
+    if STOP:
+        return False
+    if uplink_ready():
+        return True
+    stage('repairing', 'Ожидаю восстановления физической сети.', 65,
+          active=False, error_code='no_physical_route')
+    while not STOP:
+        recovery_pause(1)
+        if not STOP and uplink_ready():
+            return True
+    return False
+
+
+class UplinkInterrupted(RuntimeError):
+    """The active path needs validation again after a local interruption."""
+
+
 def recovery_route(rank,current,selected,panic=False):
     if panic or selected=='auto':
         return rank.next_after(current) or next(iter(rank.candidates()),None)
@@ -1547,8 +1584,12 @@ def worker():
     signal.signal(signal.SIGINT,lambda *_:globals().__setitem__('STOP',True))
     attempts=0
     while not STOP:
-        worker_once()
-        if STOP or not panic_enabled():return
+        retry_uplink = worker_once() is True
+        if STOP:return
+        if retry_uplink:
+            recovery_pause(1)
+            continue
+        if not panic_enabled():return
         attempts+=1
         stage('repairing','Панический поиск: повторяю подготовку VPN.',5,
               active=False,retry=attempts)
@@ -1558,9 +1599,12 @@ def worker():
 def worker_once():
     daemon=None
     rank=rank_api.Ranking(ROOT/'ranking.json',[x['id'] for x in CANDIDATES])
+    preparation_offset = suspend_offset()
     try:
-        cleanup();refresh_retained_guard()
+        cleanup()
         stage('prepare','Готовлю защищённые маршруты.',5,active=False,metrics={},error_code='',scope='selected' if policy is not None and policy.inclusive(policy.load()) else 'full-device',routing_worker_pid=os.getpid())
+        if not wait_for_uplink():return
+        refresh_retained_guard()
         setup_network()
         identity,_=enroll()
         sync_device_name()
@@ -1573,6 +1617,7 @@ def worker_once():
             measurements={}
             for i,candidate in enumerate(CANDIDATES):
                 if STOP:return
+                measurement_offset = suspend_offset()
                 stage('ranking','Проверяю маршрут: '+candidate['label'],10+int(i*60/len(CANDIDATES)),active=False,path=candidate['id'])
                 try:
                     daemon=start_candidate(candidate,identity)
@@ -1589,12 +1634,16 @@ def worker_once():
                     measurements[candidate['id']]={'ok':False}
                 finally:
                     stop_candidate(daemon);daemon=None
+                if not STOP and (suspended_since(measurement_offset) or not uplink_ready()):
+                    return True
             rank.build(measurements)
             (ROOT/'recalibrate').unlink(missing_ok=True)
         candidates={x['id']:x for x in CANDIDATES}
         current=selected if selected!='auto' else next(iter(rank.candidates()),None)
         while current and not STOP:
+            if not wait_for_uplink():break
             candidate=candidates[current]
+            candidate_offset = suspend_offset()
             try:
                 stage('handshake','Подключаю: '+candidate['label'],75,active=False,path=current)
                 daemon=start_candidate(candidate,identity)
@@ -1608,6 +1657,11 @@ def worker_once():
                         if STOP:break
                         time.sleep(.1)
                     if STOP:break
+                    probe_offset = suspend_offset()
+                    resumed = probe_offset - candidate_offset >= .5
+                    if resumed:
+                        if not wait_for_uplink():break
+                        probe_offset = suspend_offset()
                     try:
                         if policy is not None:policy.ensure_route()
                         if DNS_PROCESS is None or DNS_PROCESS.poll() is not None:
@@ -1617,6 +1671,17 @@ def worker_once():
                         if healthy:
                             dns_warning = check_system_dns()
                     except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired):healthy=False
+                    # A second wake can occur during the blocking health check.
+                    # Re-evaluate without counting that sample against the path.
+                    if suspended_since(probe_offset):
+                        continue
+                    if resumed:
+                        candidate_offset = probe_offset
+                        if not healthy:
+                            raise UplinkInterrupted('suspend_resume')
+                        failures = slow = 0
+                    if not healthy and not uplink_ready():
+                        raise UplinkInterrupted('no_physical_route')
                     failures=0 if healthy else failures+1
                     if failures>=2:raise RuntimeError('path_health_failed')
                     if not healthy:
@@ -1637,16 +1702,15 @@ def worker_once():
             except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired) as exc:
                 if STOP:break
                 reason=str(exc) if re.fullmatch('[a-z_]{1,64}',str(exc)) else 'connection_failed'
-                # A missing physical interface is not a transport's defeat.
-                try:
-                    route=physical_route();carrier=Path('/sys/class/net')/route['dev']/'carrier'
-                    offline=carrier.exists() and carrier.read_text().strip()=='0'
-                except (OSError,RuntimeError):offline=True
-                if not offline:
+                interrupted = isinstance(exc, UplinkInterrupted) or suspended_since(candidate_offset) or not uplink_ready()
+                if interrupted:
+                    stage('repairing', 'Восстанавливаю прежний маршрут VPN.', 65,
+                          active=False, error_code=reason)
+                else:
                     current=recovery_route(rank,current,selected,panic_enabled())
-                stage('repairing','Связь потеряна. Переключаю защищённый маршрут.' if not offline else 'Ожидаю восстановления физической сети.',65,
-                      active=False,error_code=reason)
-                recovery_pause((1 if not offline else 3) if panic_enabled() else (3 if not offline else 10))
+                    stage('repairing', 'Связь потеряна. Проверяю защищённый маршрут.', 65,
+                          active=False, error_code=reason)
+                    recovery_pause(1 if panic_enabled() else 3)
             finally:
                 stop_candidate(daemon);daemon=None
         if not STOP:
@@ -1654,6 +1718,8 @@ def worker_once():
                   active=False,error_code='ranking_exhausted')
     except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired) as exc:
         if not STOP:
+            if suspended_since(preparation_offset) or not uplink_ready():
+                return True
             code=str(exc) if re.fullmatch('[a-z_]{1,64}',str(exc)) else 'connection_failed'
             stage('failed','Не удалось подготовить VPN. Нажмите «Восстановить».',0,active=False,error_code=code)
     finally:

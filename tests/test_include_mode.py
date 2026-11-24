@@ -64,6 +64,7 @@ class IncludeModeTests(unittest.TestCase):
             stack.enter_context(patch.object(tunnel, 'enroll', return_value=('device', None)))
             stack.enter_context(patch.object(tunnel, 'egress_health', return_value=True))
             stack.enter_context(patch.object(tunnel, 'path_healthy', return_value=True))
+            stack.enter_context(patch.object(tunnel, 'uplink_ready', return_value=True))
             stack.enter_context(patch.object(tunnel, 'panic_enabled', return_value=True))
             stack.enter_context(patch.object(tunnel, 'full_firewall', return_value=''))
             stack.enter_context(patch.object(tunnel, 'full_guard_active', return_value=False))

@@ -82,6 +82,7 @@ def fixture_worker(root, mode):
             stack.enter_context(patch.object(tunnel, "command", side_effect=command))
             stack.enter_context(patch.object(tunnel.subprocess, "Popen", side_effect=foreground))
             stack.enter_context(patch.object(tunnel, "enroll", return_value=("fixture", None)))
+            stack.enter_context(patch.object(tunnel, "uplink_ready", return_value=True))
             stack.enter_context(patch.object(tunnel, "start_daemon", side_effect=lambda env: spawn("daemon")))
             for name in ("refresh_retained_guard", "setup_network", "sync_device_name", "daemon_configs"):
                 stack.enter_context(patch.object(tunnel, name))
