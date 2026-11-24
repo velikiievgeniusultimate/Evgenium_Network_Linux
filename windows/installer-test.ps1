@@ -11,7 +11,8 @@ $state=Read-State;$state.token=Seal ('EVN1-'+('a'*43));Save-State $state;$before
 function Install-Version([string]$Path,[string]$Version,[switch]$Launch){
  $flags=@('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/LOG="'+(Join-Path $Output ('install-'+$Version+'.log'))+'"'))
  if(!$Launch){$flags+='/NOLAUNCH'}
- $p=Start-Process $Path -ArgumentList $flags -Wait -PassThru
+ $p=Start-Process $Path -ArgumentList $flags -PassThru
+ if(!$p.WaitForExit(120000)){throw "Setup did not exit"}
  if($p.ExitCode -ne 0){throw ('Setup failed '+$p.ExitCode)}
  if((Get-ItemProperty $key).DisplayVersion -ne $Version){throw 'Windows Apps registration'}
  if((Get-FileHash $script:StatePath).Hash -cne $before){throw 'Update lost token/device identity'}
