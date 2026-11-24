@@ -1,0 +1,19 @@
+name: Windows 11 support diagnostics
+on:
+  push:
+    paths: ['windows/SupportChecks.ps1', 'windows/support-checks-test.ps1', '.github/workflows/windows-support11.yml']
+  pull_request:
+    paths: ['windows/SupportChecks.ps1', 'windows/support-checks-test.ps1', '.github/workflows/windows-support11.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  file-probes:
+    runs-on: windows-11-arm
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Save and reopen test files on Windows 11
+        shell: powershell
+        run: |
+          & .\windows\support-checks-test.ps1 -RequireWindows11
