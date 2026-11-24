@@ -14,6 +14,17 @@
         'prepare' { Prepare-App }
         'status' { (Read-EngineStatus).state }
         'ui-selftest' { Test-Desktop }
+        {$_ -match '^support-check-([a-z_]{1,24})$'} {
+            Invoke-EvgSupportCheck $Matches[1] | ConvertTo-Json -Compress -Depth 6
+        }
+        'support-send' {
+            if (!$ResultId) {throw 'Нет идентификатора отчёта.'}
+            $path=Join-Path $script:Data ('report-'+$ResultId+'.json')
+            Assert-NoReparse $path
+            $report=Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($report.report_id -cne $ResultId) {throw 'Неверный идентификатор отчёта.'}
+            Send-Report $report
+        }
         'close-gui' { try {$e=[Threading.EventWaitHandle]::OpenExisting('Local\EvgeniumNetwork.Close'); $null=$e.Set();$e.Dispose()} catch {} }
         default { throw 'Неподдерживаемая внутренняя операция.' }
     }

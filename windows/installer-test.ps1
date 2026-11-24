@@ -8,8 +8,10 @@ $version=(Get-Content (Join-Path $PSScriptRoot 'VERSION') -Raw -Encoding UTF8).T
 $app=Join-Path $env:ProgramFiles 'EvgeniumNetwork';$key='HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{53E2495A-A134-40DC-BA91-D2FD582DE3AD}_is1'
 if((Test-Path $app) -or (Test-Path $script:AppRoot)){throw 'Previous installation; refuse destructive test'}
 $state=Read-State;$state.token=Seal ('EVN1-'+('a'*43));Save-State $state;$before=(Get-FileHash $script:StatePath).Hash
-function Install-Version([string]$Path,[string]$Version){
- $p=Start-Process $Path -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOLAUNCH',('/LOG="'+(Join-Path $Output ('install-'+$Version+'.log'))+'"') -Wait -PassThru
+function Install-Version([string]$Path,[string]$Version,[switch]$Launch){
+ $flags=@('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/LOG="'+(Join-Path $Output ('install-'+$Version+'.log'))+'"'))
+ if(!$Launch){$flags+='/NOLAUNCH'}
+ $p=Start-Process $Path -ArgumentList $flags -Wait -PassThru
  if($p.ExitCode -ne 0){throw ('Setup failed '+$p.ExitCode)}
  if((Get-ItemProperty $key).DisplayVersion -ne $Version){throw 'Windows Apps registration'}
  if((Get-FileHash $script:StatePath).Hash -cne $before){throw 'Update lost token/device identity'}
@@ -23,7 +25,19 @@ function Install-Version([string]$Path,[string]$Version){
 $setup=Join-Path $Output ('Evgenium-Windows-'+$version+'-x64-Setup.exe');Install-Version $setup $version;Install-Version $setup $version
 $v=[version]$version;$newer=('{0}.{1}.{2}' -f $v.Major,$v.Minor,($v.Build+1))
 $fixture=Join-Path $Output 'upgrade-fixture';& (Join-Path $PSScriptRoot 'build.ps1') -Output $fixture -TestVersion $newer
-Install-Version (Join-Path $fixture ('Evgenium-Windows-'+$newer+'-x64-Setup.exe')) $newer
+$oldGui=Start-Process (Join-Path $app 'Evgenium.exe') -PassThru
+for($i=0;$i -lt 40;$i++){ $oldGui.Refresh();if($oldGui.MainWindowHandle -ne 0){break};Start-Sleep -Milliseconds 250 }
+if($oldGui.HasExited -or $oldGui.MainWindowHandle -eq 0){throw 'Old desktop did not open'}
+Install-Version (Join-Path $fixture ('Evgenium-Windows-'+$newer+'-x64-Setup.exe')) $newer -Launch
+if(!$oldGui.WaitForExit(5000)){throw 'Installer left old desktop running'}
+$newGui=$null
+for($i=0;$i -lt 40;$i++){
+  $newGui=Get-Process -Name Evgenium -ErrorAction SilentlyContinue | Where-Object {$_.Id -ne $oldGui.Id -and $_.MainWindowHandle -ne 0 -and $_.Path -eq (Join-Path $app 'Evgenium.exe')} | Select-Object -First 1
+  if($newGui){break}
+  Start-Sleep -Milliseconds 250
+}
+if(!$newGui){throw 'Installer did not reopen new desktop automatically'}
+Write-Output 'Running old desktop replaced and new desktop reopened automatically: PASS'
 $p=Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOLAUNCH' -Wait -PassThru
 if($p.ExitCode -eq 0 -or (Get-ItemProperty $key).DisplayVersion -ne $newer){throw 'Downgrade not rejected'}
 Write-Output 'Fresh setup, repair, real newer EXE upgrade, token preservation and downgrade rejection: PASS'

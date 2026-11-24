@@ -30,16 +30,35 @@ function Show-Gui([switch]$WidgetOnly) {
                 'option' {Set-Option $request.name ([bool]$request.value)}
                 'update' {$message=Update-App;if($global:EvgeniumInstallerStarted){$window.ExitApplication();return};[Windows.Forms.MessageBox]::Show(($message -join "`n"),'Evgenium')}
                 'diagnostic' {
-                    $answer=[Windows.Forms.MessageBox]::Show('Проверка включит VPN при необходимости и проверит маршруты, скорость, UDP-пакеты, DNS/HTTPS и сервисы. Затем отчёт автоматически уйдёт на ваш сервер. В нём будут технические счётчики и результаты тестов; токен, ключи, имена приложений, история и содержимое трафика не включаются. Тест может потратить до 15 МБ и занять несколько минут. Продолжить?','Полная диагностика',[Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Information)
+                    if(!(Read-State).token){throw 'Подтвердите токен перед отправкой отчёта.'}
+                    $answer=[Windows.Forms.MessageBox]::Show('Проверю папки, права, ошибки Photoshop и Telegram, сеть и VPN. В локальных папках создам и удалю только небольшие тестовые файлы. В отчёт уйдут технические результаты и счётчики. Имена файлов, пути, содержимое, токен и ключи туда не попадут. Обычно это занимает несколько минут. Начать?','Полный анализ для разработчика',[Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Information)
                     if($answer -ne [Windows.Forms.DialogResult]::Yes){return}
-                    $report=Create-Report
-                    try {$id=Send-Report $report;$window.LastReport='Отчёт отправлен: '+$id}
-                    catch {$window.LastReport='Отчёт сохранён на этом устройстве, но отправка не удалась: '+$_.Exception.Message;throw}
+                    $progress={param($label,$step,$total,$remaining)
+                        $window.SetReportProgress($label,$step,$total,[int]$remaining)
+                        [EvgeniumDesktop]::PumpEvents()
+                    }.GetNewClosure()
+                    $report=Create-Report -Full -Progress $progress
+                    $total=@(Get-EvgSupportPlan).Count+3
+                    & $progress 'Отправка отчёта разработчику' $total $total 45
+                    try {
+                        $app=Join-Path $ExecutableDirectory 'Evgenium.exe'
+                        $sent=[EvgeniumProcess]::Run($app,('--command support-send --result-id '+$report.report_id),'',46000,[Action]{[EvgeniumDesktop]::PumpEvents()})
+                        if($sent.ExitCode -ne 0 -or $sent.Output -cne $report.report_id){throw 'Сервер не подтвердил получение.'}
+                        $window.LastReport='Отчёт отправлен: '+$report.report_id
+                        $window.FinishReportProgress('Отчёт доставлен разработчику.')
+                    } catch {
+                        $window.LastReport='Отчёт сохранён на устройстве. Сервер не подтвердил отправку.'
+                        $window.FinishReportProgress($window.LastReport)
+                        throw $window.LastReport
+                    }
                 }
             }
             Snapshot-Desktop $window
             if($action -in @('add','remove','base')){$window.RefreshPolicy()}
-        } catch {$window.SetError($_.Exception.Message)}
+        } catch {
+            if($action -eq 'diagnostic'){$window.FinishReportProgress($_.Exception.Message)}
+            $window.SetError($_.Exception.Message)
+        }
         finally {if(!$window.IsDisposed){$window.SetBusy($false)}}
     }.GetNewClosure()
     $window.add_Operation($handler)

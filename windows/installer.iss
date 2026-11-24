@@ -49,15 +49,24 @@ Name: "{commonprograms}\Evgenium Network"; Filename: "{app}\Evgenium.exe"; IconF
 Name: "{commondesktop}\Evgenium Network"; Filename: "{app}\Evgenium.exe"; IconFilename: "{app}\Evgenium.exe"; IconIndex: 0
 [Run]
 Filename: "{app}\EvgeniumEngine.exe"; Parameters: "upgrade-start"; Flags: runhidden waituntilterminated
-Filename: "{app}\Evgenium.exe"; Description: "Запустить Evgenium Network"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: ShouldLaunch
-Filename: "{app}\Evgenium.exe"; Flags: nowait skipifnotsilent runasoriginaluser; Check: ShouldLaunch
+Filename: "{app}\Evgenium.exe"; Description: "Запустить Evgenium Network"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: LaunchFresh
+Filename: "{app}\Evgenium.exe"; Flags: nowait skipifnotsilent runasoriginaluser; Check: LaunchFresh
+Filename: "{app}\Evgenium.exe"; Flags: nowait runasoriginaluser; Check: RestartAfterUpgrade
 [Code]
-var StoppedForUpgrade, Completed: Boolean;
+var StoppedForUpgrade, Completed, Upgrading: Boolean;
 function ShouldLaunch: Boolean;
 var I: Integer;
 begin
  Result := True;
  for I := 1 to ParamCount do if CompareText(ParamStr(I), '/NOLAUNCH') = 0 then Result := False;
+end;
+function LaunchFresh: Boolean;
+begin
+ Result := not Upgrading and ShouldLaunch;
+end;
+function RestartAfterUpgrade: Boolean;
+begin
+ Result := Upgrading and ShouldLaunch;
 end;
 function NextPart(var Value: String): Integer;
 var P: Integer; Part: String;
@@ -77,7 +86,8 @@ function InitializeSetup: Boolean;
 var Existing: String;
 begin
  Result:=True;
- if RegQueryStringValue(HKLM,'Software\Microsoft\Windows\CurrentVersion\Uninstall\{53E2495A-A134-40DC-BA91-D2FD582DE3AD}_is1','DisplayVersion',Existing) then
+ Upgrading:=RegQueryStringValue(HKLM,'Software\Microsoft\Windows\CurrentVersion\Uninstall\{53E2495A-A134-40DC-BA91-D2FD582DE3AD}_is1','DisplayVersion',Existing);
+ if Upgrading then
   if CompareVersion(Existing,'{#AppVersion}')>0 then begin SuppressibleMsgBox('Уже установлена более новая версия Evgenium. Понижение версии отменено.',mbError,MB_OK,IDOK);Result:=False;end;
 end;
 function CloseDesktop: Boolean;
@@ -86,7 +96,7 @@ begin
  Result:=True;
  if FileExists(ExpandConstant('{app}\Evgenium.exe')) then begin
   Exec(ExpandConstant('{app}\Evgenium.exe'),'--command close-gui','',SW_HIDE,ewWaitUntilTerminated,Code);
-  for I:=1 to 50 do begin if not CheckForMutexes('Local\EvgeniumNetwork.Desktop') then Exit;Sleep(100);end;
+  for I:=1 to 150 do begin if not CheckForMutexes('Local\EvgeniumNetwork.Desktop') then Exit;Sleep(100);end;
   Result:=False;
  end;
 end;

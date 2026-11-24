@@ -36,7 +36,12 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
  private int page;
  private bool editingName,showBaseValue;
  private TextBox tokenInput,nameInput,exceptionInput;
- private TextBlock statusText,deviceName,tokenHint,connectionTitle,resultText;
+ private TextBlock statusText,deviceName,tokenHint,connectionTitle,resultText,reportStatus;
+ private ProgressBar reportBar;
+ private readonly DispatcherTimer reportTimer=new DispatcherTimer();
+ private readonly System.Diagnostics.Stopwatch reportClock=new System.Diagnostics.Stopwatch();
+ private string reportLabel="";
+ private int reportStep,reportSteps,reportSeconds;
  private Button tokenSave,deviceSave,toggle;
  private ComboBox route,running,protocol,direction;
  private StackPanel deviceCard,exceptions,baseRules;
@@ -46,6 +51,7 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
  private static readonly Brush Bg=BrushOf("#141217"),Surface=BrushOf("#211c24"),Accent=BrushOf("#ff586d"),Muted=BrushOf("#baa8af"),Main=BrushOf("#fff1e9"),BorderBrushColor=BrushOf("#48303c");
  public EvgeniumDesktop(){
   Title="Evgenium Network";Width=1040;Height=740;MinWidth=860;MinHeight=580;Background=Bg;Foreground=Main;FontFamily=new FontFamily("Segoe UI");FontSize=13;WindowStartupLocation=WindowStartupLocation.CenterScreen;
+  reportTimer.Interval=TimeSpan.FromSeconds(1);reportTimer.Tick+=(sender,args)=>PaintReportProgress();
   WindowStyle=WindowStyle.None;ResizeMode=ResizeMode.CanResize;UseLayoutRounding=true;SnapsToDevicePixels=true;
   WindowChrome.SetWindowChrome(this,new WindowChrome{CaptionHeight=38,ResizeBorderThickness=new Thickness(6),GlassFrameThickness=new Thickness(0),CornerRadius=new CornerRadius(8),UseAeroCaptionButtons=false});
   using(var stream=Resource("Desktop.xaml"))visual=(Border)XamlReader.Load(stream);Content=visual;
@@ -99,7 +105,13 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
   var token=Card("Токен клиента");tokenInput=Input("Токен клиента");tokenInput.MaxLength=48;tokenHint=Text("Токен сохранён на этом устройстве",13);tokenHint.Foreground=Muted;
   var tokenField=new Grid();tokenField.Children.Add(tokenInput);tokenField.Children.Add(tokenHint);tokenSave=Button("Подтвердить",()=>{if(!TokenEditing&&BoolOf(snapshot,"has_token"))Send("token-edit",null);else Send("token-save",new{token=tokenInput.Text});},false);token.Children.Add(Pair(tokenField,tokenSave));
   var routes=Card("Маршрут");route=new ComboBox();Accessible(route,"Маршрут VPN");route.SelectionChanged+=(s,e)=>{if(!Refreshing&&route.SelectedItem is RouteItem)Send("route",new{value=((RouteItem)route.SelectedItem).ID});};routes.Children.Add(route);
-  Card("").Children.Add(Actions(Button("Полная диагностика",()=>Send("diagnostic",null),false),Button("Проверить обновления",()=>Send("update",null),false)));
+  var support=Card("");
+  var reportButton=Button("Сделать полный анализ и отправить разработчику.",()=>Send("diagnostic",null),false);
+  reportButton.Name="supportReportButton";support.Children.Add(reportButton);
+  reportStatus=Text("",13);reportStatus.Name="supportReportStatus";reportStatus.Margin=new Thickness(0,10,0,4);support.Children.Add(reportStatus);
+  reportBar=new ProgressBar{Minimum=0,Maximum=100,Height=6,Foreground=Accent};Accessible(reportBar,"Ход полного анализа");support.Children.Add(reportBar);
+  PaintReportProgress();
+  Card("").Children.Add(Actions(Button("Проверить обновления",()=>Send("update",null),false)));
   resultText=Text("",13);resultText.Foreground=Muted;Card("Результат").Children.Add(resultText);
  }
  private void BuildExceptions(){
@@ -161,11 +173,27 @@ public sealed class EvgeniumDesktop : Window, IDisposable {
  public void SetApps(string text){apps=AsArray(json.DeserializeObject(text));FillApps();}
  private void FillApps(){if(running==null)return;running.Items.Clear();foreach(var v in apps){var a=Map(v);running.Items.Add(new AppItem{Name=TextOf(a,"name"),Path=TextOf(a,"exe")});}if(running.Items.Count>0)running.SelectedIndex=0;}
  public void SetError(string message){lastError=message;if(statusText!=null){statusText.Text=message;statusText.Foreground=BrushOf("#ffad9e");}if(!IsVisible)tray.ShowBalloonTip(5000,"Evgenium",message,Forms.ToolTipIcon.Warning);}
+ public void SetReportProgress(string label,int step,int total,int seconds){
+  reportLabel=label;reportStep=step;reportSteps=total;reportSeconds=seconds;reportClock.Restart();
+  reportTimer.Start();PaintReportProgress();
+ }
+ public void FinishReportProgress(string message){
+  reportLabel=message;reportStep=0;reportTimer.Stop();reportClock.Stop();PaintReportProgress();
+ }
+ private void PaintReportProgress(){
+  if(reportStatus==null||reportBar==null)return;
+  ShowElement(reportStatus,reportLabel!="");ShowElement(reportBar,reportStep>0);
+  if(reportStep==0){reportStatus.Text=reportLabel;return;}
+  int remaining=Math.Max(0,reportSeconds-(int)reportClock.Elapsed.TotalSeconds);
+  string time=remaining==0?"завершаю этап":String.Format("осталось до {0:0}:{1:00}",remaining/60,remaining%60);
+  reportStatus.Text=String.Format("{0} · шаг {1} из {2} · {3}",reportLabel,reportStep,reportSteps,time);
+  reportBar.Value=100.0*((reportStep-1)+Math.Min(0.9,reportClock.Elapsed.TotalSeconds/Math.Max(1,reportSeconds)))/reportSteps;
+ }
  public void SetBusy(bool value){Busy=value;cards.IsEnabled=!value;navigation.IsEnabled=!value;startup.IsEnabled=!value;if(value){lastError="";if(statusText!=null)statusText.Text="Выполняется… Подтвердите запрос Windows, если он появится.";}else ApplySnapshot();}
  public void StartInTray(){EventHandler once=null;once=(s,e)=>{ContentRendered-=once;Hide();};ContentRendered+=once;}
  public void OpenMain(){Show();WindowState=WindowState.Normal;Activate();}
  public void ExitApplication(){AllowExit=true;Close();}
- public void Dispose(){if(!IsDisposed){AllowExit=true;Close();}tray.Dispose();}
+ public void Dispose(){reportTimer.Stop();if(!IsDisposed){AllowExit=true;Close();}tray.Dispose();}
  public static void PumpEvents(){var frame=new DispatcherFrame();Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>frame.Continue=false));Dispatcher.PushFrame(frame);}
  public void SavePreview(string path){SavePreviewAtDpi(path,96);}
  public void SavePreviewAtDpi(string path,double dpi){UpdateLayout();PumpEvents();var bitmap=new RenderTargetBitmap((int)Math.Ceiling(ActualWidth*dpi/96),(int)Math.Ceiling(ActualHeight*dpi/96),dpi,dpi,PixelFormats.Pbgra32);bitmap.Render(visual);var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));using(var file=File.Create(path))encoder.Save(file);}

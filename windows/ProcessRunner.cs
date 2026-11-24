@@ -25,7 +25,10 @@ public static class EvgeniumProcess {
     [DllImport("kernel32.dll")] private static extern bool TerminateProcess(IntPtr process,uint exitCode);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
     public static Result Run(string executable,string arguments,string input,int timeout) {
-        if (!Regex.IsMatch(arguments,@"\A(selftest|keygen|pubkey|render|validate|validate-exception|routes|reload|remove|uninstall-all|upgrade-stop|upgrade-start|install S-1-5-21-[0-9-]+|diagnose S-1-5-21-[0-9-]+)\z")) throw new ArgumentException("Unsupported engine operation");
+        return Run(executable,arguments,input,timeout,null);
+    }
+    public static Result Run(string executable,string arguments,string input,int timeout,Action onWait) {
+        if (!Regex.IsMatch(arguments,@"\A(selftest|keygen|pubkey|render|validate|validate-exception|routes|reload|remove|uninstall-all|upgrade-stop|upgrade-start|install S-1-5-21-[0-9-]+|diagnose S-1-5-21-[0-9-]+|--command support-check-[a-z_]{1,24}|--command support-send --result-id [a-f0-9]{32})\z")) throw new ArgumentException("Unsupported engine operation");
         if(executable.IndexOf('"')>=0||input.Length>131072)throw new ArgumentException("Invalid engine input");
         using (var stdin=new AnonymousPipeServerStream(PipeDirection.Out,HandleInheritability.Inheritable))
         using (var stdout=new AnonymousPipeServerStream(PipeDirection.In,HandleInheritability.Inheritable))
@@ -44,7 +47,8 @@ public static class EvgeniumProcess {
                     stdin.Flush(); stdin.Dispose(); Array.Clear(bytes,0,bytes.Length);
                     var started=DateTime.UtcNow;
                     while(WaitForSingleObject(process.process,100)!=0) {
-                        if(System.Windows.Forms.Application.MessageLoop)System.Windows.Forms.Application.DoEvents();
+                        if(onWait!=null)onWait();
+                        else if(System.Windows.Forms.Application.MessageLoop)System.Windows.Forms.Application.DoEvents();
                         if((DateTime.UtcNow-started).TotalMilliseconds>timeout){TerminateProcess(process.process,1);WaitForSingleObject(process.process,2000);throw new TimeoutException("Операция сетевого ядра превысила время ожидания.");}
                     }
                     uint exitCode; if(!GetExitCodeProcess(process.process,out exitCode)) throw new InvalidOperationException("Could not query engine exit code");
