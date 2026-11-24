@@ -3,6 +3,7 @@ using System.IO;
 using System.Management.Automation;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Management.Automation.Runspaces;
 using System.Windows.Forms;
@@ -43,7 +44,16 @@ internal static class Host {
                 runspace.ThreadOptions=PSThreadOptions.UseCurrentThread;
                 runspace.Open();ps.Runspace=runspace;
                 ps.AddScript(reader.ReadToEnd()).AddParameter("Command", command).AddParameter("ExpectedSid", expectedSid).AddParameter("ResultId", resultId).AddParameter("ExecutableDirectory", AppDomain.CurrentDomain.BaseDirectory);
-                foreach (var item in ps.Invoke()) if (item != null) Console.WriteLine(item.ToString());
+                var output = ps.Invoke();
+                // The windowed executable has no attached console. Use the actual
+                // inherited pipe and a fixed encoding for diagnostics workers.
+                if (command.StartsWith("support-", StringComparison.Ordinal)) {
+                    using (var writer = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false))) {
+                        foreach (var item in output) if (item != null) writer.WriteLine(item.ToString());
+                    }
+                } else {
+                    foreach (var item in output) if (item != null) Console.WriteLine(item.ToString());
+                }
                 if (ps.InvocationStateInfo.State == PSInvocationState.Failed) throw new Exception("Evgenium could not complete the operation.");
                 var result = ps.Runspace.SessionStateProxy.GetVariable("EvgeniumExitCode");
                 return result == null ? 0 : Convert.ToInt32(result);

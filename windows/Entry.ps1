@@ -15,7 +15,7 @@
         'status' { (Read-EngineStatus).state }
         'ui-selftest' { Test-Desktop }
         {$_ -match '^support-check-([a-z_]{1,24})$'} {
-            Invoke-EvgSupportCheck $Matches[1] | ConvertTo-Json -Compress -Depth 6
+            Invoke-EvgSupportCheck ($_.Substring('support-check-'.Length)) | ConvertTo-Json -Compress -Depth 6
         }
         'support-send' {
             if (!$ResultId) {throw 'Нет идентификатора отчёта.'}
